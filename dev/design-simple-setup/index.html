@@ -1569,7 +1569,9 @@ Here the mode is one input to the reducer — <code>activeSteps</code> and <code
 pages exist and where a step belongs — and the install job belongs to the model that
 started it: opening another model leaves the job on its own model's progress page.</p>
 <h2 id="tests">Tests<a class="headerlink" href="#tests" title="Permanent link">&para;</a></h2>
-<p><code>dashboard/tests/setup-state.test.ts</code> covers the mode switch, the active page list, the
+<p>The Setup Guide's pages are TandemApp's since 0.16.0, and so are their tests, in
+<a href="https://github.com/TandemLLM/TandemApp">TandemLLM/TandemApp</a>:
+<code>dashboard/tests/setup-state.test.ts</code> covers the mode switch, the active page list, the
 route normalization, resume in the right mode, the job's model scope and the simple
 defaults (the card's cap, the pool only when it pays). <code>dashboard/e2e/setup-simple.spec.ts</code>
 walks the three pages on the mock and finishes on the review fold.</p>
