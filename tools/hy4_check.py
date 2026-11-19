@@ -97,9 +97,29 @@ def quality(a, eng, cfg, say) -> None:
             st = eng.new_state(len(ids) + 8)
             got = eng.prefill(torch.tensor(ids), st, head="all")
             parts.append(_kl(ref_of(r), got))
+            if r < R and L and a.quality_no_steps:
+                # the decode steps over the first L positions against the prompt pass's rows of the same positions
+                st2 = eng.new_state(len(ids) + 8)
+                gs, P0_ = {}, 32
+                stp = torch.cat([eng.prefill(torch.tensor(ids[:P0_]), st2, head="all")] + [eng.step(ids[i], st2, graphs=gs).clone() for i in range(P0_, L)])
+                d = (stp[P0_:] - got[P0_:L]).abs()
+                both = _kl(got[P0_:L], stp[P0_:])
+                say("quality_steps_vs_prompt_pass", set=name, row=r, positions=L - P0_, logits_mean_abs=round(float(d.mean()), 5),
+                    logits_max_abs=round(float(d.max()), 4), logit_scale=round(float(got[P0_:L].abs().mean()), 3),
+                    top1_equal=round(float(both["top1"].float().mean()), 5), kl_prompt_to_steps=round(float(both["kl"].mean()), 5),
+                    kl_ref_steps=round(float(_kl(ref_of(r)[P0_:L], stp[P0_:])["kl"].mean()), 5),
+                    kl_ref_prompt=round(float(parts[-1]["kl"][P0_:L].mean()), 5))
+                del st2, stp
             del got, st
-        _kl_say(say, "quality_prompt_pass", parts, set=name, rows=n, row_len=len(ids_all[0]), seconds=round(time.perf_counter() - t0, 1))
-        if not (R and name == a.quality.split(",")[0].split("=")[0]):
+        _kl_say(say, "quality_prompt_pass", parts, set=name, rows=n, row_len=len(ids_all[0]), seconds=round(time.perf_counter() - t0, 1),
+                kl_mean_a_row=[round(float(p["kl"].mean()), 4) for p in parts])
+        if R:
+            # the prompt pass on the rows and positions the decode steps are scored on
+            P0_ = 32
+            _kl_say(say, "quality_prompt_pass_step_rows", [{k: v[P0_:] for k, v in p.items()} for p in parts[:R]], set=name, rows=min(R, n), from_position=P0_)
+            if L:
+                _kl_say(say, "quality_prompt_pass_step_rows_first", [{k: v[:L] for k, v in p.items()} for p in parts[:R]], set=name, rows=min(R, n), first=L)
+        if not (R and name == a.quality.split(",")[0].split("=")[0]) or a.quality_no_steps:
             continue
         P0 = 32                                                      # the rows before the first step come from the prompt pass
         real_router, real_route_r = E_.K_.router, eng.route_r
@@ -153,7 +173,7 @@ def quality(a, eng, cfg, say) -> None:
             kt.append((full[P0:L] - tor[P0:L]).abs().mean().item())
             ft.append((frc[P0:L] - tor[P0:L]).abs().mean().item())
             say("quality_progress", set=name, row=r, all_s=round(time.perf_counter() - t0, 1))
-        _kl_say(say, "quality_steps_kernel_graphs", k_parts, set=name, rows=len(k_parts), from_position=P0)
+        _kl_say(say, "quality_steps_kernel_graphs", [{k: v[P0:] for k, v in p.items()} for p in k_parts], set=name, rows=len(k_parts), from_position=P0)
         if L and t_parts:
             cut = lambda ps: [{k: v[:L] for k, v in p.items()} for p in ps]
             _kl_say(say, "quality_steps_kernel_first", cut(k_parts), set=name, rows=len(k_parts), first=L)
@@ -197,6 +217,38 @@ def prose(a, eng, cfg, say) -> None:
     say("prose_plain", prompt_tokens=len(ids), prompt_s=round(t_prompt, 1), prompt_tok_s=round(len(ids) / t_prompt, 1), answer_tokens=len(toks),
         ended=nxt in cfg.eos_token_ids, tok_s_from_50=round(plain, 2), ms_step=round(1e3 / plain, 2) if plain else None,
         graphs=srv.graphs is not None, answer_head=answer[:400], answer_tail=answer[-200:])
+    if a.step_parts and toks:
+        # where a served step's time goes: the same steps again, each part closed by a device sync
+        srv.cache_state().restore(snap)
+        srv.kv.length = len(ids)
+        acc = {"stage": 0.0, "pass": 0.0, "commit": 0.0, "forward_rest": 0.0, "argmax": 0.0}
+        real_stage, real_commit, real_rows = eng.stage, eng.commit, eng.rows
+
+        def timed(fn, key):
+            def f(*x, **k):
+                sync(a.device)
+                t = time.perf_counter()
+                r = fn(*x, **k)
+                sync(a.device)
+                acc[key] += time.perf_counter() - t
+                return r
+            return f
+        eng.stage, eng.commit, eng.rows = timed(real_stage, "stage"), timed(real_commit, "commit"), timed(real_rows, "pass")
+        n = min(len(toks), a.step_parts)
+        for i in range(n):
+            sync(a.device)
+            t = time.perf_counter()
+            lg = srv.forward(torch.tensor([toks[i]]), start=len(ids) + i)
+            sync(a.device)
+            t1 = time.perf_counter()
+            int(lg[0, 0].argmax())
+            acc["argmax"] += time.perf_counter() - t1
+            acc["forward_rest"] += t1 - t
+        eng.stage, eng.commit, eng.rows = real_stage, real_commit, real_rows
+        acc["pass"] -= acc["stage"]
+        acc["forward_rest"] -= acc["pass"] + acc["stage"] + acc["commit"]
+        say("prose_step_parts", steps=n, rows_at_start=len(ids), ms={k: round(1e3 * v / n, 3) for k, v in acc.items()},
+            ms_sum=round(1e3 * sum(acc.values()) / n, 2))
     if cfg.dfly is None or not a.dfly:
         return
 
@@ -378,7 +430,9 @@ def main() -> int:
     ap.add_argument("--table", default="cold")
     ap.add_argument("--no-graphs", action="store_true")
     ap.add_argument("--caches", action="store_true")
+    ap.add_argument("--step-parts", type=int, default=0, help="with --prose: this many served steps again, timed by part")
     ap.add_argument("--quality", default="", help="name=rows.pt=refdir=N[,...]: the engine against stored reference logits")
+    ap.add_argument("--quality-no-steps", action="store_true", help="score the prompt pass only (the step rows' figures still print)")
     ap.add_argument("--quality-steps", default="", help="R:L: the decode path on the first set's first R rows; torch sums and forced routing on L positions")
     ap.add_argument("--dfly-src", help="the source checkpoint's directory: the prose run again with its unquantized draft layers")
     ap.add_argument("--no-splits", action="store_true", help="the device's rule for every dense split (not the family's table)")
