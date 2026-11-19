@@ -213,6 +213,38 @@ def test_the_session_spill_round_trips():
     return "rows and the newest anchors back in place, bit for bit"
 
 
+def test_the_fingerprint_covers_the_kernels_the_family_compiles():
+    # the packed value half is built on tools/fn_kernels' source (compiled in): a change there, in the EXL3
+    # helpers it reads or in the family's own kernel moves this family's fingerprint
+    import shutil
+    import tempfile
+    from engine.methods import manifest as mf
+    from engine.models.hy4_flash.serving import manifest
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rels = {os.path.relpath(p, root) for p in mf.files(root, manifest())}
+    need = ["engine/models/hy4_flash/native.py", "engine/models/hy4_flash/csrc/native/vdense.cu",
+            "engine/models/hy4_flash/csrc/native/vdense.cpp", "tools/fn_kernels.py", "tools/csrc/fn_kernels/kernels.cu",
+            "tools/csrc/fn_kernels/kernels.cpp", "tools/exl3_linear.py", "tools/csrc/exl3_linear/exl3.cu", "engine/native_build.py"]
+    assert not [r for r in need if r not in rels], [r for r in need if r not in rels]
+    with tempfile.TemporaryDirectory() as d:
+        for sub in ("engine", "tools", "ops"):
+            shutil.copytree(os.path.join(root, sub), os.path.join(d, sub), ignore=shutil.ignore_patterns("__pycache__", "*.npy"))
+        base = mf.fingerprint(d, manifest(), {})
+        assert base == mf.fingerprint(root, manifest(), {}), "the copy's fingerprint is not the tree's"
+        moved = []
+        for rel in ("tools/csrc/fn_kernels/kernels.cu", "tools/fn_kernels.py", "tools/csrc/exl3_linear/exl3.cu",
+                    "engine/models/hy4_flash/csrc/native/vdense.cu"):
+            p = os.path.join(d, rel)
+            was = open(p, "rb").read()
+            with open(p, "ab") as f:
+                f.write(b"\n// one more line\n" if rel.endswith(".cu") else b"\n# one more line\n")
+            moved.append(mf.fingerprint(d, manifest(), {}) != base)
+            with open(p, "wb") as f:
+                f.write(was)
+        assert all(moved), moved
+    return f"{len(rels)} files; a line more in the shared kernels, the EXL3 source or the family's kernel moves the fingerprint"
+
+
 if __name__ == "__main__":
     from scriptmode import run
     run(globals())

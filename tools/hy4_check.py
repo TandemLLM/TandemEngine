@@ -329,7 +329,7 @@ def prose(a, eng, cfg, say) -> None:
     if cfg.dfly is None or not a.dfly:
         return
 
-    def drafted(tag: str) -> None:
+    def drafted(tag: str, cut: float | None = None) -> None:
         srv.cache_state().restore(snap)
         srv.kv.length = len(ids)
         lg = srv.forward(torch.tensor([first]), start=len(ids))       # the picks are gone with the restore: one plain step
@@ -338,17 +338,28 @@ def prose(a, eng, cfg, say) -> None:
         head.launch(srv.last_streams(), [nxt])                        # one round first, undone: it captures its graphs
         tk, _ = head.read()
         if tk:
-            srv.forward_tree(torch.tensor([nxt] + [t[0] for t in tk]), list(range(-1, len(tk))), start=srv.kv.length)
-            srv.discard_pending()
+            # every block size the round may verify, once and undone: its graph is captured before the clock runs
+            for m in (range(1, len(tk) + 1) if cut is not None else (len(tk),)):
+                srv.forward_tree(torch.tensor([nxt] + [t[0] for t in tk[:m]]), list(range(-1, m)), start=srv.kv.length)
+                srv.discard_pending()
             srv.st.picks_at = srv.st.length
         rounds = kept = 0
+        rows_total = [0]
         draft_s, hist, marks = 0.0, [0] * (cfg.dfly.draft_tokens + 1), []
         while len(out) < len(toks):
             td = time.perf_counter()
             head.launch(srv.last_streams(), [nxt])
-            tk, _ = head.read()
+            tk, pb = head.read()
             draft_s += time.perf_counter() - td
+            if cut is not None:
+                # the chain while the drafter's own path probability stays at `cut` or above
+                keep, path = 0, 1.0
+                while keep < len(tk) and path * pb[keep][0] >= cut:
+                    path *= pb[keep][0]
+                    keep += 1
+                tk = tk[:keep]
             block = [nxt] + [t[0] for t in tk]
+            rows_total[0] += len(block)
             srv.forward_tree(torch.tensor(block), list(range(-1, len(block) - 1)), start=srv.kv.length)
             picks = srv.picks.tolist()
             n = 1
@@ -365,8 +376,11 @@ def prose(a, eng, cfg, say) -> None:
             tokens_per_round=round(len(out) / max(rounds, 1), 3), kept_per_round=round(kept / max(rounds, 1), 3),
             accept_rate=round(kept / max(rounds * cfg.dfly.draft_tokens, 1), 3), kept_histogram=hist,
             ms_round=round(1e3 * (marks[-1][1] - marks[0][1]) / max(len(marks) - 1, 1), 2), draft_ms_round=round(1e3 * draft_s / max(rounds, 1), 2),
-            draft_tokens=cfg.dfly.draft_tokens, graphs=srv.graphs is not None)
+            draft_tokens=cfg.dfly.draft_tokens, graphs=srv.graphs is not None, path_prob_cut=cut,
+            rows_per_round=round(rows_total[0] / max(rounds, 1), 3))
     drafted("prose_dfly")
+    for c in [float(x) for x in a.dfly_cut.split(",") if x]:
+        drafted("prose_dfly_cut", cut=c)
     if a.dfly_src:
         n = dfly_source(eng.W, a.dfly_src, a.device)
         say("dfly_source", dir=a.dfly_src, tensors_replaced=n)
@@ -582,6 +596,7 @@ def main() -> int:
     ap.add_argument("--no-graphs", action="store_true")
     ap.add_argument("--caches", action="store_true")
     ap.add_argument("--step-parts", type=int, default=0, help="with --prose: this many served steps again, timed by part")
+    ap.add_argument("--dfly-cut", default="", help="with --prose --dfly: drafted runs that verify the chain only while its path probability stays at each of these values")
     ap.add_argument("--dfly-dump", default="", help="with --prose --dfly: a few rounds' draft inputs and outputs into this folder")
     ap.add_argument("--dfly-dump-at", default="0,40,80,120,160,200,240,280")
     ap.add_argument("--dfly-accept", default="", help="rows.pt=refdir=R=EVERY: the first drafted token against the pack's and the reference's next token, teacher-forced")
