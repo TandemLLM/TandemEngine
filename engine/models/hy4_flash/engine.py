@@ -42,6 +42,7 @@ import torch.nn.functional as F
 from engine.models.flashnext.ref import topk_stable
 from engine.models.hy4_flash.config import SPARSE, Hy4FlashConfig
 from engine.models.hy4_flash import kernels as K_
+from engine.models.hy4_flash import native as NV
 from engine.models.hy4_flash.engram import fp8_round_trip
 from engine.models.hy4_flash.ref import Hy4FlashRef, rotate
 
@@ -160,6 +161,14 @@ class Hy4FlashEngine(Hy4FlashRef):
             w = (w if torch.is_tensor(w) else w.bf16_cached()).to(self.device, dtype).view(a.heads, a.nope + a.v, cfg.kv_lora_rank)
             self.wk[li] = w[:, :a.nope].contiguous()
             self.wv[li] = w[:, a.nope:].transpose(1, 2).contiguous()
+        # the value half packed, where the loader kept the projection and the device builds the kernel
+        self.vpk = {}
+        self.value_packed = True
+        if self.kernels and dtype == torch.bfloat16 and NV.available(self.device):
+            for li in range(cfg.num_hidden_layers):
+                a, blk = cfg.attn(li), W.get(f"layers.{li}.self_attn.kv_b_proj.packed")
+                if blk is not None and NV.fits(blk, a.heads, a.nope + a.v, a.nope, a.v):
+                    self.vpk[li] = blk
         self.sinks = {li: W[f"layers.{li}.self_attn.learnable_sink_param"].float().to(self.device).reshape(-1, 1)
                       for li in range(cfg.num_hidden_layers)}
         #: the sparse layers whose last row's read list is kept for a draft head
@@ -372,6 +381,8 @@ class Hy4FlashEngine(Hy4FlashRef):
             e = torch.exp(s - s.amax(dim=-1, keepdim=True))
             p = (e / self.rsum(e.view(M * a.heads, n + 1)).view(M, a.heads, 1))[..., :n].to(self.dtype)
         mix = self.mm(p, K[..., :R]).to(self.dtype)
+        if self.fused and self.value_packed and li in self.vpk:
+            return NV.vdense(mix.reshape(M * a.heads, R).contiguous(), self.vpk[li], a.heads, a.nope + a.v, a.nope, a.v).view(M, a.heads, a.v)
         return self.mm(mix.reshape(M * a.heads, 1, R), self.wv[li]).view(M, a.heads, a.v).to(self.dtype)
 
     def _gather(self, by_slot: torch.Tensor, scratch: torch.Tensor, q: torch.Tensor, Lt: torch.Tensor, anc: torch.Tensor) -> torch.Tensor:

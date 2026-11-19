@@ -29,7 +29,7 @@ from engine.settings import SETTINGS as _S
 
 MODULES = ("engine/models/hy4_flash/__init__.py", "engine/models/hy4_flash/config.py", "engine/models/hy4_flash/engine.py",
            "engine/models/hy4_flash/engram.py", "engine/models/hy4_flash/ref.py", "engine/models/hy4_flash/knobs.py",
-           "engine/models/hy4_flash/kernels.py",
+           "engine/models/hy4_flash/kernels.py", "engine/models/hy4_flash/native.py",
            "engine/models/hy4_flash/dfly.py", "engine/models/hy4_flash/table.py", "engine/models/hy4_flash/pack.py",
            "engine/models/hy4_flash/load.py",
            "engine/models/flashnext/ref.py", "engine/settings.py")

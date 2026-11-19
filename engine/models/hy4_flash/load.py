@@ -95,7 +95,10 @@ def load(path: str, device="cuda", dtype=torch.bfloat16, log=print, table_policy
         if pack.formats[base] != "exl3":
             return pack.read(base + ".weight").to(device, dtype).contiguous()
         if base.endswith("kv_b_proj"):
-            w = pack.exl3(base, device).dequant()
+            blk = pack.exl3(base, device)
+            if on_gpu and base.startswith("layers."):
+                W[base + ".packed"] = blk               # the row path reads the value half packed (native.vdense)
+            w = blk.dequant()
             return w[:N].to(dtype).contiguous() if N is not None else w.to(dtype)
         w = pack.exl3(base, device, out_fp32=out_fp32)
         if N is not None and w.N != N:

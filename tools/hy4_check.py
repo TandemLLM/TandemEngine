@@ -432,6 +432,21 @@ def profile(a, eng, cfg, ids, say) -> None:
             best = min(best, (time.perf_counter() - t0) / 8)
         out["replay_ms_6_grouped_off" if was else "replay_ms_6_grouped_on"] = round(1e3 * best, 2)
         eng.block_grouped = was
+        if getattr(eng, "vpk", None):
+            # one step again with the value half from its BF16 copy: what reading it packed saves
+            eng.value_packed, g3 = False, {}
+            eng.rows([int(ids[0])], [-1], st, graphs=g3)
+            best = 1e9
+            for _ in range(5):
+                sync(a.device)
+                t0 = time.perf_counter()
+                for _ in range(8):
+                    next(iter(g3.values())).replay()
+                sync(a.device)
+                best = min(best, (time.perf_counter() - t0) / 8)
+            out["replay_ms_1_value_bf16"] = round(1e3 * best, 2)
+            out["value_packed_layers"] = len(eng.vpk)
+            eng.value_packed = True
     if cfg.dfly is not None:
         eng.rows([int(ids[0])], [-1], st)
         eng.commit(st, [0])
