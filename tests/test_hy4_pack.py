@@ -131,6 +131,29 @@ def test_the_tiny_pack_audits_and_loads():
     return f"{len(pack.tensors)} tensors; {'; '.join(timing['notes'])}; DFly layers: {pack.has_dfly}"
 
 
+def test_the_batched_cold_reads_are_the_plain_ones():
+    if SKIP:
+        return SKIP
+    from engine.models.flashnext.ple import DirectRows
+    from engine.models.hy4_flash.table import BatchRows, table_file
+    from engine.models.hy4_flash.pack import Hy4Pack
+    pack = Hy4Pack.open(PACK)
+    li = sorted(pack.cfg.engram_layers)[0]
+    t = EngramTable(table_file(PACK, li), li)
+    b = BatchRows(t.path, t.offset, t.row_bytes, t.rows, 1 << 20)
+    g = np.random.default_rng(3)
+    for n in (1, 5, 16, 200, 300):                      # 300 is past the queue: the parent's reads
+        ids = np.unique(np.r_[g.integers(0, t.rows, n), t.rows - 1, 0]).astype(np.int64)
+        assert np.array_equal(b._read(ids), DirectRows._read(b, ids)), n
+        assert np.array_equal(b._read(ids), np.asarray(t.map[ids])), n
+    got = np.array_equal(b.rows_of(np.arange(40)), np.asarray(t.map[np.arange(40)]))
+    how = "kernel AIO" if b._ctx is not None else f"no kernel AIO here (direct {b.direct}): the parent's reads"
+    b.close()
+    pack.close()
+    assert got
+    return f"1 to 300 rows with the file's first and last: equal to the thread reads and to the file; {how}"
+
+
 def test_the_splits_leave_other_entries_alone():
     import tempfile
     from tools import fn_kernels as FK

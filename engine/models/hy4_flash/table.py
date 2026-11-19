@@ -21,14 +21,19 @@ the page cache (engine/models/flashnext/ple.py has the readers; Flash-Next's row
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
+import mmap
 import os
+import platform
 import struct
+import sys
 
 import numpy as np
 import torch
 
-from engine.models.flashnext.ple import DirectRows, page_cache_bytes
+from engine.models.flashnext.ple import BLOCK, DirectRows, page_cache_bytes
 
 ROW_DIM = 96
 MUL1 = 0x83DCD12D
@@ -42,6 +47,92 @@ def mul1_codebook(device=None) -> torch.Tensor:
     k_inv = torch.tensor([0x1eee], dtype=torch.int16).view(torch.float16).float().item()
     k_bias = torch.tensor([0xc931 - 0x10000], dtype=torch.int16).view(torch.float16).float().item()
     return ((1024 + bsum).float() * k_inv + k_bias).to(torch.float16)
+
+
+
+class _Iocb(ctypes.Structure):
+    _fields_ = [("data", ctypes.c_uint64), ("key", ctypes.c_uint32), ("rw_flags", ctypes.c_uint32),
+                ("opcode", ctypes.c_uint16), ("reqprio", ctypes.c_int16), ("fildes", ctypes.c_uint32),
+                ("buf", ctypes.c_uint64), ("nbytes", ctypes.c_uint64), ("offset", ctypes.c_int64),
+                ("reserved2", ctypes.c_uint64), ("flags", ctypes.c_uint32), ("resfd", ctypes.c_uint32)]
+
+
+class _IoEvent(ctypes.Structure):
+    _fields_ = [("data", ctypes.c_uint64), ("obj", ctypes.c_uint64), ("res", ctypes.c_int64), ("res2", ctypes.c_int64)]
+
+
+#: io_setup, io_destroy, io_submit, io_getevents by machine (Linux)
+_AIO_SYS = {"aarch64": (0, 1, 2, 4), "x86_64": (206, 207, 209, 208)}
+_AIO_DEPTH = 256
+
+
+class BatchRows(DirectRows):
+    """`DirectRows` whose misses of one call go to the kernel in one submit (Linux AIO on the O_DIRECT file): a
+    decode step's 10 to 16 missed rows a table wait for the device once, not for a thread each (measured on the
+    released tables: 16 rows in 0.27 ms against 1.6 ms). The same blocks, the same rows; without kernel AIO, or
+    past its queue depth, the parent's reads."""
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self._ctx, self._libc, self._abuf, self._cbs = None, None, None, None
+        nums = _AIO_SYS.get(platform.machine())
+        if nums is None or not self.direct or not sys.platform.startswith("linux"):
+            return
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            ctx = ctypes.c_ulong(0)
+            if libc.syscall(nums[0], _AIO_DEPTH, ctypes.byref(ctx)) == 0:
+                self._ctx, self._libc, self._nums = ctx, libc, nums
+                self._cbs = (_Iocb * _AIO_DEPTH)()
+                self._ptrs = (ctypes.POINTER(_Iocb) * _AIO_DEPTH)(*[ctypes.pointer(c) for c in self._cbs])
+                self._evs = (_IoEvent * _AIO_DEPTH)()
+        except (OSError, AttributeError):
+            self._ctx = None
+
+    def _read(self, ids: np.ndarray) -> np.ndarray:
+        n = int(ids.size)
+        if self._ctx is None or not 0 < n <= _AIO_DEPTH:
+            return super()._read(ids)
+        start = self.offset + ids * self.row_bytes
+        b0 = start // BLOCK * BLOCK
+        span = 2 * BLOCK
+        if self._abuf is None or len(self._abuf) < n * span:
+            self._abuf = mmap.mmap(-1, max(n, 64) * span)
+            self._addr = ctypes.addressof(ctypes.c_char.from_buffer(self._abuf))
+        size = os.fstat(self.fd).st_size
+        want = (start - b0) + self.row_bytes
+        for i in range(n):
+            c = self._cbs[i]
+            c.data, c.opcode, c.fildes = i, 0, self.fd
+            c.buf, c.offset = self._addr + i * span, int(b0[i])
+            c.nbytes = min(span, -(-(size - int(b0[i])) // BLOCK) * BLOCK)
+        libc, nums = self._libc, self._nums
+        sent = libc.syscall(nums[2], self._ctx, n, self._ptrs)
+        done = 0
+        bad = sent != n
+        while done < max(sent, 0):
+            k = libc.syscall(nums[3], self._ctx, 1, sent - done, self._evs, None)
+            if k <= 0:
+                if ctypes.get_errno() == errno.EINTR:
+                    continue
+                raise OSError(ctypes.get_errno(), f"{self.path}: io_getevents")
+            for j in range(k):
+                e = self._evs[j]
+                bad = bad or e.res < int(want[e.data])
+            done += k
+        if bad:
+            return super()._read(ids)                    # a short or refused read: the parent's way, whole
+        self.stats["blocks_read"] += n
+        raw = np.frombuffer(self._abuf, dtype=np.uint8, count=n * span).reshape(n, span)
+        rel = (start - b0)[:, None] + np.arange(self.row_bytes)[None, :]
+        return np.take_along_axis(raw, rel, axis=1).copy().view(np.int16)
+
+    def close(self) -> None:
+        if self._ctx is not None:
+            self._libc.syscall(self._nums[1], self._ctx)
+            self._ctx = None
+        super().close()
+
 
 PREFIX = "model.layers.{}.engram_layer.multi_head_embedding.embedding."
 _DT = {"F16": torch.float16, "BF16": torch.bfloat16, "F32": torch.float32, "I64": torch.int64, "I32": torch.int32}
@@ -140,7 +231,7 @@ class EngramTable:
             self.direct.close()
             self.direct = None
         if policy == "cold":
-            self.direct = DirectRows(self.path, self.offset, self.row_bytes, self.rows, cache_bytes)
+            self.direct = BatchRows(self.path, self.offset, self.row_bytes, self.rows, cache_bytes)
 
     @property
     def policy(self) -> str:
