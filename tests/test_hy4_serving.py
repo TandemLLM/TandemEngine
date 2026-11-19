@@ -1,0 +1,218 @@
+"""Hy4-flash in the server's engine interface on a tiny random model, on the CPU: the loop's verbs, the
+cold verbs, and the cache tiers with this family's state (rings and last tokens as sections, latents and
+indexer keys as views): a snapshot, the resident prefix, the disk tier after a restart and the session
+spill each give back a state equal to a cold prefill, bit for bit."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import test_forward_tree as T  # noqa: E402,F401  (the CPU environment before the engine imports)
+import torch  # noqa: E402
+
+from engine import cache, disk_cache, spill  # noqa: E402
+from engine.models.hy4_flash.engine import Hy4FlashEngine  # noqa: E402
+from engine.models.hy4_flash.serving import Hy4FlashServing, manifest  # noqa: E402
+from tests.hy4_tiny import random_weights, tiny_config  # noqa: E402
+
+CH = 16
+BIG = 1 << 30
+_E = []
+
+
+def serving(max_len: int = 512) -> Hy4FlashServing:
+    if not _E:
+        cfg = tiny_config()
+        W, tables = random_weights(cfg)
+        _E.append(Hy4FlashEngine(cfg, W, tables, dtype=torch.bfloat16, max_len=max_len))
+    return Hy4FlashServing(_E[0], max_len)
+
+
+def tokens(n: int, seed: int) -> list[int]:
+    g = torch.Generator().manual_seed(seed)
+    return torch.randint(4, 60, (n,), generator=g).tolist()
+
+
+def _raises(fn, *needles):
+    try:
+        fn()
+    except ValueError as e:
+        for n in needles:
+            assert n in str(e), (n, str(e))
+        return
+    raise AssertionError(f"no ValueError (wanted {needles})")
+
+
+def _cold(ids):
+    eng = serving()
+    lg, _, _ = cache.prefill(eng, None, ids, "cpu", chunk=CH)
+    return eng, lg
+
+
+def _same(eng, ref, n, lg=None, ref_lg=None):
+    assert eng.kv.length == ref.kv.length == n
+    for (k, a), b in zip(eng.cache_state().sections().items(), ref.cache_state().sections().values()):
+        assert torch.equal(a, b), k
+    for (k, a, ax), (_, b, _) in zip(eng.cache_state().views(), ref.cache_state().views()):
+        assert torch.equal(a.narrow(ax, 0, n), b.narrow(ax, 0, n)), k
+    if lg is not None:
+        assert torch.equal(lg, ref_lg)
+
+
+def test_the_loop_verbs():
+    s, plain = serving(), serving()
+    ids = tokens(40, 1)
+    lg = s.forward(torch.tensor(ids[:20]), start=0)
+    plain.forward(torch.tensor(ids[:20]), start=0)
+    assert lg.shape == (1, 1, s.cfg.vocab_size) and s.kv.length == 20 and s.hidden_post_norm().shape == (1, 20, s.cfg.hidden_size)
+    want = [plain.forward(torch.tensor([t]), start=20 + i) for i, t in enumerate(ids[20:30])]
+    _raises(lambda: s.forward(torch.tensor([1]), start=3), "forward at 3", "holds 20 rows")
+    # a tree with a rejected branch, its moved path committed
+    lg = s.forward_tree(torch.tensor([ids[20], 9, ids[21], ids[22]]), [-1, 0, 0, 2], start=20)
+    assert lg.shape[0] == 4 and s.picks.tolist() == lg.argmax(-1).tolist() and s.kv.length == 20
+    assert torch.equal(lg[0], want[0][0, 0]) and torch.equal(lg[2], want[1][0, 0]) and torch.equal(lg[3], want[2][0, 0])
+    s.commit_tree([0, 2, 3])
+    assert s.kv.length == 23
+    # a chain block waits for its commit: the length counts it, the next forward lands it
+    lg = s.forward_block(torch.tensor(ids[23:27]), start=23)
+    assert s.kv.length == 27 and s.st.length == 23 and torch.equal(lg[3], want[6][0, 0])
+    assert not s.trim_pending(28) and s.trim_pending(25) and s.st.length == 25
+    lg = s.forward_block(torch.tensor(ids[25:29]), start=25)
+    s.rollback_to(2)
+    assert s.st.length == 27 and s.kv.length == 27
+    a = s.forward(torch.tensor([ids[27]]), start=27)
+    assert torch.equal(a, want[7])
+    assert s.stats == {"prefill_rows": 20, "decode_steps": 1, "verify_blocks": 3, "verify_rows": 12}
+    return "a prompt, a tree, a pending chain, a trim and a rollback leave the rows of the plain decode"
+
+
+def test_kv_length_and_restart():
+    s = serving(64)
+    s.forward(torch.tensor(tokens(10, 2)), start=0)
+    s.kv.length = 7
+    assert s.st.length == 7 and s.kv.max_len == 64
+    li = s.cfg.sparse_layers[0]
+    kept = s.st.lat[li][:7].clone()
+    s.kv.length = 0
+    assert s.st.length == 0 and all(float(t.abs().sum()) == 0 for t in s.st.win.values())
+    assert s.st.hist.tolist() == [s.cfg.engram_pad_id] * 2 and torch.equal(s.st.lat[li][:7], kept)
+    _raises(lambda: setattr(s.kv, "length", 65), "capacity 64")
+    return "zero restarts in place (rings and last tokens cleared, by-slot rows kept)"
+
+
+def test_cost_and_cache_state():
+    s = serving()
+    c = s.cfg
+    cost = s.cost()
+    R = c.kv_lora_rank + c.sparse_attn.rope
+    assert cost.view_bytes_per_token == len(c.sparse_layers) * (R + c.index_head_dim) * 2
+    assert cost.section_bytes == len(c.window_layers) * c.sliding_window * R * 2 + 2 * 8
+    secs = s.cache_state().sections()
+    assert list(secs) == [f"win.{li}" for li in c.window_layers] + ["engram.hist"]
+    assert all(secs[f"win.{li}"] is s.st.win[li] for li in c.window_layers)        # the live tensors
+    assert [(n, ax) for n, _, ax in s.cache_state().views()] == [(f"{k}.{li}", 0) for li in c.sparse_layers for k in ("lat", "ik")]
+    assert manifest().arch == "hy_v4_flash" and s.memory_parts()["weights"] > 0
+    return f"{cost.view_bytes_per_token} bytes a token in {len(c.sparse_layers)} sparse layers, {cost.section_bytes} bytes of rings"
+
+
+def test_a_snapshot_round_trips():
+    eng, ref = serving(), serving()
+    ids = tokens(70, 3)
+    cache.prefill(eng, None, ids, "cpu", chunk=CH)
+    snap = cache.capture(eng)
+    cache.prefill(ref, None, ids, "cpu", chunk=CH)
+    more = tokens(9, 4)
+    eng.forward(torch.tensor(more), start=70)
+    cache.restore(eng, snap)
+    _same(eng, ref, 70)
+    assert snap.nbytes == eng.cost().section_bytes + 70 * eng.cost().view_bytes_per_token
+    a, b = eng.forward(torch.tensor(more), start=70), ref.forward(torch.tensor(more), start=70)
+    assert torch.equal(a, b)
+    return f"{snap.nbytes} bytes at 70 tokens; the restored state continues as the cold one"
+
+
+def test_the_resident_prefix_resumes_exactly():
+    eng, res = serving(), cache.ResidentPrefix(BIG, CH, stash_bytes=BIG)
+    turn1 = tokens(100, 5)
+    cache.prefill(eng, None, turn1, "cpu", chunk=CH, resident=res)
+    assert sorted(res.anchors)[-1] == 96
+    turn2 = turn1 + tokens(30, 6)
+    lg, reused, _ = cache.prefill(eng, None, turn2, "cpu", chunk=CH, resident=res)
+    assert reused == 96, reused
+    ref, ref_lg = _cold(turn2)
+    _same(eng, ref, len(turn2), lg, ref_lg)
+    # a turn that departs inside the kept rows resumes at the anchor before the change
+    turn3 = turn1[:50] + tokens(40, 7)
+    lg, reused, _ = cache.prefill(eng, None, turn3, "cpu", chunk=CH, resident=res)
+    ref, ref_lg = _cold(turn3)
+    assert reused == 48, reused
+    _same(eng, ref, len(turn3), lg, ref_lg)
+    return "turn 2 resumed at 96 and a changed turn at 48, each equal to a cold run"
+
+
+def _tier(d):
+    from disk_tier_util import waiting
+    return waiting(disk_cache.DiskTier(d, chunk=CH, fingerprint="hy4", settings={"admit_after": 1, "budget_gb": 1},
+                                       free_bytes=lambda p: 10 ** 15, head_anchors=2, min_tokens=CH).open())
+
+
+def test_the_disk_tier_round_trips_after_a_restart():
+    ids = tokens(150, 8)
+    with tempfile.TemporaryDirectory() as d:
+        t = _tier(d)
+        cache.prefill(serving(), None, ids, "cpu", chunk=CH, disk=t)
+        assert t.flush()
+        t.close()
+        anc = os.listdir(os.path.join(d, "anchors"))
+        meta = t._read_header(os.path.join(d, "anchors", anc[0]), "anchor")
+        names = [s["name"] for s in meta["sections"]]
+        assert meta["format"] == 2 and names[0] == "win.2" and "engram.hist" in names
+        t2 = _tier(d)                                  # a restart
+        prompt = ids + tokens(20, 9)
+        eng, info = serving(), {}
+        lg, reused, _ = cache.prefill(eng, None, prompt, "cpu", chunk=CH, disk=t2, info=info)
+        assert (info.get("kind"), reused) == ("disk", 144), (info, reused)
+        ref, ref_lg = _cold(prompt)
+        _same(eng, ref, len(prompt), lg, ref_lg)
+        t2.close()
+    return "restored at 144 from the disk tier after a restart, equal to a cold run"
+
+
+def test_the_session_spill_round_trips():
+    d = tempfile.mkdtemp(prefix="hy4-spill-")
+    try:
+        t = _tier(d)
+        sp = spill.SessionSpill(os.path.join(d, "sessions"), chunk=CH, fingerprint="hy4", tier=t,
+                                settings={"budget_gb": 1.0, "min_tokens": 64, "drain_min_tokens": CH, "codec": "off"},
+                                free_bytes=lambda p: 10 ** 15, floor_bytes=0).open()
+        eng, res = serving(), cache.ResidentPrefix(BIG, CH, stash_bytes=BIG, end=True)
+        ids = tokens(130, 10)
+        cache.prefill(eng, None, ids, "cpu", chunk=CH, resident=res)
+        ref = serving()
+        cache.prefill(ref, None, ids, "cpu", chunk=CH)
+        anchors0 = {b: tuple(x.clone() for x in a) for b, a in res.anchors.items()}
+        info = sp.save_resident(res, eng, None, "evict")
+        assert info is not None, sp.stats
+        res.clear()
+        for _, v, _ in eng.cache_state().views():
+            v.zero_()
+        got = sp.restore(res, eng, None, sp.entries[info["eid"]])
+        assert got is not None, sp.stats
+        for (k, a, ax), (_, b, _) in zip(eng.cache_state().views(), ref.cache_state().views()):
+            assert torch.equal(a.narrow(ax, 0, 130), b.narrow(ax, 0, 130)), k
+        for b in sorted(anchors0)[-4:]:
+            assert all(torch.equal(x, y) for x, y in zip(res.anchors[b], anchors0[b]))
+        t.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return "rows and the newest anchors back in place, bit for bit"
+
+
+if __name__ == "__main__":
+    from scriptmode import run
+    run(globals())
