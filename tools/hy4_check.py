@@ -183,6 +183,14 @@ def quality(a, eng, cfg, say) -> None:
                 logits_mean_abs_kernel_vs_torch=round(sum(kt) / len(kt), 5), logits_mean_abs_forced_vs_torch=round(sum(ft) / len(ft), 5))
 
 
+def _misses(eng) -> int:
+    n = 0
+    for t in eng.tables.values():
+        r = t.report() if hasattr(t, "report") else {}
+        n += int(r.get("misses", 0) or 0)
+    return n
+
+
 def prose(a, eng, cfg, say) -> None:
     """One request as a user sees it: real text, a prose answer of --answer tokens, greedy. Tokens a second from
     token 50 on, plain and in drafted rounds (the same text), and the draft's kept tokens a round."""
@@ -204,6 +212,18 @@ def prose(a, eng, cfg, say) -> None:
     srv.cache_state().restore(snap)
     srv.kv.length = len(ids)
     toks, nxt, stamps = [], first, []
+    host = {"stage": 0.0, "commit": 0.0}
+    real_sc = (eng.stage, eng.commit)
+
+    def hosted(fn, key):                                # host time only (no device sync): what the step waits on the CPU
+        def f(*x, **k):
+            t = time.perf_counter()
+            r = fn(*x, **k)
+            host[key] += time.perf_counter() - t
+            return r
+        return f
+    eng.stage, eng.commit = hosted(real_sc[0], "stage"), hosted(real_sc[1], "commit")
+    miss0 = _misses(eng)
     for i in range(a.answer):
         if nxt in cfg.eos_token_ids:
             break
@@ -211,12 +231,18 @@ def prose(a, eng, cfg, say) -> None:
         lg = srv.forward(torch.tensor([nxt]), start=len(ids) + i)
         nxt = int(lg[0, 0].argmax())
         stamps.append(time.perf_counter())
+    eng.stage, eng.commit = real_sc
+    gaps = sorted(1e3 * (b - a_) for a_, b in zip(stamps, stamps[1:]))
+    host_ms = {k: round(1e3 * v / max(len(toks), 1), 3) for k, v in host.items()}
+    host_ms.update(table_misses_a_step=round((_misses(eng) - miss0) / max(len(toks), 1), 1),
+                   step_ms_median=round(gaps[len(gaps) // 2], 2) if gaps else None, step_ms_p90=round(gaps[int(len(gaps) * 0.9)], 2) if gaps else None,
+                   step_ms_max=round(gaps[-1], 1) if gaps else None)
     skip = min(50, max(len(toks) - 2, 0))
     plain = (len(toks) - skip - 1) / max(stamps[-1] - stamps[skip], 1e-9) if len(toks) > skip + 1 else 0.0
     answer = tok.decode(toks, skip_special_tokens=False)
     say("prose_plain", prompt_tokens=len(ids), prompt_s=round(t_prompt, 1), prompt_tok_s=round(len(ids) / t_prompt, 1), answer_tokens=len(toks),
         ended=nxt in cfg.eos_token_ids, tok_s_from_50=round(plain, 2), ms_step=round(1e3 / plain, 2) if plain else None,
-        graphs=srv.graphs is not None, answer_head=answer[:400], answer_tail=answer[-200:])
+        graphs=srv.graphs is not None, host_ms=host_ms, answer_head=answer[:400], answer_tail=answer[-200:])
     if a.step_parts and toks:
         # where a served step's time goes: the same steps again, each part closed by a device sync
         srv.cache_state().restore(snap)
@@ -390,6 +416,22 @@ def profile(a, eng, cfg, ids, say) -> None:
         split["other (element-wise, embedding)"] = round(total - sum(split.values()), 2)
         out[f"eager_ms_{M}"] = round(total, 2)
         out[f"parts_ms_{M}"] = split
+    if graphs is not None:
+        # the 6-row block again with its experts on the pair kernels (no grouping by expert): what grouping saves
+        was, g2 = eng.block_grouped, {}
+        eng.block_grouped = not was
+        toks, par = [int(t) for t in ids[:6]], list(range(-1, 5))
+        eng.rows(toks, par, st, graphs=g2)
+        best = 1e9
+        for _ in range(5):
+            sync(a.device)
+            t0 = time.perf_counter()
+            for _ in range(8):
+                next(iter(g2.values())).replay()
+            sync(a.device)
+            best = min(best, (time.perf_counter() - t0) / 8)
+        out["replay_ms_6_grouped_off" if was else "replay_ms_6_grouped_on"] = round(1e3 * best, 2)
+        eng.block_grouped = was
     if cfg.dfly is not None:
         eng.rows([int(ids[0])], [-1], st)
         eng.commit(st, [0])

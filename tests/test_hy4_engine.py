@@ -167,6 +167,30 @@ def test_the_row_product_reference():
     return "items of any batch equal their one-item call; shared, cycled and strided right operands"
 
 
+def test_bf16_engram_rows_follow_the_reference_norm():
+    # table rows are small (the released tables' rows have a mean square near 0.002): the reference's norms are
+    # nn.RMSNorm without an eps, which adds the fp32 epsilon on BF16 too; the BF16 epsilon would halve the rows
+    cfg, ref, eng = tiny(torch.bfloat16)
+    li = sorted(eng.hashes)[0]
+    g = torch.Generator().manual_seed(5)
+    M = 3
+    h = torch.randn(M, cfg.hc_mult, cfg.hidden_size, generator=g).to(torch.bfloat16)
+    rows = (torch.randn(M, cfg.engram_heads, cfg.engram_head_dim, generator=g) * 0.05).to(torch.bfloat16)
+    live = torch.ones(M, dtype=torch.bool)
+    want = ref.engram_apply(h, rows, li, live).float()
+    got = eng.engram_r(h, rows, li, live).float()
+    rel = ((got - want).norm() / want.norm()).item()
+    assert rel < 0.03, rel
+    # and a decode step after a prompt stays near the prompt pass's row (BF16 rounding only)
+    st = eng.new_state()
+    eng.prefill(PROMPT[:30], st, head=None)
+    step = eng.step(int(PROMPT[30]), st).float()
+    full = eng.prefill(PROMPT[:31], eng.new_state(), head="last").float()
+    d = ((step - full).abs().mean() / full.abs().mean()).item()
+    assert d < 0.05, d
+    return f"rows of rms 0.05: the row form against the reference's {rel:.4f}; a step against the prompt pass's row {d:.4f} of the mean logit size"
+
+
 def test_capacity_is_checked():
     cfg, ref, eng = tiny()
     st = eng.new_state(12)
