@@ -168,8 +168,8 @@ def test_the_row_product_reference():
 
 
 def test_bf16_engram_rows_follow_the_reference_norm():
-    # table rows are small (the released tables' rows have a mean square near 0.002): the reference's norms are
-    # nn.RMSNorm without an eps, which adds the fp32 epsilon on BF16 too; the BF16 epsilon would halve the rows
+    # the reference's Engram norms are nn.RMSNorm without an eps, which adds the fp32 epsilon on BF16 too; the
+    # BF16 epsilon (2^-7) would halve rows of this size (mean square 0.0025)
     cfg, ref, eng = tiny(torch.bfloat16)
     li = sorted(eng.hashes)[0]
     g = torch.Generator().manual_seed(5)

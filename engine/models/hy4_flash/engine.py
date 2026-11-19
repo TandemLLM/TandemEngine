@@ -310,7 +310,7 @@ class Hy4FlashEngine(Hy4FlashRef):
         cfg, p = self.cfg, f"layers.{li}.engram_layer."
         M, H, d, nh = h.shape[0], cfg.hidden_size, cfg.engram_head_dim, cfg.engram_heads
         # the reference's norms here are nn.RMSNorm without an eps: torch then adds the fp32 epsilon whatever the
-        # input's type (measured on BF16 rows; not the BF16 epsilon of 2^-7, which is above a table row's mean square)
+        # input's type (measured on BF16 input; not the BF16 epsilon of 2^-7, which moves a norm of small input)
         eps = ENGRAM_NORM_EPS
         hw = torch.stack([self.w(f"{p}lookup_per_head_norms.{k}.weight") for k in range(nh)]).to(self.dtype)
         emb = (self.rms_r(rows.reshape(M * nh, d), None, eps).view(M, nh, d) * hw).flatten(1)
