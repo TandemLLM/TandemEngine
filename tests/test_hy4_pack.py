@@ -116,7 +116,8 @@ def test_the_tiny_pack_audits_and_loads():
     assert sorted(tables) == sorted(c.engram_layers) and all(t.fp8_done and t.K == 5 for t in tables.values())
     kva = W["layers.0.self_attn.kv_a_proj_with_mqa.weight"]
     assert cuts[id(kva)] == c.kv_lora_rank + c.sparse_attn.rope and kva.N % 128 == 0
-    assert torch.is_tensor(W["layers.2.self_attn.kv_b_proj.weight"]) and W["layers.1.mlp.gate.weight"].dtype == torch.float32
+    assert torch.is_tensor(W["layers.2.self_attn.kv_b_proj.weight"]) and W["layers.1.mlp.gate.weight"].dtype in (torch.bfloat16, torch.float16)      # read as stored
+    assert W["layers.1.hc_mlp_layer.hc_pre.hc_fn"].dtype == torch.float32
     assert W["layers.1.mlp.experts.gate_proj"].weight(3, torch.float32).shape == (c.moe_intermediate_size, c.latent_size)
     # a missing tensor and a truncated shard stop the load by name
     from engine.models.hy4_flash.pack import Hy4Pack
@@ -128,6 +129,28 @@ def test_the_tiny_pack_audits_and_loads():
     except ValueError as e:
         assert "layers.3.input_layernorm.weight" in str(e)
     return f"{len(pack.tensors)} tensors; {'; '.join(timing['notes'])}; DFly layers: {pack.has_dfly}"
+
+
+def test_the_splits_leave_other_entries_alone():
+    import tempfile
+    from tools import fn_kernels as FK
+    from engine.models.hy4_flash import load as L
+    before = dict(FK.DENSE_SPLIT)
+    held = next(iter(before)) if before else (7, 7, 3)
+    FK.DENSE_SPLIT.setdefault(held, (1, 4))
+    was = FK.DENSE_SPLIT[held]
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "splits.json")
+        with open(f, "w") as o:
+            json.dump({"x".join(str(v) for v in held): {"S": 9, "warps": 9}, "11x13x5": {"S": 2, "warps": 8}}, o)
+        try:
+            assert L.apply_splits(f) == 1 and FK.DENSE_SPLIT[held] == was and FK.DENSE_SPLIT[(11, 13, 5)] == (2, 8)
+            assert L.apply_splits(f) == 1                     # its own entries apply again
+        finally:
+            L._APPLIED.discard((11, 13, 5))
+            FK.DENSE_SPLIT.clear()
+            FK.DENSE_SPLIT.update(before)
+    return "an entry another family holds keeps its split; a new shape takes the file's"
 
 
 def test_the_tables_hold_the_sources_rows():

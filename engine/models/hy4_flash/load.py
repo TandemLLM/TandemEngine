@@ -36,9 +36,13 @@ DENSE_SPLITS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 OTHER_SPLITS = ("fn-dense-splits.json", "lfm25-dense-splits.json", "flint-dense-splits.json")
 
 
+_APPLIED: set = set()
+
+
 def apply_splits(path: str = DENSE_SPLITS) -> int:
-    """The file's splits into tools/fn_kernels.DENSE_SPLIT, but for shapes no other family's table names; returns
-    the entries applied."""
+    """The file's splits into tools/fn_kernels.DENSE_SPLIT, but only for shapes no other family's table names and
+    no entry already there holds (another family's split is its summation order: it never moves); returns the
+    entries applied."""
     if not os.path.isfile(path):
         return 0
     from tools import fn_kernels as FK
@@ -51,8 +55,11 @@ def apply_splits(path: str = DENSE_SPLITS) -> int:
     for k, v in json.load(open(path)).items():
         if k.startswith("_") or k in taken:
             continue
-        N, Kin, kb = (int(x) for x in k.split("x"))
-        FK.DENSE_SPLIT[(N, Kin, kb)] = (int(v["S"]), int(v["warps"]))
+        key = tuple(int(x) for x in k.split("x"))
+        if key in FK.DENSE_SPLIT and key not in _APPLIED:
+            continue
+        FK.DENSE_SPLIT[key] = (int(v["S"]), int(v["warps"]))
+        _APPLIED.add(key)
         n += 1
     return n
 
