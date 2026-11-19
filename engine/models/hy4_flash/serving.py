@@ -28,6 +28,7 @@ from engine.models.state import SectionState
 
 MODULES = ("engine/models/hy4_flash/__init__.py", "engine/models/hy4_flash/config.py", "engine/models/hy4_flash/engine.py",
            "engine/models/hy4_flash/engram.py", "engine/models/hy4_flash/ref.py", "engine/models/hy4_flash/knobs.py",
+           "engine/models/hy4_flash/dfly.py",
            "engine/models/flashnext/ref.py", "engine/models/flashnext/ple.py", "engine/settings.py")
 #: the model's name in ops/prices/ and models/
 MODEL_ID = "hy4-flash"

@@ -65,6 +65,11 @@ class Hy4EngState:
         self.bgk = {li: z(BLOCK, D) for li in cfg.sparse_layers}
         self.btok: list[int] = []
         self.bparents: list[int] = []
+        # the rows the last committed row read in the layers a draft head follows: layer -> (positions, mask),
+        # good while `picks_at` is the length (a restore or a length set by hand leaves them stale)
+        self.bpick: dict = {}
+        self.picks: dict = {}
+        self.picks_at = -1
 
     def reset_inplace(self) -> None:
         """A fresh sequence in the same tensors (the by-slot rows stay: nothing reads past the length)."""
@@ -73,6 +78,7 @@ class Hy4EngState:
             t.zero_()
         self.hist.fill_(self.cfg.engram_pad_id)
         self.btok, self.bparents = [], []
+        self.bpick, self.picks, self.picks_at = {}, {}, -1
 
     def nbytes(self) -> int:
         return sum(t.numel() * t.element_size() for d in (self.lat, self.ik, self.win) for t in d.values())
@@ -116,6 +122,8 @@ class Hy4FlashEngine(Hy4FlashRef):
             self.wv[li] = w[:, a.nope:].transpose(1, 2).contiguous()
         self.sinks = {li: W[f"layers.{li}.self_attn.learnable_sink_param"].float().to(self.device).reshape(-1, 1)
                       for li in range(cfg.num_hidden_layers)}
+        #: the sparse layers whose last row's read list is kept for a draft head
+        self.pick_layers = set(cfg.dfly.index_layers) if cfg.dfly is not None else set()
         self.prompt_hidden = None
         self.stats = {"rows": 0, "blocks": 0, "prefill_rows": 0, "engram_rows": 0}
 
@@ -235,6 +243,8 @@ class Hy4FlashEngine(Hy4FlashRef):
                     c0, s0 = self.rope(self.pos3(torch.tensor([g0 + st.delta])), kind)
                     st.bgk[li][r] = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], c0, s0)), dim=-1)[0]
                 pq, valid = self._sparse_positions(li, st, r, pos, depth, paths[r], x[r], iq[r], hw[r], cos, sin)
+                if li in self.pick_layers:
+                    st.bpick[(li, r)] = (pq, valid)
                 K = self._gather(st.lat[li], st.blat[li], pq, L, paths[r])
             else:
                 src, valid = self._window_list(pos, L, paths[r])
@@ -378,7 +388,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         toks = st.hist.tolist() + [st.btok[r] for r in path]
         st.hist.copy_(torch.tensor(toks[-st.hist.shape[0]:], dtype=torch.int64))
         st.length = L + len(path)
-        st.btok, st.bparents = [], []
+        st.picks = {li: st.bpick[(li, path[-1])] for li in self.pick_layers if (li, path[-1]) in st.bpick}
+        st.picks_at = st.length if len(st.picks) == len(self.pick_layers) else -1
+        st.btok, st.bparents, st.bpick = [], [], {}
 
     @torch.no_grad()
     def step(self, token: int, st: Hy4EngState) -> torch.Tensor:
@@ -432,7 +444,8 @@ class Hy4FlashEngine(Hy4FlashRef):
             h = self.inject(h, y, post)
         st.hist.copy_(full[-n_ctx:])
         st.length = L0 + T
-        st.btok, st.bparents = [], []
+        st.picks_at = st.length if self.pick_layers else -1
+        st.btok, st.bparents, st.bpick = [], [], {}
         self.prompt_hidden = self.final(h)
         self.stats["prefill_rows"] += T
         return self.prompt_hidden
@@ -454,6 +467,9 @@ class Hy4FlashEngine(Hy4FlashRef):
             self._index_chunk(x, qres, li, st, slots)
             L = L0 + T
             if (L - 1) // rr < cfg.group_topk:                    # every row still reads everything before it
+                if li in self.pick_layers:
+                    pq = torch.arange(cfg.index_topk, device=self.device)
+                    st.picks[li] = (pq, pq <= L - 1)
                 for i in range(0, T, SUB):
                     sl = slots[i:i + SUB]
                     n = int(sl[-1]) + 1
@@ -467,6 +483,8 @@ class Hy4FlashEngine(Hy4FlashRef):
                     pq, valid = self._sparse_positions_chunk(li, st, sl, iq[i:i + SUB_LIST], hw[i:i + SUB_LIST],
                                                              cos[i:i + SUB_LIST], sin[i:i + SUB_LIST])
                     out[i:i + SUB_LIST] = self.attend_lists(q[i:i + SUB_LIST], st.lat[li][pq.clamp(max=L - 1)], valid, li)
+                if li in self.pick_layers:
+                    st.picks[li] = (pq[-1], valid[-1])
         else:
             # the ring's rows before the chunk in position order, then the chunk's own
             before = torch.arange(L0 - Wn + 1, L0, device=self.device)
@@ -482,19 +500,20 @@ class Hy4FlashEngine(Hy4FlashRef):
         y = (out * torch.sigmoid(gate).view(T, a.heads, a.v)).reshape(T, a.heads * a.v)
         return self.rms(self.lin(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
 
-    def attend_chunk(self, q: torch.Tensor, K: torch.Tensor, allowed: torch.Tensor, li: int) -> torch.Tensor:
-        """q [t, heads, qk] over shared latents K [n, R + rope] with `allowed` [t, n] -> [t, heads, v]."""
-        cfg, a = self.cfg, self.cfg.attn(li)
-        R = cfg.kv_lora_rank
-        qa = torch.einsum("thd,hdr->thr", q[..., :a.nope], self.wk[li]).float()
+    def attend_chunk(self, q: torch.Tensor, K: torch.Tensor, allowed: torch.Tensor, li: int, w: tuple | None = None) -> torch.Tensor:
+        """q [t, heads, qk] over shared latents K [n, R + rope] with `allowed` [t, n] -> [t, heads, v]. `w`: another
+        layer's absorbed halves, sinks and head shape (a draft layer reading this model's latents)."""
+        wk, wv, sinks, a = w if w is not None else (self.wk[li], self.wv[li], self.sinks[li], self.cfg.attn(li))
+        R = self.cfg.kv_lora_rank
+        qa = torch.einsum("thd,hdr->thr", q[..., :a.nope], wk).float()
         Kf = K.float()
         s = (qa @ Kf[:, :R].T + q[..., a.nope:].float() @ Kf[:, R:].T) * (a.qk ** -0.5)        # [t, heads, n]
         s = s.masked_fill(~allowed[:, None, :], float("-inf"))
-        s = torch.cat((s, self.sinks[li].expand(s.shape[0], -1, -1)), dim=-1)
+        s = torch.cat((s, sinks.expand(s.shape[0], -1, -1)), dim=-1)
         s = s - s.max(dim=-1, keepdim=True).values
         p = F.softmax(s, dim=-1)[..., :-1]
         mix = (p @ Kf[:, :R]).to(self.dtype)
-        return torch.einsum("thr,hrv->thv", mix, self.wv[li])
+        return torch.einsum("thr,hrv->thv", mix, wv)
 
     def attend_lists(self, q: torch.Tensor, K: torch.Tensor, valid: torch.Tensor, li: int) -> torch.Tensor:
         """q [t, heads, qk], each row over its own latents K [t, n, R + rope] with `valid` [t, n]."""
