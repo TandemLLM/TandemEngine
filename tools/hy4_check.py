@@ -176,13 +176,16 @@ def profile(a, eng, cfg, ids, say) -> None:
         toks, par = [int(t) for t in ids[:M]], list(range(-1, M - 1))
         if graphs is not None:
             eng.rows(toks, par, st, graphs=graphs)
-            sync(a.device)
-            t0 = time.perf_counter()
-            for _ in range(5):
-                eng.stage(toks, par, st)
-                graphs[(M, st.length // cfg.index_kpool >= cfg.group_topk)].replay()
-            sync(a.device)
-            out[f"replay_ms_{M}"] = round(1e3 * (time.perf_counter() - t0) / 5, 2)
+            best = 1e9
+            for _ in range(5):                                  # the best of 5 trials of 8 replays
+                sync(a.device)
+                t0 = time.perf_counter()
+                for _ in range(8):
+                    eng.stage(toks, par, st)
+                    graphs[(M, st.length // cfg.index_kpool >= cfg.group_topk)].replay()
+                sync(a.device)
+                best = min(best, (time.perf_counter() - t0) / 8)
+            out[f"replay_ms_{M}"] = round(1e3 * best, 2)
         eng.rows(toks, par, st)
         for name in parts:
             wrap(name)

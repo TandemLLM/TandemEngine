@@ -83,3 +83,251 @@ def mm_reference(a: torch.Tensor, b: torch.Tensor, bj: int | None = None) -> tor
     if a.shape[0] == 0:
         return torch.empty(0, a.shape[1], b.shape[2], dtype=torch.float32, device=a.device)
     return torch.stack([a[n].float() @ b[n % NB].float() for n in range(a.shape[0])])
+
+
+# ------------------------------------------------------------------------------------ fused row kernels
+# One launch for a chain of a row's operations. A program owns one row (or one output element of a row); a sum
+# runs over the program's whole block of threads in the order the block's shape gives (`tl.sum`), so it is parallel
+# and its bits depend on the shape alone, never on how many rows the launch holds. bf16 activations only (the
+# served dtype); the fp32 tests and the debugging knob take `mm`.
+
+def _pow2(n: int) -> int:
+    p = 16
+    while p < n:
+        p *= 2
+    return p
+
+
+if HAVE_TRITON:
+
+    @triton.jit
+    def _norm(X, W, OUT, K, s_x, s_o, eps, KB: tl.constexpr, HASW: tl.constexpr):
+        m = tl.program_id(0).to(tl.int64)
+        k = tl.arange(0, KB)
+        msk = k < K
+        x = tl.load(X + m * s_x + k, mask=msk, other=0.0).to(tl.float32)
+        n = (x * (1.0 / tl.sqrt(tl.sum(x * x, axis=0) / K + eps))).to(tl.bfloat16)
+        if HASW:
+            n = (tl.load(W + k, mask=msk, other=0.0).to(tl.float32) * n.to(tl.float32)).to(tl.bfloat16)
+        tl.store(OUT + m * s_o + k, n, mask=msk)
+
+    @triton.jit
+    def _gemv(X, W, OUT, K, N, s_x, s_w, KB: tl.constexpr, SIG: tl.constexpr, BF: tl.constexpr):
+        m = tl.program_id(0).to(tl.int64)
+        j = tl.program_id(1).to(tl.int64)
+        acc = tl.zeros([1], dtype=tl.float32)
+        for k0 in range(0, K, KB):
+            k = k0 + tl.arange(0, KB)
+            msk = k < K
+            x = tl.load(X + m * s_x + k, mask=msk, other=0.0).to(tl.float32)
+            w = tl.load(W + j * s_w + k, mask=msk, other=0.0).to(tl.float32)
+            acc += tl.sum(x * w, axis=0)
+        if SIG:
+            acc = tl.sigmoid(acc)
+        if BF:
+            tl.store(OUT + m * N + j + tl.arange(0, 1), acc.to(tl.bfloat16))
+        else:
+            tl.store(OUT + m * N + j + tl.arange(0, 1), acc)
+
+    @triton.jit
+    def _router_topk(SC, BIAS, IDS, WTS, E, scale, EB: tl.constexpr, KK: tl.constexpr, NORM: tl.constexpr):
+        m = tl.program_id(0).to(tl.int64)
+        e = tl.arange(0, EB)
+        msk = e < E
+        s = tl.load(SC + m * E + e, mask=msk, other=0.0)
+        c = tl.where(msk, s + tl.load(BIAS + e, mask=msk, other=0.0), float("-inf"))
+        tot = tl.zeros([1], dtype=tl.float32)
+        for i in tl.static_range(KK):
+            j = tl.argmax(c, axis=0)
+            w = tl.sum(tl.where(e == j, s, 0.0), axis=0)
+            tl.store(IDS + m * KK + i + tl.arange(0, 1), j.to(tl.int32) + tl.zeros([1], dtype=tl.int32))
+            tl.store(WTS + m * KK + i + tl.arange(0, 1), w + tl.zeros([1], dtype=tl.float32))
+            tot += w
+            c = tl.where(e == j, float("-inf"), c)
+        kk = tl.arange(0, KK)
+        wv = tl.load(WTS + m * KK + kk)
+        if NORM:
+            wv = wv / (tot + 1e-20)
+        tl.store(WTS + m * KK + kk, wv * scale)
+
+    @triton.jit
+    def _softmax_sink(S_, VALID, SINK, P, n, heads, NB: tl.constexpr):
+        m = tl.program_id(0).to(tl.int64)
+        h = tl.program_id(1).to(tl.int64)
+        j = tl.arange(0, NB)
+        msk = j < n
+        s = tl.load(S_ + (m * heads + h) * n + j, mask=msk, other=0.0)
+        v = tl.load(VALID + m * n + j, mask=msk, other=0)
+        s = tl.where(msk & (v != 0), s, float("-inf"))
+        sink = tl.load(SINK + h + tl.arange(0, 1))
+        mx = tl.maximum(tl.max(s, axis=0), sink)
+        e = tl.exp(s - mx)
+        z = tl.sum(e, axis=0) + tl.exp(sink - mx)
+        tl.store(P + (m * heads + h) * n + j, (e / z).to(tl.bfloat16), mask=msk)
+
+    @triton.jit
+    def _rot(X, COS, SIN, s_m, s_g, D0, P_, PB: tl.constexpr):
+        m = tl.program_id(0).to(tl.int64)
+        g = tl.program_id(1).to(tl.int64)
+        i = tl.arange(0, PB)
+        msk = i < P_
+        base = X + m * s_m + g * s_g + D0
+        a = tl.load(base + 2 * i, mask=msk, other=0.0).to(tl.float32)
+        b = tl.load(base + 2 * i + 1, mask=msk, other=0.0).to(tl.float32)
+        c = tl.load(COS + m * P_ + i, mask=msk, other=0.0).to(tl.float32)
+        s = tl.load(SIN + m * P_ + i, mask=msk, other=0.0).to(tl.float32)
+        tl.store(base + 2 * i, (a * c - b * s).to(tl.bfloat16), mask=msk)
+        tl.store(base + 2 * i + 1, (b * c + a * s).to(tl.bfloat16), mask=msk)
+
+    @triton.jit
+    def _inject(Hh, Y, POST, OUT, S: tl.constexpr, HD, KB: tl.constexpr):
+        m = tl.program_id(0).to(tl.int64)
+        s = tl.program_id(1).to(tl.int64)
+        k = tl.arange(0, KB)
+        msk = k < HD
+        h = tl.load(Hh + (m * S + s) * HD + k, mask=msk, other=0.0).to(tl.float32)
+        y = tl.load(Y + m * HD + k, mask=msk, other=0.0).to(tl.float32)
+        p = tl.load(POST + m * S + s + tl.arange(0, 1))
+        tl.store(OUT + (m * S + s) * HD + k, (p * y + h).to(tl.bfloat16), mask=msk)
+
+    @triton.jit
+    def _hc_sq(Hh, Y, POST, HOUT, MIX, HD, NMIX, S: tl.constexpr, NB: tl.constexpr, INJECT: tl.constexpr):
+        """The sum of squares of a row's streams (after the inject of the layer before, which it also stores)."""
+        m = tl.program_id(0).to(tl.int64)
+        o = tl.arange(0, NB)
+        msk = o < S * HD
+        f = tl.load(Hh + m * S * HD + o, mask=msk, other=0.0)
+        if INJECT:
+            y = tl.load(Y + m * HD + o % HD, mask=msk, other=0.0).to(tl.float32)
+            p = tl.load(POST + m * S + o // HD, mask=msk, other=0.0)
+            f = (p * y + f.to(tl.float32)).to(tl.bfloat16)
+            tl.store(HOUT + m * S * HD + o, f, mask=msk)
+        ff = f.to(tl.float32)
+        tl.store(MIX + m * (NMIX + 1) + NMIX + tl.arange(0, 1), tl.sum(ff * ff, axis=0) + tl.zeros([1], dtype=tl.float32))
+
+    @triton.jit
+    def _hc_mix(Hh, Y, POST, FN, MIX, HD, NMIX, S: tl.constexpr, NB: tl.constexpr, INJECT: tl.constexpr):
+        """One gate's mix of a row: the flattened streams times one row of the gate matrix."""
+        m = tl.program_id(0).to(tl.int64)
+        j = tl.program_id(1).to(tl.int64)
+        o = tl.arange(0, NB)
+        msk = o < S * HD
+        f = tl.load(Hh + m * S * HD + o, mask=msk, other=0.0)
+        if INJECT:
+            y = tl.load(Y + m * HD + o % HD, mask=msk, other=0.0).to(tl.float32)
+            p = tl.load(POST + m * S + o // HD, mask=msk, other=0.0)
+            f = (p * y + f.to(tl.float32)).to(tl.bfloat16)
+        w = tl.load(FN + j * S * HD + o, mask=msk, other=0.0)
+        tl.store(MIX + m * (NMIX + 1) + j + tl.arange(0, 1), tl.sum(f.to(tl.float32) * w, axis=0) + tl.zeros([1], dtype=tl.float32))
+
+    @triton.jit
+    def _hc_apply(Hh, MIX, BASE, SCALE, W, XN, POSTO, HD, NMIX, hc_eps, mag, eps, S: tl.constexpr, HB: tl.constexpr, HEAD: tl.constexpr):
+        """The gates from the mixes, the streams' weighted sum, its norm with the weight; the post gates out."""
+        m = tl.program_id(0).to(tl.int64)
+        js = tl.arange(0, S)
+        ms = tl.sum(tl.load(MIX + m * (NMIX + 1) + NMIX + tl.arange(0, 1)), axis=0) / (S * HD)
+        r = 1.0 / tl.sqrt(ms + eps)
+        s0 = tl.sum(tl.load(SCALE + tl.arange(0, 1)), axis=0)
+        pre = tl.sigmoid(tl.load(MIX + m * (NMIX + 1) + js) * r * s0 + tl.load(BASE + js)) + hc_eps
+        if not HEAD:
+            s1 = tl.sum(tl.load(SCALE + 1 + tl.arange(0, 1)), axis=0)
+            post = mag * tl.sigmoid(tl.load(MIX + m * (NMIX + 1) + S + js) * r * s1 + tl.load(BASE + S + js)) + hc_eps
+            tl.store(POSTO + m * S + js, post)
+        k = tl.arange(0, HB)
+        km = k < HD
+        h = tl.load(Hh + m * S * HD + js[:, None] * HD + k[None, :], mask=km[None, :], other=0.0).to(tl.float32)
+        xf = tl.sum(pre[:, None] * h, axis=0).to(tl.bfloat16).to(tl.float32)
+        n = (xf * (1.0 / tl.sqrt(tl.sum(xf * xf, axis=0) / HD + eps))).to(tl.bfloat16).to(tl.float32)
+        w = tl.load(W + k, mask=km, other=0.0).to(tl.float32)
+        tl.store(XN + m * HD + k, (w * n).to(tl.bfloat16), mask=km)
+
+
+if HAVE_TRITON:
+
+    @triton.jit
+    def _wsum_relu(SC, HW, OUT, G, NH: tl.constexpr, GB: tl.constexpr):
+        """out[m, g] = sum over heads of hw[m, h] * relu(sc[m, h, g]): the indexer's score of a group."""
+        m = tl.program_id(0).to(tl.int64)
+        g = tl.program_id(1) * GB + tl.arange(0, GB)
+        hs = tl.arange(0, NH)
+        msk = g < G
+        sc = tl.load(SC + (m * NH + hs[:, None]) * G + g[None, :], mask=msk[None, :], other=0.0)
+        hw = tl.load(HW + m * NH + hs).to(tl.float32)
+        tl.store(OUT + m * G + g, tl.sum(hw[:, None] * tl.maximum(sc, 0.0), axis=0), mask=msk)
+
+
+def wsum_relu(sc: torch.Tensor, hw: torch.Tensor) -> torch.Tensor:
+    """sc fp32 [B, heads, G], hw [B, heads] -> fp32 [B, G] (heads a power of two)."""
+    B, NH, G = sc.shape
+    out = torch.empty(B, G, dtype=torch.float32, device=sc.device)
+    _wsum_relu[(B, triton.cdiv(G, 256))](sc, hw, out, G, NH=NH, GB=256, num_warps=4)
+    return out
+
+
+def norm(x: torch.Tensor, w: torch.Tensor | None, eps: float, out: torch.Tensor | None = None) -> torch.Tensor:
+    """The RMS norm of rows x [B, K] bf16 with its weight (bf16 [K]) in one launch; `out` may be x itself."""
+    B, K = x.shape
+    if out is None:
+        out = torch.empty(B, K, dtype=torch.bfloat16, device=x.device)
+    _norm[(B,)](x, x if w is None else w, out, K, x.stride(0), out.stride(0), eps, KB=_pow2(K), HASW=w is not None, num_warps=8)
+    return out
+
+
+def gemv(x: torch.Tensor, w: torch.Tensor, sigmoid: bool = False, bf16: bool = False) -> torch.Tensor:
+    """x [B, K] bf16 @ w [N, K]^T (as stored: bf16, fp16 or fp32) -> [B, N] fp32 (or bf16): one program an element."""
+    B, K = x.shape
+    N = w.shape[0]
+    out = torch.empty(B, N, dtype=torch.bfloat16 if bf16 else torch.float32, device=x.device)
+    _gemv[(B, N)](x, w, out, K, N, x.stride(0), w.stride(0), KB=min(_pow2(K), 4096), SIG=sigmoid, BF=bf16, num_warps=8)
+    return out
+
+
+def router(x: torch.Tensor, w: torch.Tensor, bias: torch.Tensor, k: int, scale: float, renorm: bool) -> tuple:
+    """Rows x [B, H] -> their k routed experts (best first, ties to the lower id) int32 [B, k] and weights fp32."""
+    B, E = x.shape[0], w.shape[0]
+    sc = gemv(x, w, sigmoid=True)
+    ids = torch.empty(B, k, dtype=torch.int32, device=x.device)
+    wts = torch.empty(B, k, dtype=torch.float32, device=x.device)
+    _router_topk[(B,)](sc, bias, ids, wts, E, scale, EB=_pow2(E), KK=k, NORM=renorm, num_warps=4)
+    return ids, wts
+
+
+def softmax_sink(s: torch.Tensor, valid: torch.Tensor, sinks: torch.Tensor) -> torch.Tensor:
+    """s fp32 [B, heads, n] with valid [B, n] and one sink logit a head -> the keys' weights bf16 [B, heads, n]."""
+    B, heads, n = s.shape
+    p = torch.empty(B, heads, n, dtype=torch.bfloat16, device=s.device)
+    _softmax_sink[(B, heads)](s, valid, sinks, p, n, heads, NB=_pow2(n), num_warps=4)
+    return p
+
+
+def rot(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, d0: int) -> None:
+    """The rotary on x [B, G, D] bf16 in place, on the channels from d0 (pairs; cos, sin bf16 [B, pairs])."""
+    B, G, D = x.shape
+    P_ = cos.shape[1]
+    _rot[(B, G)](x, cos, sin, x.stride(0), x.stride(1), d0, P_, PB=_pow2(P_), num_warps=1)
+
+
+def inject(h: torch.Tensor, y: torch.Tensor, post: torch.Tensor) -> torch.Tensor:
+    B, S, H = h.shape
+    out = torch.empty_like(h)
+    _inject[(B, S)](h, y, post, out, HD=H, S=S, KB=_pow2(H), num_warps=4)
+    return out
+
+
+def hc(h: torch.Tensor, pend: tuple | None, fn: torch.Tensor, base: torch.Tensor, scale: torch.Tensor, w: torch.Tensor,
+       eps: float, hc_eps: float, mag: float, head: bool = False) -> tuple:
+    """A hyper-connection in three launches. h [B, S, H] bf16 (contiguous); `pend` = (y [B, H] bf16, post [B, S] fp32):
+    the block output of the layer before, injected first. -> the normed, weighted stream mix [B, H], the post gates
+    [B, S] (None for the head form), the streams after the inject."""
+    B, S, H = h.shape
+    NMIX = fn.shape[0]
+    mix = torch.empty(B, NMIX + 1, dtype=torch.float32, device=h.device)
+    y, post = pend if pend is not None else (h, mix)
+    hout = torch.empty_like(h) if pend is not None else h
+    NB = _pow2(S * H)
+    _hc_sq[(B,)](h, y, post, hout, mix, H, NMIX, S=S, NB=NB, INJECT=pend is not None, num_warps=8)
+    _hc_mix[(B, NMIX)](h, y, post, fn, mix, H, NMIX, S=S, NB=NB, INJECT=pend is not None, num_warps=8)
+    xn = torch.empty(B, H, dtype=torch.bfloat16, device=h.device)
+    posto = None if head else torch.empty(B, S, dtype=torch.float32, device=h.device)
+    _hc_apply[(B,)](hout, mix, base, scale, w, xn, mix if head else posto, H, NMIX, hc_eps, mag, eps, S=S, HB=_pow2(H), HEAD=head, num_warps=8)
+    return xn, posto, hout

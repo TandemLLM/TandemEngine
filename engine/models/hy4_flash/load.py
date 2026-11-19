@@ -22,7 +22,9 @@ from engine.models.hy4_flash.table import EngramTable, table_file
 
 #: tensors the reference keeps in fp32 whatever the model's dtype
 FP32 = ("hc_fn", "hc_base", "hc_scale", "hc_head_fn", "hc_head_base", "hc_head_scale", "learnable_sink_param",
-        "e_score_correction_bias", "key_value_projection.weight", "key_gate_projection.weight", "intra_group_ape", "mlp.gate.weight")
+        "e_score_correction_bias", "key_value_projection.weight", "key_gate_projection.weight", "intra_group_ape")
+#: read as stored (the row kernels widen them as they load: half the bytes of an fp32 copy)
+STORED = ("mlp.gate.weight",)
 
 
 class PackExperts:
@@ -64,7 +66,7 @@ def load(path: str, device="cuda", dtype=torch.bfloat16, log=print, table_policy
         W[base + ".weight"] = proj(base, N, out_fp32=base == "lm_head")
     for name, _ in plain_names(c, dfly=pack.has_dfly):
         t = pack.read(name)
-        if t.is_floating_point():
+        if t.is_floating_point() and not (name.endswith(STORED) and dtype == torch.bfloat16):
             t = t.to(torch.float32 if name.endswith(FP32) and not name.startswith("dfly_layers.") else dtype)
         W[name] = t.to(device).contiguous()
     timing["dense_s"] = round(time.time() - t1, 2)
