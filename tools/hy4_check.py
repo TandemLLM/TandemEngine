@@ -191,6 +191,57 @@ def _misses(eng) -> int:
     return n
 
 
+def dfly_accept(a, eng, cfg, say) -> None:
+    """Teacher-forced on reference rows: after the row of token p the head drafts from the row's true next token;
+    its first drafted token (position p + 2) against the pack's own greedy token there and against the unquantized
+    reference's (stored logits), and its chain against the text."""
+    from engine.models.hy4_flash.dfly import DFlyHead
+    from engine.models.hy4_flash.serving import Hy4FlashServing
+    rows_file, ref_dir, R, every = a.dfly_accept.split("=")
+    ids_all = torch.load(rows_file)["ids"]
+    srv = Hy4FlashServing(eng, a.max_len)
+    head = DFlyHead(srv)
+    n = pack1 = ref1 = both = text1 = pr = 0
+    textk = [0] * head.depth
+    conf = []
+    for r in range(int(R)):
+        ids = ids_all[r].tolist()
+        ref_top = torch.load(os.path.join(ref_dir, f"row{r:04d}.pt")).to(a.device).argmax(-1).tolist()
+        srv.kv.length = 0
+        P0 = 64
+        srv.forward(torch.tensor(ids[:P0]), start=0)
+        pend = None                                        # (first drafted token, chain, position it predicts)
+        for p in range(P0, len(ids) - head.depth - 2):
+            lg = srv.forward(torch.tensor([ids[p]]), start=p)          # row p committed; lg predicts position p + 1
+            pack_next = int(lg[0, 0].argmax())
+            if pend is not None:                           # the draft made after row p - 1 predicted position p + 1
+                d1, chain, prob = pend
+                n += 1
+                pack1 += d1 == pack_next
+                ref1 += d1 == ref_top[p]
+                both += pack_next == ref_top[p]
+                text1 += d1 == ids[p + 1]
+                pr += pack_next == ids[p + 1]
+                k = 0
+                while k < head.depth and chain[k] == ids[p + 1 + k]:
+                    k += 1
+                for j in range(k):
+                    textk[j] += 1
+                conf.append((prob, d1 == pack_next))
+                pend = None
+            if (p - P0) % int(every) == 0:
+                tk, pb = head.draft(ids[p + 1], srv.last_streams(), srv.st)   # anchor: the text's token at p + 1
+                pend = (tk[0][0], [t[0] for t in tk], pb[0][0])
+    hi = [c for c in conf if c[0] >= 0.9]
+    lo = [c for c in conf if c[0] < 0.5]
+    say("dfly_accept_teacher_forced", rows=int(R), drafts=n, first_equals_pack_greedy=round(pack1 / max(n, 1), 4),
+        first_equals_reference_greedy=round(ref1 / max(n, 1), 4), pack_greedy_equals_reference_greedy=round(both / max(n, 1), 4),
+        first_equals_text=round(text1 / max(n, 1), 4), pack_greedy_equals_text=round(pr / max(n, 1), 4),
+        chain_equals_text_through=[round(x / max(n, 1), 4) for x in textk],
+        first_when_draft_prob_ge_0_9=[len(hi), round(sum(c[1] for c in hi) / max(len(hi), 1), 4)],
+        first_when_draft_prob_lt_0_5=[len(lo), round(sum(c[1] for c in lo) / max(len(lo), 1), 4)])
+
+
 def prose(a, eng, cfg, say) -> None:
     """One request as a user sees it: real text, a prose answer of --answer tokens, greedy. Tokens a second from
     token 50 on, plain and in drafted rounds (the same text), and the draft's kept tokens a round."""
@@ -320,6 +371,49 @@ def prose(a, eng, cfg, say) -> None:
         n = dfly_source(eng.W, a.dfly_src, a.device)
         say("dfly_source", dir=a.dfly_src, tensors_replaced=n)
         drafted("prose_dfly_unquantized")
+    if a.dfly_dump:
+        # a few rounds' inputs and this head's outputs, for a run of another implementation on the same inputs
+        # (with --dfly-src the head's projections are the source checkpoint's by now)
+        os.makedirs(a.dfly_dump, exist_ok=True)
+        srv.cache_state().restore(snap)
+        srv.kv.length = len(ids)
+        head = DFlyHead(srv)
+        d, st, fn = cfg.dfly, srv.st, eng
+        marks = sorted({int(x) for x in a.dfly_dump_at.split(",")})
+        rounds = []
+        for i in range(min(len(toks) - 1, max(marks) + 1)):
+            srv.forward(torch.tensor([toks[i]]), start=len(ids) + i)        # row of toks[i] committed
+            if i not in marks:
+                continue
+            anchor = toks[i + 1]
+            th = srv.last_streams().clone()
+            hid = head.hidden(anchor, th, st).clone()                        # [depth + 1, H] after the final norm
+            prev, chain, corr, pe = [anchor], [], [], []
+            for j in range(head.depth):
+                e = fn.embed(torch.tensor(prev[-1:]))
+                c = head.correct(hid[j + 1:j + 2], e)
+                tk = int(fn.head(c)[0].argmax())
+                chain.append(tk)
+                corr.append(c[0].clone())
+                pe.append(e[0].clone())
+                prev.append(tk)
+            Lt = st.length
+            layers = []
+            for k in range(d.layers):
+                pi = st.pick_layers.index(d.index_layers[k])
+                pq = st.pick_q[pi].clone()
+                ok = (st.pick_ok[pi] & (pq < Lt)).clone()
+                lat = st.lat[d.kv_layers[k]]
+                layers.append({"pq": pq.cpu(), "ok": ok.cpu(), "ctx": lat[pq.clamp(0, lat.shape[0] - 1)].clone().cpu()})
+            e_in = fn.embed(torch.tensor([anchor, d.mask_token_id]))
+            rounds.append({"step": i, "length": int(Lt), "delta": int(st.delta), "anchor": int(anchor), "target_hidden": th.cpu(),
+                           "embed_anchor": e_in[0].cpu(), "embed_mask": e_in[1].cpu(), "layers": layers, "hidden": hid.cpu(),
+                           "chain": chain, "corrected": torch.stack(corr).cpu(), "prev_embeds": torch.stack(pe).cpu(),
+                           "truth": toks[i + 2:i + 2 + head.depth]})
+        torch.save({"rounds": rounds, "depth": head.depth, "index_layers": list(d.index_layers), "kv_layers": list(d.kv_layers),
+                    "mask_token_id": d.mask_token_id, "source_weights": bool(a.dfly_src)}, os.path.join(a.dfly_dump, "rounds.pt"))
+        say("dfly_dump", dir=a.dfly_dump, rounds=len(rounds), steps=[r["step"] for r in rounds], source_weights=bool(a.dfly_src),
+            kept=[next((j for j in range(head.depth) if r["chain"][j] != r["truth"][j]), head.depth) for r in rounds])
 
 
 def dfly_source(W: dict, src: str, device) -> int:
@@ -488,6 +582,9 @@ def main() -> int:
     ap.add_argument("--no-graphs", action="store_true")
     ap.add_argument("--caches", action="store_true")
     ap.add_argument("--step-parts", type=int, default=0, help="with --prose: this many served steps again, timed by part")
+    ap.add_argument("--dfly-dump", default="", help="with --prose --dfly: a few rounds' draft inputs and outputs into this folder")
+    ap.add_argument("--dfly-dump-at", default="0,40,80,120,160,200,240,280")
+    ap.add_argument("--dfly-accept", default="", help="rows.pt=refdir=R=EVERY: the first drafted token against the pack's and the reference's next token, teacher-forced")
     ap.add_argument("--quality", default="", help="name=rows.pt=refdir=N[,...]: the engine against stored reference logits")
     ap.add_argument("--quality-no-steps", action="store_true", help="score the prompt pass only (the step rows' figures still print)")
     ap.add_argument("--quality-steps", default="", help="R:L: the decode path on the first set's first R rows; torch sums and forced routing on L positions")
@@ -672,6 +769,8 @@ def main() -> int:
 
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
+    if a.dfly_accept and want("accept"):
+        dfly_accept(a, eng, cfg, say)
     if a.prose and want("prose"):
         prose(a, eng, cfg, say)
     if a.profile and want("profile"):
