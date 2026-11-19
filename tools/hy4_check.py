@@ -530,6 +530,10 @@ def main() -> int:
         for i in range(0, a.fit, 4096):
             srv.forward(long[i:i + 4096], start=i)
             low = min(low, mem().get("MemAvailable", 0.0))
+            if (i // 4096) % 8 == 7:
+                sync(a.device)
+                say("fit_progress", rows=i + 4096, seconds=round(time.perf_counter() - t0, 1), tok_s=round((i + 4096) / (time.perf_counter() - t0), 1),
+                    mem_available_gib=mem().get("MemAvailable"))
         sync(a.device)
         dt = time.perf_counter() - t0
         t1 = time.perf_counter()
