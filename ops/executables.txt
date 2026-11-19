@@ -3,6 +3,7 @@
 # list equal to git's. The scripts never need the bit themselves: they call each other through bash.
 install.sh
 ops/hold.sh
+ops/hy4-gate.sh
 ops/make-secrets.sh
 ops/roles.sh
 ops/start.sh
