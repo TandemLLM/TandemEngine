@@ -395,11 +395,10 @@ def main() -> int:
         eng.row_torch = False
         eng.expert_pairs = real_pairs
         # how often the two paths route a row to another expert: a near-tie at the 16th place flips on the last bit
-        same = [bool(torch.equal(x[r], y[r])) for x, y in zip(picks["kernel"], picks["torch"]) for r in range(x.shape[0])]
-        moved = sum(int((x != y).any(dim=-1).sum()) for x, y in zip(picks["kernel"], picks["torch"]))
-        first = next((i for i, ok in enumerate(same) if not ok), None)
-        say("rows_routing", row_layers=len(same), same_experts=sum(same), differing=moved,
-            first_differing_call=None if first is None else first // 4)
+        pk, pt = torch.cat(picks["kernel"]), torch.cat(picks["torch"])      # rows in (block, layer, row) order in both
+        diff = (pk != pt).any(dim=-1)
+        say("rows_routing", row_layers=int(diff.numel()), same_experts=int((~diff).sum()), differing=int(diff.sum()),
+            first_differing=int(diff.nonzero()[0]) if bool(diff.any()) else None, moe_layers=len(banks))
         d = (outs["kernel"] - outs["torch"]).abs()
         say("rows_tolerance", rows=int(d.shape[0]), max_abs=round(d.max().item(), 5), mean_abs=round(d.mean().item(), 6),
             logit_scale=round(outs["torch"].abs().mean().item(), 3),
