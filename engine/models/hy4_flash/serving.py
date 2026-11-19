@@ -347,6 +347,25 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
     return srv, info
 
 
+#: every context class `Hy4FlashServing.price_class` names
+PRICE_CLASSES = (0,) + tuple(4096 << k for k in range(7))
+
+
+def priced_cut(prices, siblings: bool, freeze: bool):
+    """The cut over `prices` and whether it is frozen (asked for, and there is a price file). A frozen cut learns
+    nothing, so the draft's own cost comes from the file too, for every class a round can be in (a class the file
+    does not name takes the nearest lower one's, as its other prices do)."""
+    from engine.methods.staircut import StairCut
+    cut = StairCut(prices, siblings=siblings)
+    freeze = bool(freeze and prices.table)
+    if freeze:
+        for c in PRICE_CLASSES:
+            d = prices.prior(1, "draft", c)
+            if d is not None:
+                cut.draft[c] = d
+    return cut, freeze
+
+
 def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print):
     """The DFly2 draft layers and the lookup (the request's own text, `corpus`, the server's suffix store) in one
     tree a round, cut by StairCut, through the shared tree drafter."""
@@ -360,13 +379,8 @@ def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print)
     prices = PriceModel.load(os.path.join(ROOT, "ops", "prices", MODEL_ID, f"{profile_of(path)}.{device_id()}.json"), log=log)
     head = DFlyHead(srv, graphs=srv.graphs is not None)
     srv.heads["dfly"] = head
-    cut = StairCut(prices, siblings=_S.get("HY4_DFLY_SIBLINGS") == "1")
-    freeze = _S.get("HY4_DRAFT_FREEZE") == "1" and bool(prices.table)
+    cut, freeze = priced_cut(prices, siblings=_S.get("HY4_DFLY_SIBLINGS") == "1", freeze=_S.get("HY4_DRAFT_FREEZE") == "1")
     if freeze:
-        for c in prices.table:                          # a frozen cut learns no draft cost: the file's
-            d = prices.prior(1, "draft", c)
-            if d is not None:
-                cut.draft[c] = d
         log("[server] Hy4-flash drafter state frozen (HY4_DRAFT_FREEZE): the cut keeps the price file's prices")
     return MTPTreeDrafter(srv, head, cut, ng, freeze=freeze)
 

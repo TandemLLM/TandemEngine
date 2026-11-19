@@ -219,7 +219,18 @@ def test_the_price_class_follows_the_context():
     got = [srv.price_class(n) for n in (0, k - 1, k, 4096, 4097, 60000, 262144, 10 ** 7)]
     want = [0, 0, 4096 if k <= 4096 else None, 4096, 8192, 65536, 262144, 262144]
     assert all(w is None or g == w for g, w in zip(got, want)), (got, want)
-    return f"dense below {k} rows: class 0; then the next 4,096 x 2^k, up to 262,144"
+    # the frozen cut over the pack's price file has a draft cost and a block price in every class a round can be in
+    from engine.methods.staircut import PriceModel
+    from engine.models.hy4_flash.serving import PRICE_CLASSES, priced_cut
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pm = PriceModel.load(os.path.join(root, "ops", "prices", "hy4-flash", "hy4-3.08.dgx-spark.json"), log=lambda s: None)
+    assert pm.table, "the 3.08 pack's price file is missing"
+    assert {srv.price_class(n) for n in (0, 3000, 5000, 20000, 40000, 100000, 200000, 262144)} <= set(PRICE_CLASSES)
+    cut, frozen = priced_cut(pm, siblings=False, freeze=True)
+    assert frozen and all(cut.draft.get(c, 0) > 0 and pm.prior(6, "chain", c) > pm.prior(1, "chain", c) > 0
+                          and cut.spec_ms(c) < cut.plain_ms(c) for c in PRICE_CLASSES), cut.draft
+    assert priced_cut(PriceModel(), siblings=False, freeze=True)[1] is False          # no file: the cut learns
+    return f"dense below {k} rows: class 0; then the next 4,096 x 2^k, up to 262,144; the frozen cut is priced in all {len(PRICE_CLASSES)}"
 
 
 def test_the_fingerprint_covers_the_kernels_the_family_compiles():
