@@ -89,10 +89,11 @@ class BatchRows(DirectRows):
         except (OSError, AttributeError):
             self._ctx = None
 
-    def _read(self, ids: np.ndarray) -> np.ndarray:
+    def _submit(self, ids: np.ndarray):
+        """The rows' block runs handed to the device (not waited for); None where this reader has no queue for them."""
         n = int(ids.size)
         if self._ctx is None or not 0 < n <= _AIO_DEPTH:
-            return super()._read(ids)
+            return None
         start = self.offset + ids * self.row_bytes
         b0 = start // BLOCK * BLOCK
         span = 2 * BLOCK
@@ -100,18 +101,22 @@ class BatchRows(DirectRows):
             self._abuf = mmap.mmap(-1, max(n, 64) * span)
             self._addr = ctypes.addressof(ctypes.c_char.from_buffer(self._abuf))
         size = os.fstat(self.fd).st_size
-        want = (start - b0) + self.row_bytes
         for i in range(n):
             c = self._cbs[i]
             c.data, c.opcode, c.fildes = i, 0, self.fd
             c.buf, c.offset = self._addr + i * span, int(b0[i])
             c.nbytes = min(span, -(-(size - int(b0[i])) // BLOCK) * BLOCK)
-        libc, nums = self._libc, self._nums
-        sent = libc.syscall(nums[2], self._ctx, n, self._ptrs)
+        sent = self._libc.syscall(self._nums[2], self._ctx, n, self._ptrs)
+        return ids, start, b0, sent
+
+    def _collect(self, job) -> np.ndarray:
+        ids, start, b0, sent = job
+        n, span = int(ids.size), 2 * BLOCK
+        want = (start - b0) + self.row_bytes
         done = 0
         bad = sent != n
         while done < max(sent, 0):
-            k = libc.syscall(nums[3], self._ctx, 1, sent - done, self._evs, None)
+            k = self._libc.syscall(self._nums[3], self._ctx, 1, sent - done, self._evs, None)
             if k <= 0:
                 if ctypes.get_errno() == errno.EINTR:
                     continue
@@ -127,11 +132,68 @@ class BatchRows(DirectRows):
         rel = (start - b0)[:, None] + np.arange(self.row_bytes)[None, :]
         return np.take_along_axis(raw, rel, axis=1).copy().view(np.int16)
 
+    def _read(self, ids: np.ndarray) -> np.ndarray:
+        job = self._submit(ids)
+        return super()._read(ids) if job is None else self._collect(job)
+
+    def begin(self, ids: np.ndarray):
+        """`rows_of` in two halves (the caller holds `_mu`): the cache looked up and the misses handed to the device."""
+        ids = np.asarray(ids, dtype=np.int64).reshape(-1)
+        uniq, inv = np.unique(ids, return_inverse=True)
+        sets = self._set_of(uniq)
+        hit = self.keys[sets] == uniq[:, None]
+        has = hit.any(1)
+        way = hit.argmax(1)
+        out = np.empty((uniq.size, self.words), dtype=np.int16)
+        h = np.nonzero(has)[0]
+        out[h] = self.vals[sets[h], way[h]]
+        self.ref[sets[h], way[h]] = True
+        m = np.nonzero(~has)[0]
+        self.stats["hits"] += int(h.size)
+        self.stats["misses"] += int(m.size)
+        return uniq, inv, sets, out, m, (self._submit(uniq[m]) if m.size else None)
+
+    def end(self, state) -> np.ndarray:
+        uniq, inv, sets, out, m, job = state
+        if m.size:
+            got = self._collect(job) if job is not None else DirectRows._read(self, uniq[m])
+            out[m] = got
+            self._insert(sets[m], uniq[m], got)
+        return out[inv]
+
     def close(self) -> None:
         if self._ctx is not None:
             self._libc.syscall(self._nums[1], self._ctx)
             self._ctx = None
         super().close()
+
+
+def rows_of_many(readers: list, ids: list) -> list:
+    """`rows_of` of several tables' readers at once: every table's misses are with the device before any is waited
+    for (a decode step reads four tables). The same rows as one call a reader."""
+    if not all(isinstance(r, BatchRows) for r in readers):
+        return [r.rows_of(i) for r, i in zip(readers, ids)]
+    held = []
+    try:
+        for r in readers:
+            r._mu.acquire()
+            held.append(r)
+        states = [r.begin(i) for r, i in zip(readers, ids)]
+        return [r.end(s) for r, s in zip(readers, states)]
+    finally:
+        for r in held:
+            r._mu.release()
+
+
+def gather_packed_many(tables: list, ids: list) -> list:
+    """`gather_packed` of several tables in one pass over the device (`rows_of_many`) where all are cold."""
+    if not all(t.direct is not None for t in tables):
+        return [t.gather_packed(i) for t, i in zip(tables, ids)]
+    flat = [i.reshape(-1).cpu().numpy().astype(np.int64) for i in ids]
+    for t, f in zip(tables, flat):
+        if f.size and (f.min() < 0 or f.max() >= t.rows):
+            raise IndexError("Engram row id out of range")
+    return [torch.from_numpy(r) for r in rows_of_many([t.direct for t in tables], flat)]
 
 
 PREFIX = "model.layers.{}.engram_layer.multi_head_embedding.embedding."

@@ -147,6 +147,14 @@ def test_the_batched_cold_reads_are_the_plain_ones():
         assert np.array_equal(b._read(ids), DirectRows._read(b, ids)), n
         assert np.array_equal(b._read(ids), np.asarray(t.map[ids])), n
     got = np.array_equal(b.rows_of(np.arange(40)), np.asarray(t.map[np.arange(40)]))
+    # several readers at once (a step's tables): the rows one call a reader gives, misses and hits mixed
+    from engine.models.hy4_flash.table import rows_of_many
+    b2 = BatchRows(t.path, t.offset, t.row_bytes, t.rows, 1 << 20)
+    ids2 = [g.integers(0, t.rows, 16).astype(np.int64), np.r_[np.arange(30, 50), t.rows - 1].astype(np.int64)]
+    many = rows_of_many([b, b2], ids2)
+    got = got and all(np.array_equal(r, np.asarray(t.map[i])) for r, i in zip(many, ids2))
+    got = got and all(np.array_equal(r, np.asarray(t.map[i])) for r, i in zip(rows_of_many([b, b2], ids2), ids2))
+    b2.close()
     how = "kernel AIO" if b._ctx is not None else f"no kernel AIO here (direct {b.direct}): the parent's reads"
     b.close()
     pack.close()

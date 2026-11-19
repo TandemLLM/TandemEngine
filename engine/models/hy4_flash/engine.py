@@ -34,8 +34,6 @@ it row by row. Against the reference forward the pass is within rounding, measur
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-
 import torch
 import torch.nn.functional as F
 
@@ -44,6 +42,7 @@ from engine.models.hy4_flash.config import SPARSE, Hy4FlashConfig
 from engine.models.hy4_flash import kernels as K_
 from engine.models.hy4_flash import native as NV
 from engine.models.hy4_flash.engram import fp8_round_trip
+from engine.models.hy4_flash.table import gather_packed_many
 from engine.models.hy4_flash.ref import Hy4FlashRef, rotate
 
 #: rows a block may hold: the anchor and 31 drafted rows (the row kernels' limit)
@@ -178,7 +177,6 @@ class Hy4FlashEngine(Hy4FlashRef):
         self._elayers = sorted(self.hashes)
         self._packed = bool(self._elayers) and all(hasattr(tables[li], "gather_packed") for li in self._elayers)
         self._ebias = {li: tables[li].bias.to(self.device) for li in self._elayers} if self._packed else {}
-        self._tpool = ThreadPoolExecutor(len(self._elayers)) if self._packed and len(self._elayers) > 1 else None
         self._ar: dict = {}
         self._ones: dict = {}
         #: a block's packed projections on `dense_rows` and its experts on the grouped kernels (the same bytes)
@@ -479,13 +477,8 @@ class Hy4FlashEngine(Hy4FlashRef):
         if self._elayers:
             grams = self._row_grams(st, st.btok, paths)
             if self._packed:
-                # the tables' rows read side by side: a cold table's misses are file reads, one table does not wait
-                # for another's
-                jobs = [(self.tables[li], self.hashes[li].ids(grams)) for li in self._elayers]
-                if self._tpool is not None:
-                    got = list(self._tpool.map(lambda j: j[0].gather_packed(j[1]), jobs))
-                else:
-                    got = [t.gather_packed(ids) for t, ids in jobs]
+                # every table's missed rows are with the device before any is waited for
+                got = gather_packed_many([self.tables[li] for li in self._elayers], [self.hashes[li].ids(grams) for li in self._elayers])
                 for k, rows in enumerate(got):
                     rb["epk_h"][k] = rows
                 rb["epk"].copy_(rb["epk_h"])
