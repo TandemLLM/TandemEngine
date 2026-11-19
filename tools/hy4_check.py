@@ -379,9 +379,27 @@ def main() -> int:
         n0 = min(len(ids), deep)
         outs = {}
         picks, real_pairs = {}, eng.expert_pairs
+        from engine.models.hy4_flash import engine as E_
+        import torch.nn.functional as F_
+        scores, real_router, real_route_r = {}, E_.K_.router, eng.route_r
+        gate_dtype = None
+
+        def scored(x, w, bias):
+            # the router's biased scores of these rows in one fixed torch order (fp32), whichever path asked
+            return (F_.linear(x.float(), w.float()).sigmoid() + bias.float()).cpu()
         for name, flag in (("kernel", False), ("torch", True)):
             eng.row_torch = flag
             seen = picks[name] = []
+            sc_seen = scores[name] = []
+
+            def spy_router(x, w, bias, k, scale, renorm, _s=sc_seen):
+                _s.append(scored(x, w, bias))
+                return real_router(x, w, bias, k, scale, renorm)
+
+            def spy_route_r(x, li, _s=sc_seen):
+                _s.append(scored(x, eng.w(f"layers.{li}.mlp.gate.weight"), eng.w(f"layers.{li}.mlp.gate.e_score_correction_bias")))
+                return real_route_r(x, li)
+            E_.K_.router, eng.route_r = spy_router, spy_route_r
 
             def spy(z, idx, li, grouped=False, _seen=seen):
                 _seen.append(idx.to(torch.int64).sort(dim=-1).values.clone())
@@ -390,15 +408,35 @@ def main() -> int:
             st = eng.new_state(n0 + 40)
             eng.prefill(torch.tensor(ids[:n0]), st, head=None)
             del seen[:]
+            del sc_seen[:]
             lgs = [eng.rows(ids[i:i + 4] if len(ids) >= i + 4 else [5, 6, 7, 8], [-1, 0, 1, 2], st)[0] for i in (0, 4, 8)]
             outs[name] = torch.cat(lgs)
         eng.row_torch = False
         eng.expert_pairs = real_pairs
+        E_.K_.router, eng.route_r = real_router, real_route_r
         # how often the two paths route a row to another expert: a near-tie at the 16th place flips on the last bit
         pk, pt = torch.cat(picks["kernel"]), torch.cat(picks["torch"])      # rows in (block, layer, row) order in both
         diff = (pk != pt).any(dim=-1)
         say("rows_routing", row_layers=int(diff.numel()), same_experts=int((~diff).sum()), differing=int(diff.sum()),
             first_differing=int(diff.nonzero()[0]) if bool(diff.any()) else None, moe_layers=len(banks))
+        if len(scores["kernel"]) == len(picks["kernel"]) == len(scores["torch"]) and bool(diff.any()):
+            # at each (row, layer): the gap between the 16th and 17th score against how far the two paths' scores
+            # of that row are apart (their inputs differ by the layers before). A gap below that distance flips.
+            sk, stc = torch.cat(scores["kernel"]), torch.cat(scores["torch"])
+            kk = cfg.num_experts_per_tok
+            top = sk.sort(dim=-1, descending=True).values
+            gap = top[:, kk - 1] - top[:, kk]
+            dist = (sk - stc).abs().amax(dim=-1)
+            own = torch.equal(sk.topk(kk, dim=-1).indices.sort(dim=-1).values, pk.cpu())
+            f = int(diff.nonzero()[0])
+            dc = diff.cpu()
+            say("rows_routing_margin", first=f, first_gap=float(gap[f]), first_score_distance=float(dist[f]),
+                first_before=int(dc[:f].sum()), kernel_picks_equal_torch_topk_on_its_own_input=own,
+                differing_with_gap_below_distance=int((gap[dc] <= dist[dc]).sum()),
+                same_with_gap_below_distance=int((gap[~dc] <= dist[~dc]).sum()),
+                median_gap=float(gap.median()), median_distance=float(dist.median()),
+                median_distance_before_first=float(dist[:f].median()) if f else None,
+                gate_weight_dtype=str(eng.w("layers.1.mlp.gate.weight").dtype))
         d = (outs["kernel"] - outs["torch"]).abs()
         say("rows_tolerance", rows=int(d.shape[0]), max_abs=round(d.max().item(), 5), mean_abs=round(d.mean().item(), 6),
             logit_scale=round(outs["torch"].abs().mean().item(), 3),
