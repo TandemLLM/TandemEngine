@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import time
 
 import torch
@@ -27,6 +29,34 @@ FP32 = ("hc_fn", "hc_base", "hc_scale", "hc_head_fn", "hc_head_base", "hc_head_s
 STORED = ("mlp.gate.weight",)
 
 
+#: Hy4-flash's own splits of tools/fn_kernels.dense for its shapes (a split is a summation order, keyed by the shape)
+DENSE_SPLITS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+                            "ops", "hy4-dense-splits.json")
+#: the other families' tables: a shape one of them holds keeps that family's split (their bits must not move)
+OTHER_SPLITS = ("fn-dense-splits.json", "lfm25-dense-splits.json", "flint-dense-splits.json")
+
+
+def apply_splits(path: str = DENSE_SPLITS) -> int:
+    """The file's splits into tools/fn_kernels.DENSE_SPLIT, but for shapes no other family's table names; returns
+    the entries applied."""
+    if not os.path.isfile(path):
+        return 0
+    from tools import fn_kernels as FK
+    taken = set()
+    for name in OTHER_SPLITS:
+        f = os.path.join(os.path.dirname(path), name)
+        if os.path.isfile(f):
+            taken |= {k for k in json.load(open(f)) if not k.startswith("_")}
+    n = 0
+    for k, v in json.load(open(path)).items():
+        if k.startswith("_") or k in taken:
+            continue
+        N, Kin, kb = (int(x) for x in k.split("x"))
+        FK.DENSE_SPLIT[(N, Kin, kb)] = (int(v["S"]), int(v["warps"]))
+        n += 1
+    return n
+
+
 class PackExperts:
     """One projection of a layer's routed experts in a pack: `weight(e, dtype)` dequantises expert e."""
 
@@ -40,7 +70,7 @@ class PackExperts:
 
 
 def load(path: str, device="cuda", dtype=torch.bfloat16, log=print, table_policy: str = "cold",
-         table_cache_bytes: int = 2 << 30, experts: bool = True):
+         table_cache_bytes: int = 2 << 30, experts: bool = True, splits: bool = True):
     """(pack, W, cuts, tables, banks, timing) of the pack at `path`."""
     t0 = time.time()
     pack = Hy4Pack.open(path)
@@ -50,6 +80,8 @@ def load(path: str, device="cuda", dtype=torch.bfloat16, log=print, table_policy
     timing = {"index_s": round(time.time() - t0, 2), "notes": notes}
     W, cuts, banks = {}, {}, {}
     on_gpu = str(device).startswith("cuda")
+    if on_gpu and splits:
+        timing["dense_splits"] = apply_splits()
     t1 = time.time()
 
     def proj(base: str, N, out_fp32: bool = False):

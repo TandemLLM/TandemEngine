@@ -38,8 +38,12 @@ MODEL_ID = "hy4-flash"
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
+#: the tables the arithmetic reads (a dense split is a summation order)
+TABLES = ("ops/hy4-dense-splits.json",)
+
+
 def manifest() -> Manifest:
-    return Manifest(arch="hy_v4_flash", modules=MODULES, data=())
+    return Manifest(arch="hy_v4_flash", modules=MODULES, data=TABLES)
 
 
 class _KV:

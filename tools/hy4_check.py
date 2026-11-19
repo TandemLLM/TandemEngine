@@ -98,42 +98,76 @@ def prose(a, eng, cfg, say) -> None:
         graphs=srv.graphs is not None, answer_head=answer[:400], answer_tail=answer[-200:])
     if cfg.dfly is None or not a.dfly:
         return
-    srv.cache_state().restore(snap)
-    srv.kv.length = len(ids)
-    lg = srv.forward(torch.tensor([first]), start=len(ids))       # the picks are gone with the restore: one plain step
-    out, nxt = [first], int(lg[0, 0].argmax())
-    head = DFlyHead(srv, graphs=srv.graphs is not None)
-    head.launch(srv.last_streams(), [nxt])                        # one round first, undone: it captures its graphs
-    tk, _ = head.read()
-    if tk:
-        srv.forward_tree(torch.tensor([nxt] + [t[0] for t in tk]), list(range(-1, len(tk))), start=srv.kv.length)
-        srv.discard_pending()
-        srv.st.picks_at = srv.st.length
-    rounds = kept = 0
-    draft_s, hist, marks = 0.0, [0] * (cfg.dfly.draft_tokens + 1), []
-    while len(out) < len(toks):
-        td = time.perf_counter()
-        head.launch(srv.last_streams(), [nxt])
+
+    def drafted(tag: str) -> None:
+        srv.cache_state().restore(snap)
+        srv.kv.length = len(ids)
+        lg = srv.forward(torch.tensor([first]), start=len(ids))       # the picks are gone with the restore: one plain step
+        out, nxt = [first], int(lg[0, 0].argmax())
+        head = DFlyHead(srv, graphs=srv.graphs is not None)
+        head.launch(srv.last_streams(), [nxt])                        # one round first, undone: it captures its graphs
         tk, _ = head.read()
-        draft_s += time.perf_counter() - td
-        block = [nxt] + [t[0] for t in tk]
-        srv.forward_tree(torch.tensor(block), list(range(-1, len(block) - 1)), start=srv.kv.length)
-        picks = srv.picks.tolist()
-        n = 1
-        while n < len(block) and block[n] == picks[n - 1]:
-            n += 1
-        srv.commit_tree(list(range(n)))
-        out += block[:n]
-        nxt, kept, rounds = picks[n - 1], kept + n - 1, rounds + 1
-        hist[n - 1] += 1
-        marks.append((len(out), time.perf_counter()))
-    after = [(n, t) for n, t in marks if n >= 50]
-    rate = (after[-1][0] - after[0][0]) / max(after[-1][1] - after[0][1], 1e-9) if len(after) > 1 else 0.0
-    say("prose_dfly", equal=out[:len(toks)] == toks, rounds=rounds, tokens=len(out), tok_s_from_50=round(rate, 2),
-        tokens_per_round=round(len(out) / max(rounds, 1), 3), kept_per_round=round(kept / max(rounds, 1), 3),
-        accept_rate=round(kept / max(rounds * cfg.dfly.draft_tokens, 1), 3), kept_histogram=hist,
-        ms_round=round(1e3 * (marks[-1][1] - marks[0][1]) / max(len(marks) - 1, 1), 2), draft_ms_round=round(1e3 * draft_s / max(rounds, 1), 2),
-        draft_tokens=cfg.dfly.draft_tokens, graphs=srv.graphs is not None)
+        if tk:
+            srv.forward_tree(torch.tensor([nxt] + [t[0] for t in tk]), list(range(-1, len(tk))), start=srv.kv.length)
+            srv.discard_pending()
+            srv.st.picks_at = srv.st.length
+        rounds = kept = 0
+        draft_s, hist, marks = 0.0, [0] * (cfg.dfly.draft_tokens + 1), []
+        while len(out) < len(toks):
+            td = time.perf_counter()
+            head.launch(srv.last_streams(), [nxt])
+            tk, _ = head.read()
+            draft_s += time.perf_counter() - td
+            block = [nxt] + [t[0] for t in tk]
+            srv.forward_tree(torch.tensor(block), list(range(-1, len(block) - 1)), start=srv.kv.length)
+            picks = srv.picks.tolist()
+            n = 1
+            while n < len(block) and block[n] == picks[n - 1]:
+                n += 1
+            srv.commit_tree(list(range(n)))
+            out += block[:n]
+            nxt, kept, rounds = picks[n - 1], kept + n - 1, rounds + 1
+            hist[n - 1] += 1
+            marks.append((len(out), time.perf_counter()))
+        after = [(n, t) for n, t in marks if n >= 50]
+        rate = (after[-1][0] - after[0][0]) / max(after[-1][1] - after[0][1], 1e-9) if len(after) > 1 else 0.0
+        say(tag, equal=out[:len(toks)] == toks, rounds=rounds, tokens=len(out), tok_s_from_50=round(rate, 2),
+            tokens_per_round=round(len(out) / max(rounds, 1), 3), kept_per_round=round(kept / max(rounds, 1), 3),
+            accept_rate=round(kept / max(rounds * cfg.dfly.draft_tokens, 1), 3), kept_histogram=hist,
+            ms_round=round(1e3 * (marks[-1][1] - marks[0][1]) / max(len(marks) - 1, 1), 2), draft_ms_round=round(1e3 * draft_s / max(rounds, 1), 2),
+            draft_tokens=cfg.dfly.draft_tokens, graphs=srv.graphs is not None)
+    drafted("prose_dfly")
+    if a.dfly_src:
+        n = dfly_source(eng.W, a.dfly_src, a.device)
+        say("dfly_source", dir=a.dfly_src, tensors_replaced=n)
+        drafted("prose_dfly_unquantized")
+
+
+def dfly_source(W: dict, src: str, device) -> int:
+    """The draft layers' projections from the source checkpoint's own BF16 tensors in place of the pack's (an A/B of
+    the drafter's precision; the target's weights are untouched, so the text cannot change)."""
+    import struct
+    import numpy as np
+    wm = json.load(open(os.path.join(src, "model.safetensors.index.json")))["weight_map"]
+    n, heads = 0, {}
+    for key, fn in wm.items():
+        if not key.startswith("model.dfly_layers.") or not key.endswith(".weight"):
+            continue
+        name = key[len("model."):]
+        if name not in W or (torch.is_tensor(W[name]) and W[name].dim() < 2):
+            continue
+        fp = os.path.join(src, fn)
+        if fp not in heads:
+            with open(fp, "rb") as f:
+                hl = struct.unpack("<Q", f.read(8))[0]
+                heads[fp] = (8 + hl, json.loads(f.read(hl)))
+        start, hdr = heads[fp]
+        t = hdr[key]
+        b0, b1 = t["data_offsets"]
+        arr = np.fromfile(fp, dtype=np.uint8, count=b1 - b0, offset=start + b0)
+        W[name] = torch.from_numpy(arr).view(torch.bfloat16).reshape(t["shape"]).to(device)
+        n += 1
+    return n
 
 
 def profile(a, eng, cfg, ids, say) -> None:
@@ -243,6 +277,8 @@ def main() -> int:
     ap.add_argument("--table", default="cold")
     ap.add_argument("--no-graphs", action="store_true")
     ap.add_argument("--caches", action="store_true")
+    ap.add_argument("--dfly-src", help="the source checkpoint's directory: the prose run again with its unquantized draft layers")
+    ap.add_argument("--no-splits", action="store_true", help="the device's rule for every dense split (not the family's table)")
     ap.add_argument("--grouped", action="store_true", help="the prompt's experts on the grouped kernels")
     ap.add_argument("--prose", help="a text file: a chat request to answer it in prose, decode rates from token 50 on")
     ap.add_argument("--answer", type=int, default=600)
@@ -265,7 +301,8 @@ def main() -> int:
     if a.need_gib and mem().get("MemAvailable", 0.0) < a.need_gib:
         say("refused", why=f"MemAvailable {mem().get('MemAvailable')} GiB is below the {a.need_gib} GiB this run needs")
         return 3
-    pack, W, cuts, tables, banks, timing = load(a.pack, a.device, log=lambda s: print(s, flush=True), table_policy=a.table)
+    pack, W, cuts, tables, banks, timing = load(a.pack, a.device, log=lambda s: print(s, flush=True), table_policy=a.table,
+                                                splits=not a.no_splits)
     cfg = pack.cfg
     if cfg.dfly is None and a.dfly_layers and pack.has_dfly is False and "dfly_layers.final_norm.weight" in pack.tensors:
         layers = [int(x) for x in a.dfly_layers.split(",")]
@@ -341,13 +378,28 @@ def main() -> int:
         # rows: how far the kernel's summation order moves a logit (a tolerance, not an equality)
         n0 = min(len(ids), deep)
         outs = {}
+        picks, real_pairs = {}, eng.expert_pairs
         for name, flag in (("kernel", False), ("torch", True)):
             eng.row_torch = flag
+            seen = picks[name] = []
+
+            def spy(z, idx, li, grouped=False, _seen=seen):
+                _seen.append(idx.to(torch.int64).sort(dim=-1).values.clone())
+                return real_pairs(z, idx, li, grouped=grouped)
+            eng.expert_pairs = spy
             st = eng.new_state(n0 + 40)
             eng.prefill(torch.tensor(ids[:n0]), st, head=None)
+            del seen[:]
             lgs = [eng.rows(ids[i:i + 4] if len(ids) >= i + 4 else [5, 6, 7, 8], [-1, 0, 1, 2], st)[0] for i in (0, 4, 8)]
             outs[name] = torch.cat(lgs)
         eng.row_torch = False
+        eng.expert_pairs = real_pairs
+        # how often the two paths route a row to another expert: a near-tie at the 16th place flips on the last bit
+        same = [bool(torch.equal(x[r], y[r])) for x, y in zip(picks["kernel"], picks["torch"]) for r in range(x.shape[0])]
+        moved = sum(int((x != y).any(dim=-1).sum()) for x, y in zip(picks["kernel"], picks["torch"]))
+        first = next((i for i, ok in enumerate(same) if not ok), None)
+        say("rows_routing", row_layers=len(same), same_experts=sum(same), differing=moved,
+            first_differing_call=None if first is None else first // 4)
         d = (outs["kernel"] - outs["torch"]).abs()
         say("rows_tolerance", rows=int(d.shape[0]), max_abs=round(d.max().item(), 5), mean_abs=round(d.mean().item(), 6),
             logit_scale=round(outs["torch"].abs().mean().item(), 3),

@@ -1,0 +1,31 @@
+{
+ "_about": "Hy4-flash's dense EXL3 splits for tools/fn_kernels.dense, one entry a (N, Kin, bits) its pack multiplies by where a measured split beat the device's rule by more than 3 %: a sweep of (S, warps) over each shape's projections of the 3.08 pack on one DGX Spark, 2026-11-19 (one row, CUDA graph, ms for the whole group of that shape in a decode step). Applied by engine/models/hy4_flash/load.py to shapes no other family's table holds.",
+ "3072x16384x5": {
+  "S": 2,
+  "warps": 8,
+  "ms_group": 4.124,
+  "ms_default": 4.761,
+  "default": "S4 w4"
+ },
+ "8192x3072x5": {
+  "S": 1,
+  "warps": 8,
+  "ms_group": 0.809,
+  "ms_default": 0.884,
+  "default": "S2 w4"
+ },
+ "3072x8192x5": {
+  "S": 2,
+  "warps": 8,
+  "ms_group": 0.865,
+  "ms_default": 0.987,
+  "default": "S4 w4"
+ },
+ "1536x3072x5": {
+  "S": 2,
+  "warps": 8,
+  "ms_group": 0.722,
+  "ms_default": 1.208,
+  "default": "S8 w4"
+ }
+}
