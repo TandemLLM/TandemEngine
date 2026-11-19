@@ -361,6 +361,12 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QWEN38_HEAD_GEMM` | `none` | `tools/head_gemv.py` |
 | `QWEN38_HOST_ASYNC` | `0` | `engine/model.py` |
 | `QWEN38_HOST_WALK` | `0` | `1` · `engine/drafters/dflash2.py` |
+| `QWEN38_HY4_DFLY` | `1` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_GRAPHS` | `1` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_PREFILL_GROUPED` | `0` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_ROW_TORCH` | `0` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_TABLE` | `cold` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_TABLE_CACHE_GB` | `2` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_JOINT_ATTN_GROUP` | `1` | `engine/models/qwen3_5/attn_group.py` |
 | `QWEN38_JOINT_CHAINS` | `1` | `engine/models/qwen3_5/adapter.py` |
 | `QWEN38_JOINT_GDN` | `1` | `engine/model.py` |
@@ -695,7 +701,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_USAGE_DEFAULT` | `server/app.py` |
 | `QSE_USAGE_LEDGER` | `install.sh, ops/engines.sh, ops/serve.env` and 4 more |
 | `QSE_VISION_ASKED` | `ops/serve.env, ops/start.sh, server/remote/overlay.py` |
-| `QSE_WEIGHTS` | `engine/models/flashnext/corrector.py, engine/models/flashnext/coupled.py, engine/models/flashnext/serving.py` and 20 more |
+| `QSE_WEIGHTS` | `engine/models/flashnext/corrector.py, engine/models/flashnext/coupled.py, engine/models/flashnext/serving.py` and 21 more |
 | `QSE_WEIGHTS_ALSO` | `ops/profiles/_flashnext.env, ops/use-profile.sh` |
 | `QSE_WEIGHTS_DIR` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env` and 12 more |
 | `QSE_WEIGHTS_FILES` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env` and 9 more |
