@@ -195,7 +195,7 @@ GOLDEN_FP4 = {
     "qwen3_5_moe": "c7672b436c95859cd36d82fd716c67c1e1df14ca9af3c7aa5906b8b182629279",
     "flint": "ade2cb91ef2dd650be81670a0ecb4b5fc3b91359d3e3f0707a10f4a3bea702b1",
     # Hy4-flash: a new family (its first golden)
-    "hy_v4_flash": "dd8efebe7ddc0c8c61a1b86062a47a4f12bf6c3c86f8bca467ef3b288fa77648",
+    "hy_v4_flash": "11112426fe0b4b35bfe6dd9fdb4c5695e56109608b4863b4546424597c219825",
 }
 #: adapters the refactor may move once (the coordinator's OK, 2026-10-22): Flint's knobs leave the shared
 #: table and its kernels take the generic launch option

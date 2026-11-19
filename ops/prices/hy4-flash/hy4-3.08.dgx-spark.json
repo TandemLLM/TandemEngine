@@ -1,0 +1,64 @@
+{
+ "0": {
+  "chain": {
+   "1": 38.82,
+   "2": 48.01,
+   "3": 54.14,
+   "4": 57.88,
+   "5": 62.53,
+   "6": 66.55,
+   "7": 72.51,
+   "8": 77.79
+  },
+  "plain": {
+   "1": 39.52
+  }
+ },
+ "4096": {
+  "chain": {
+   "1": 40.21,
+   "2": 50.33,
+   "3": 57.79,
+   "4": 66.5,
+   "5": 73.19,
+   "6": 79.4,
+   "7": 83.18,
+   "8": 90.4
+  },
+  "plain": {
+   "1": 40.91
+  }
+ },
+ "16384": {
+  "chain": {
+   "1": 40.4,
+   "2": 48.62,
+   "3": 55.78,
+   "4": 63.07,
+   "5": 68.68,
+   "6": 75.57,
+   "7": 83.54,
+   "8": 92.03
+  },
+  "plain": {
+   "1": 41.1
+  }
+ },
+ "65536": {
+  "chain": {
+   "1": 40.91,
+   "2": 49.58,
+   "3": 56.98,
+   "4": 64.21,
+   "5": 69.49,
+   "6": 78.39,
+   "7": 85.38,
+   "8": 92.46
+  },
+  "plain": {
+   "1": 41.61
+  }
+ },
+ "step_ms": 7.0,
+ "measured": "2026-11-19, Hy4-flash EXL3 3.08 on the DGX Spark (tools/hy4_check.py --prices-at 1500,3600,15000,60000, one run beside another GPU job at nice 19). Context classes: Hy4FlashServing.price_class (0 below 2,048 rows, then the next 4,096 x 2^k). chain: a verify block of 1 to 8 rows (a chain of the text's next tokens) staged and replayed from its graph, the median of 7, plus 0.3 ms for the commit (0.17 measured). plain: the 1-row block plus 1.0 ms (the commit and a step's cold table rows, 0.7 ms measured on prose). 8,192, 32,768 and the classes past 65,536 are not measured and take the nearest lower class. No spec or prime prior: the cut learns them online."
+}

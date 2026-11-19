@@ -213,6 +213,15 @@ def test_the_session_spill_round_trips():
     return "rows and the newest anchors back in place, bit for bit"
 
 
+def test_the_price_class_follows_the_context():
+    srv = serving()
+    k = srv.cfg.index_topk
+    got = [srv.price_class(n) for n in (0, k - 1, k, 4096, 4097, 60000, 262144, 10 ** 7)]
+    want = [0, 0, 4096 if k <= 4096 else None, 4096, 8192, 65536, 262144, 262144]
+    assert all(w is None or g == w for g, w in zip(got, want)), (got, want)
+    return f"dense below {k} rows: class 0; then the next 4,096 x 2^k, up to 262,144"
+
+
 def test_the_fingerprint_covers_the_kernels_the_family_compiles():
     # the packed value half is built on tools/fn_kernels' source (compiled in): a change there, in the EXL3
     # helpers it reads or in the family's own kernel moves this family's fingerprint

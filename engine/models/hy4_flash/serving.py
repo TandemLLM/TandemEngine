@@ -359,7 +359,7 @@ def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print)
     prices = PriceModel.load(os.path.join(ROOT, "ops", "prices", MODEL_ID, f"{profile_of(path)}.{device_id()}.json"), log=log)
     head = DFlyHead(srv, graphs=srv.graphs is not None)
     srv.heads["dfly"] = head
-    return MTPTreeDrafter(srv, head, StairCut(prices, siblings=False), ng)
+    return MTPTreeDrafter(srv, head, StairCut(prices, siblings=_S.get("HY4_DFLY_SIBLINGS") == "1"), ng)
 
 
 def serve(a, ctx) -> dict:
