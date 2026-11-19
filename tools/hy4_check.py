@@ -62,6 +62,107 @@ def chat_ids(pack_dir: str, text: str, ask: str, effort: str = "no_think") -> tu
     return tok.encode(prompt, add_special_tokens=False).ids, tok
 
 
+def _kl(ref: torch.Tensor, got: torch.Tensor) -> dict:
+    """KL(reference || engine) a position, top-1 agreement and the reference's top-1 inside the engine's top 5."""
+    lr, lg = torch.log_softmax(ref.float(), -1), torch.log_softmax(got.float(), -1)
+    kl = (lr.exp() * (lr - lg)).sum(-1)
+    top = ref.argmax(-1)
+    return {"kl": kl.cpu(), "top1": (got.argmax(-1) == top).cpu(), "top5": (got.topk(5, -1).indices == top[:, None]).any(-1).cpu()}
+
+
+def _kl_say(say, tag: str, parts: list, **more) -> None:
+    kl = torch.cat([p["kl"] for p in parts]).double()
+    q = lambda f: round(float(kl.quantile(f)), 5)
+    say(tag, positions=int(kl.numel()), kl_mean=round(float(kl.mean()), 5), kl_median=q(0.5), kl_p90=q(0.9), kl_p99=q(0.99),
+        kl_max=round(float(kl.max()), 4), top1=round(float(torch.cat([p["top1"] for p in parts]).float().mean()), 5),
+        ref_top1_in_top5=round(float(torch.cat([p["top5"] for p in parts]).float().mean()), 5), **more)
+
+
+def quality(a, eng, cfg, say) -> None:
+    """The engine against stored reference logits of the unquantized checkpoint (`--quality name=rows.pt=refdir=N`):
+    the prompt pass on N rows; then (`--quality-steps R:L`) the decode path on the first R rows, one step a
+    position on the kernels through the graphs over the whole row, and over the first L positions the same steps on
+    plain torch sums and on the kernels with each row's experts forced to the torch pass's."""
+    from engine.models.hy4_flash import engine as E_
+    dev = a.device
+    R, L = (int(x) for x in a.quality_steps.split(":")) if a.quality_steps else (0, 0)
+    for spec in a.quality.split(","):
+        name, rows_file, ref_dir, n = spec.split("=")
+        ids_all = torch.load(rows_file)["ids"]
+        n = min(int(n), len(ids_all))
+        ref_of = lambda r: torch.load(os.path.join(ref_dir, f"row{r:04d}.pt")).to(dev)
+        parts, t0 = [], time.perf_counter()
+        for r in range(n):
+            ids = ids_all[r].tolist()
+            st = eng.new_state(len(ids) + 8)
+            got = eng.prefill(torch.tensor(ids), st, head="all")
+            parts.append(_kl(ref_of(r), got))
+            del got, st
+        _kl_say(say, "quality_prompt_pass", parts, set=name, rows=n, row_len=len(ids_all[0]), seconds=round(time.perf_counter() - t0, 1))
+        if not (R and name == a.quality.split(",")[0].split("=")[0]):
+            continue
+        P0 = 32                                                      # the rows before the first step come from the prompt pass
+        real_router, real_route_r = E_.K_.router, eng.route_r
+        k_parts, t_parts, f_parts, kt, ft, flips, pairs = [], [], [], [], [], 0, 0
+        for r in range(min(R, n)):
+            ids = ids_all[r].tolist()
+            ref = ref_of(r)
+
+            def run(upto, graphs):
+                st = eng.new_state(len(ids) + 8)
+                out = [eng.prefill(torch.tensor(ids[:P0]), st, head="all")]
+                for i in range(P0, upto):
+                    out.append(eng.step(ids[i], st, graphs=graphs).clone())
+                return torch.cat(out)
+            t0 = time.perf_counter()
+            full = run(len(ids), {})
+            say("quality_progress", set=name, row=r, kernel_graph_s=round(time.perf_counter() - t0, 1))
+            k_parts.append(_kl(ref, full))
+            if not L:
+                continue
+            # the same steps on plain torch sums, its experts recorded a (step, layer)
+            seen = []
+
+            def spy_route_r(x, li, _s=seen):
+                idx, wts = real_route_r(x, li)
+                _s.append(idx.clone())
+                return idx, wts
+            eng.row_torch, eng.route_r = True, spy_route_r
+            tor = run(L, None)
+            eng.row_torch, eng.route_r = False, real_route_r
+            # the kernels again (no graphs), each row's experts the torch pass's; weights from the kernel's own scores
+            pos = [0]
+
+            def forced(x, w, bias, k, scale, renorm, _s=seen, _p=pos):
+                own, _ = real_router(x, w, bias, k, scale, renorm)
+                idx = _s[_p[0]].to(torch.int64)
+                _p[0] += 1
+                nonlocal flips, pairs
+                flips += int((own.to(torch.int64).sort(-1).values != idx.sort(-1).values).any())
+                pairs += 1
+                wts = E_.K_.gemv(x, w, sigmoid=True).gather(1, idx)
+                if renorm:
+                    wts = wts / (wts.sum(-1, keepdim=True) + 1e-20)
+                return idx.to(torch.int32), (wts * scale).float()
+            E_.K_.router = forced
+            frc = run(L, None)
+            E_.K_.router = real_router
+            assert pos[0] == len(seen), (pos[0], len(seen))
+            t_parts.append(_kl(ref[:L], tor))
+            f_parts.append(_kl(ref[:L], frc))
+            kt.append((full[P0:L] - tor[P0:L]).abs().mean().item())
+            ft.append((frc[P0:L] - tor[P0:L]).abs().mean().item())
+            say("quality_progress", set=name, row=r, all_s=round(time.perf_counter() - t0, 1))
+        _kl_say(say, "quality_steps_kernel_graphs", k_parts, set=name, rows=len(k_parts), from_position=P0)
+        if L and t_parts:
+            cut = lambda ps: [{k: v[:L] for k, v in p.items()} for p in ps]
+            _kl_say(say, "quality_steps_kernel_first", cut(k_parts), set=name, rows=len(k_parts), first=L)
+            _kl_say(say, "quality_steps_torch_first", t_parts, set=name, rows=len(t_parts), first=L)
+            _kl_say(say, "quality_steps_kernel_forced_routing_first", f_parts, set=name, rows=len(f_parts), first=L)
+            say("quality_routing", row_layers=pairs, forced_run_pairs_where_the_kernels_own_pick_differed=flips,
+                logits_mean_abs_kernel_vs_torch=round(sum(kt) / len(kt), 5), logits_mean_abs_forced_vs_torch=round(sum(ft) / len(ft), 5))
+
+
 def prose(a, eng, cfg, say) -> None:
     """One request as a user sees it: real text, a prose answer of --answer tokens, greedy. Tokens a second from
     token 50 on, plain and in drafted rounds (the same text), and the draft's kept tokens a round."""
@@ -277,6 +378,8 @@ def main() -> int:
     ap.add_argument("--table", default="cold")
     ap.add_argument("--no-graphs", action="store_true")
     ap.add_argument("--caches", action="store_true")
+    ap.add_argument("--quality", default="", help="name=rows.pt=refdir=N[,...]: the engine against stored reference logits")
+    ap.add_argument("--quality-steps", default="", help="R:L: the decode path on the first set's first R rows; torch sums and forced routing on L positions")
     ap.add_argument("--dfly-src", help="the source checkpoint's directory: the prose run again with its unquantized draft layers")
     ap.add_argument("--no-splits", action="store_true", help="the device's rule for every dense split (not the family's table)")
     ap.add_argument("--grouped", action="store_true", help="the prompt's experts on the grouped kernels")
@@ -456,6 +559,8 @@ def main() -> int:
             agree_prompt=round((got[:cut].argmax(-1) == want[:cut].argmax(-1)).float().mean().item(), 4),
             agree_steps=round((got[cut:].argmax(-1) == want[cut:].argmax(-1)).float().mean().item(), 4))
 
+    if a.quality and want("quality"):
+        quality(a, eng, cfg, say)
     if a.prose and want("prose"):
         prose(a, eng, cfg, say)
     if a.profile and want("profile"):
