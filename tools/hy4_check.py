@@ -61,6 +61,7 @@ def main() -> int:
     ap.add_argument("--table", default="cold")
     ap.add_argument("--no-graphs", action="store_true")
     ap.add_argument("--caches", action="store_true")
+    ap.add_argument("--need-gib", type=float, default=0.0, help="refuse to load below this MemAvailable")
     ap.add_argument("--cache-chunk", type=int, default=512)
     ap.add_argument("--skip-tolerance", action="store_true")
     a = ap.parse_args()
@@ -74,6 +75,9 @@ def main() -> int:
         print(json.dumps({"check": kind, **kw}), flush=True)
 
     say("start", pack=a.pack, device=a.device, max_len=a.max_len, utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), mem=mem())
+    if a.need_gib and mem().get("MemAvailable", 0.0) < a.need_gib:
+        say("refused", why=f"MemAvailable {mem().get('MemAvailable')} GiB is below the {a.need_gib} GiB this run needs")
+        return 3
     pack, W, cuts, tables, banks, timing = load(a.pack, a.device, log=lambda s: print(s, flush=True), table_policy=a.table)
     cfg = pack.cfg
     if cfg.dfly is None and a.dfly_layers and pack.has_dfly is False and "dfly_layers.final_norm.weight" in pack.tensors:
