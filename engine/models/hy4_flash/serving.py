@@ -128,6 +128,18 @@ class Hy4FlashServing:
         self.graphs: dict | None = {} if (_S.get("HY4_GRAPHS") == "1" and eng.device.type == "cuda") else None
         self.stats = {"prefill_rows": 0, "decode_steps": 0, "verify_blocks": 0, "verify_rows": 0}
 
+    def price_class(self, n: int) -> int:
+        """The draft prices' context class of a round at context length `n` (engine/methods/staircut.py): 0 while
+        the sparse layers read every row (below `index_topk` rows), else the next 4,096 x 2^k at or above n, up to
+        262,144. Past `index_topk` rows a row reads a fixed number of latents and scores every closed group, so a
+        block's price grows slowly with the context."""
+        if n < self.cfg.index_topk:
+            return 0
+        c = 4096
+        while c < n and c < 262144:
+            c *= 2
+        return c
+
     # --- cold verbs ------------------------------------------------------------------------------
     def hidden_post_norm(self) -> torch.Tensor:
         return self._hidden

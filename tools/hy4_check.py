@@ -191,6 +191,62 @@ def _misses(eng) -> int:
     return n
 
 
+def prices(a, eng, cfg, ids, say) -> None:
+    """The verify price of a block by rows at a few context lengths, for the cut (ops/prices/hy4-flash/): at each
+    context the served block of 1..N rows (a chain of the text's next tokens) through its graph, staged and replayed,
+    the median of 7 after its capture; and a plain step with its commit."""
+    from engine.models.hy4_flash.serving import Hy4FlashServing
+    srv = Hy4FlashServing(eng, a.max_len)
+    ctxs = sorted(int(x) for x in a.prices_at.split(","))
+    N = a.prices_rows
+    text = list(ids)
+    while len(text) < ctxs[-1] + N + 8:
+        text += ids
+    doc, at = {}, 0
+    for C in ctxs:
+        srv.forward(torch.tensor(text[at:C]), start=at)
+        at = C
+        cls = srv.price_class(C)
+        chain = {}
+        for M in range(1, N + 1):
+            blk = torch.tensor(text[C:C + M])
+            ts = []
+            for i in range(9):
+                sync(a.device)
+                t0 = time.perf_counter()
+                srv.forward_tree(blk, list(range(-1, M - 1)), start=C)
+                sync(a.device)
+                ts.append(1e3 * (time.perf_counter() - t0))
+                srv.discard_pending()
+            chain[M] = sorted(ts[2:])[3]
+        # a plain step and its commit: the next token for real (the context grows by one row)
+        sync(a.device)
+        t0 = time.perf_counter()
+        srv.forward(torch.tensor(text[C:C + 1]), start=C)
+        sync(a.device)
+        step = 1e3 * (time.perf_counter() - t0)
+        at = C + 1
+        commit = max(step - chain[1], 0.0)
+        mono, last = {}, 0.0
+        for M in range(1, N + 1):
+            last = max(last, chain[M] + commit)
+            mono[str(M)] = round(last, 2)
+        doc[str(cls)] = {"chain": mono, "plain": {"1": round(step, 2)}}
+        say("prices", context=C, price_class=cls, chain_ms={k: round(v, 2) for k, v in chain.items()}, plain_step_ms=round(step, 2),
+            commit_ms=round(commit, 2))
+    step_ms = None
+    c0 = doc[str(srv.price_class(ctxs[0]))]["chain"]
+    if N > 1:
+        step_ms = round((c0[str(N)] - c0["1"]) / (N - 1), 2)
+    doc["step_ms"] = step_ms
+    doc["measured"] = a.prices_note
+    if a.prices_out:
+        with open(a.prices_out, "w") as f:
+            json.dump(doc, f, indent=1)
+            f.write("\n")
+    say("prices_file", path=a.prices_out, classes=[k for k in doc if k.isdigit()], step_ms=step_ms)
+
+
 def dfly_accept(a, eng, cfg, say) -> None:
     """Teacher-forced on reference rows: after the row of token p the head drafts from the row's true next token;
     its first drafted token (position p + 2) against the pack's own greedy token there and against the unquantized
@@ -596,6 +652,10 @@ def main() -> int:
     ap.add_argument("--no-graphs", action="store_true")
     ap.add_argument("--caches", action="store_true")
     ap.add_argument("--step-parts", type=int, default=0, help="with --prose: this many served steps again, timed by part")
+    ap.add_argument("--prices-at", default="", help="context lengths (rows) to price a verify block at, e.g. 1500,3600,15000,60000")
+    ap.add_argument("--prices-rows", type=int, default=8)
+    ap.add_argument("--prices-out", default="", help="the price file to write")
+    ap.add_argument("--prices-note", default="", help="the file's `measured` line")
     ap.add_argument("--dfly-cut", default="", help="with --prose --dfly: drafted runs that verify the chain only while its path probability stays at each of these values")
     ap.add_argument("--dfly-dump", default="", help="with --prose --dfly: a few rounds' draft inputs and outputs into this folder")
     ap.add_argument("--dfly-dump-at", default="0,40,80,120,160,200,240,280")
@@ -784,6 +844,8 @@ def main() -> int:
 
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
+    if a.prices_at and want("prices"):
+        prices(a, eng, cfg, ids, say)
     if a.dfly_accept and want("accept"):
         dfly_accept(a, eng, cfg, say)
     if a.prose and want("prose"):
