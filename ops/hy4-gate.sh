@@ -53,7 +53,8 @@ live_tree() {
 LIVE="${HY4_LIVE:-$(live_tree)}"
 PY="${HY4_PY:-${LIVE:+$LIVE/../venv/bin/python}}"
 # HY4_CHECK_ARGS: the tool's arguments after --pack, for a shorter or a split window (default: every check)
-CHECK="$PY tools/hy4_check.py --pack $DIR ${HY4_CHECK_ARGS:---max-len 8192 --prompt 4096 --steps 128 --dfly --table cold --caches --fit $FIT}"
+# the hold kit does not end a command that outlives its budget: the tool is stopped two minutes before it
+CHECK="timeout -k 60 $(( MIN * 60 - 120 )) $PY tools/hy4_check.py --pack $DIR ${HY4_CHECK_ARGS:---max-len 8192 --prompt 4096 --steps 128 --dfly --table cold --caches --fit $FIT}"
 # HY4_GATE_BUSY: a pgrep -f pattern of other jobs that need the GPU; the window waits while one runs
 BUSY_PAT="${HY4_GATE_BUSY:-}"
 HOLD="flock $LOCK bash $LIVE/ops/hold.sh $MIN -- env -C $TREE PYTHONDONTWRITEBYTECODE=1 $CHECK"
