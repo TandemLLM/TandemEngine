@@ -78,8 +78,13 @@ def _states_equal(a, b) -> bool:
 def test_verify_rows_are_the_decode_steps():
     for dtype in (torch.float32, torch.bfloat16):
         cfg, ref, eng = tiny(dtype)
-        res = eng.self_check(PROMPT[:13].tolist(), steps=24, widths=(2, 3, 4, 8, 24), log=lambda s: None)
+        res = eng.self_check(PROMPT[:eng.check_rows()].tolist(), steps=24, widths=(2, 3, 4, 8, 24), log=lambda s: None)
         assert res["ok"], res
+        # the replay reached the selected groups, wrapped rings, and groups closed inside a block
+        cov = res["covers"]
+        assert cov["selection"] and cov["rings_wrapped"] and cov["groups_closed_in_blocks"] > 20, cov
+        short = eng.self_check(PROMPT[:6].tolist(), steps=4, widths=(2,), log=lambda s: None)
+        assert short["ok"] and not short["covers"]["selection"], short
     return f"{res['rows']} rows (chains of 2, 3, 4, 8 and 24, trees of 5) equal the decode steps bit for bit, fp32 and bf16"
 
 

@@ -298,11 +298,15 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
     mark("engine")
     res = None
     if check:
+        # long enough to reach the group selection and wrapped rings (a short prompt leaves both unchecked),
+        # as far as the window allows; blocks of 2, 4 and 6 rows close groups inside them
+        n = min(eng.check_rows(), max_len - 64)
         if tok is not None:
-            prompt = tok("Count from one to twenty in words, then name the days of the week.", add_special_tokens=False)["input_ids"]
+            text = tok("Count from one to twenty in words, then name the days of the week. ", add_special_tokens=False)["input_ids"]
         else:
-            prompt = [(7 * i + 3) % pack.cfg.vocab_size for i in range(24)]
-        res = eng.self_check([int(t) for t in prompt], log=log)
+            text = [(7 * i + 3) % pack.cfg.vocab_size for i in range(24)]
+        prompt = [int(text[i % len(text)]) for i in range(max(n, 8))]
+        res = eng.self_check(prompt, widths=(2, 4, 6), log=log)
         srv.restart()
     info = {"pack": path, "load": timing, "device": device, "self_check": res, "quant": pack.quant, "dfly": pack.has_dfly,
             "formats": timing.get("notes"), "tables": [t.report() for t in tables.values()]}

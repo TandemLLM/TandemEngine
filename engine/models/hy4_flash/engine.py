@@ -623,48 +623,75 @@ class Hy4FlashEngine(Hy4FlashRef):
         return acc.to(self.dtype)
 
     # ------------------------------------------------------------------------- the load-time check
+    def check_rows(self) -> int:
+        """Prompt rows a self-check needs to reach every read path: past the sparse layers' `index_topk` (their
+        rows then read selected groups) and with the window layers' rings wrapped, ending inside a group."""
+        c = self.cfg
+        return c.index_topk + c.sliding_window + c.index_kpool + 1
+
+    def copy_state(self, src: Hy4EngState, dst: Hy4EngState) -> None:
+        """`dst` becomes `src` (the rows up to its length, the rings, the last tokens, the last row's picks)."""
+        n = src.length
+        for li in src.lat:
+            dst.lat[li][:n] = src.lat[li][:n]
+            dst.ik[li][:n] = src.ik[li][:n]
+        for li in src.win:
+            dst.win[li].copy_(src.win[li])
+        dst.hist.copy_(src.hist)
+        dst.length, dst.delta = n, src.delta
+        dst.picks, dst.picks_at = {k: (a.clone(), b.clone()) for k, (a, b) in src.picks.items()}, src.picks_at
+        dst.btok, dst.bparents, dst.bpick = [], [], {}
+
     @torch.no_grad()
     def self_check(self, prompt: list[int], steps: int = 12, widths=(2, 4, 8), log=print) -> dict:
         """A prompt, then `steps` greedy decode steps recorded; the same tokens replayed as chain blocks of
-        every width and as a tree with a wrong branch: every row must be the decode step's bit for bit."""
-        st = self.new_state(len(prompt) + steps + BLOCK + 8)
-        lg = self.prefill(torch.tensor(prompt), st)
-        base, toks, want = st.length, [], []
+        every width and as trees with a wrong branch: every row must be the decode step's bit for bit.
+        `covers` says which read paths the replay reached: a prompt shorter than `check_rows()` leaves the
+        group selection or the wrapped rings unchecked."""
+        c = self.cfg
+        base_st = self.new_state(len(prompt) + steps + BLOCK + 8)
+        lg = self.prefill(torch.tensor(prompt), base_st)
+        base = base_st.length
+        st = self.new_state(base_st.cap)
+        self.copy_state(base_st, st)
+        toks, want = [], []
         nxt = int(lg[0].argmax())
         for _ in range(steps):
             toks.append(nxt)
             lg = self.step(nxt, st)
             want.append(lg[0].clone())
             nxt = int(lg[0].argmax())
-        rows, bad = 0, []
-
-        def rewind():
-            st2 = self.new_state(st.cap)
-            self.prefill(torch.tensor(prompt), st2)
-            return st2
+        rows, bad, closed = 0, [], 0
+        rr = c.index_kpool
         for wdt in widths:
-            st2 = rewind()
+            self.copy_state(base_st, st)
             for i in range(0, steps, wdt):
                 blk = toks[i:i + wdt]
-                got, _ = self.rows(blk, list(range(-1, len(blk) - 1)), st2)
+                # groups that close inside the block before its last row: scored from the block's own rows
+                closed += sum(1 for j in range(len(blk) - 1) if (st.length + j) % rr == rr - 1)
+                got, _ = self.rows(blk, list(range(-1, len(blk) - 1)), st)
                 for j in range(len(blk)):
                     rows += 1
                     if not torch.equal(got[j], want[i + j]):
                         bad.append(("chain", wdt, i + j))
-                self.commit(st2, list(range(len(blk))))
-        # a tree: after the anchor a wrong child with its own child, then the right branch
-        st2 = rewind()
+                self.commit(st, list(range(len(blk))))
+        # trees: after the anchor a wrong child with its own child, then the right branch
+        self.copy_state(base_st, st)
         i = 0
         while i + 3 <= steps:
-            wrong = (toks[i + 1] + 1) % self.cfg.vocab_size
-            got, _ = self.rows([toks[i], wrong, toks[i + 2], toks[i + 1], toks[i + 2]], [-1, 0, 1, 0, 3], st2)
+            wrong = (toks[i + 1] + 1) % c.vocab_size
+            got, _ = self.rows([toks[i], wrong, toks[i + 2], toks[i + 1], toks[i + 2]], [-1, 0, 1, 0, 3], st)
             for j, r in ((0, 0), (1, 3), (2, 4)):
                 rows += 1
                 if not torch.equal(got[r], want[i + j]):
                     bad.append(("tree", 5, i + j))
-            self.commit(st2, [0, 3, 4])
+            self.commit(st, [0, 3, 4])
             i += 3
         ok = not bad
-        log(f"[hy4] self-check: {rows} rows against {steps} decode steps after {base} prompt rows: "
+        covers = {"prompt_rows": base, "selection": base // rr >= c.group_topk, "rings_wrapped": base > c.sliding_window,
+                  "groups_closed_in_blocks": closed}
+        log(f"[hy4] self-check: {rows} rows against {steps} decode steps after {base} prompt rows "
+            f"(group selection {'reached' if covers['selection'] else 'NOT reached'}, rings "
+            f"{'wrapped' if covers['rings_wrapped'] else 'NOT wrapped'}, {closed} groups closed inside blocks): "
             + ("every row equal" if ok else f"{len(bad)} rows differ, first {bad[0]}"))
-        return {"ok": ok, "rows": rows, "bad": bad[:8], "steps": steps}
+        return {"ok": ok, "rows": rows, "bad": bad[:8], "steps": steps, "covers": covers}

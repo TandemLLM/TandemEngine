@@ -95,8 +95,18 @@ def main() -> int:
     else:
         ids = torch.randint(3, min(cfg.vocab_size, cfg.engram_lookup_table_size), (a.prompt,), generator=g).tolist()
 
-    res = eng.self_check(ids[:min(len(ids), 96)], steps=12, widths=(2, 4, 6, 12), log=lambda s: print(s, flush=True))
+    # the gate's self-check: a prompt past the group selection's threshold with the rings wrapped (synthetic rows
+    # beyond --prompt), blocks that close groups inside them
+    deep = eng.check_rows()
+    if deep + 64 > a.max_len:
+        say("self_check_refused", why=f"--max-len {a.max_len} cannot hold the {deep} prompt rows the check needs")
+        return 1
+    long = (ids * (deep // max(len(ids), 1) + 1))[:deep]
+    res = eng.self_check(long, steps=12, widths=(2, 4, 6, 12), log=lambda s: print(s, flush=True))
     say("self_check", **res)
+    if not (res["covers"]["selection"] and res["covers"]["rings_wrapped"] and res["covers"]["groups_closed_in_blocks"] > 0):
+        say("self_check_refused", why="the replay did not reach every read path", covers=res["covers"])
+        return 1
 
     if a.ref:
         from engine.models.hy4_flash.ref import Hy4FlashRef, Hy4State
