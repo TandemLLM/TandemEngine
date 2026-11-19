@@ -146,6 +146,7 @@ class Hy4Pack:
     formats: dict = field(default_factory=dict)       # projection base -> "exl3" | "bf16" (after audit)
     has_dfly: bool = False
     dfly_mlp: int | None = None                       # the draft MLP's width, from the weights
+    _maps: dict = field(default_factory=dict, repr=False)
 
     @classmethod
     def open(cls, path: str) -> "Hy4Pack":
@@ -265,10 +266,18 @@ class Hy4Pack:
 
     # --------------------------------------------------------------------------- reading
     def read(self, name: str, device=None) -> torch.Tensor:
+        """One tensor as stored (a CPU copy, or on `device`). A shard is mapped once: the 62,976 expert
+        projections are small reads of the same few files."""
         t = self.tensors[name]
-        arr = np.fromfile(t.file, dtype=np.uint8, count=t.nbytes, offset=t.offset)
+        m = self._maps.get(t.file)
+        if m is None:
+            m = self._maps[t.file] = np.memmap(t.file, dtype=np.uint8, mode="r")
+        arr = np.array(m[t.offset:t.offset + t.nbytes])
         out = torch.from_numpy(arr).view(DT[t.dtype]).reshape(t.shape)
         return out.to(device) if device is not None else out
+
+    def close(self) -> None:
+        self._maps.clear()
 
     def exl3(self, base: str, device=None, out_fp32: bool = False):
         from tools.exl3_linear import EXL3Block, unpack_signs

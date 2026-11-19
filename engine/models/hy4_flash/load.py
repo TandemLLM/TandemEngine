@@ -92,6 +92,7 @@ def load(path: str, device="cuda", dtype=torch.bfloat16, log=print, table_policy
         t.check(EngramHash.from_config(c, lid, W[f"layers.{li}.engram_layer.lookup_table"]))
         t.set_policy(table_policy, max(table_cache_bytes // max(len(c.engram_layers), 1), 1 << 20))
         tables[li] = t
+    pack.close()
     timing["total_s"] = round(time.time() - t0, 2)
     log(f"[hy4] pack {path}: {'; '.join(notes)}; {len(tables)} Engram tables ({table_policy}); loaded in {timing['total_s']} s")
     return pack, W, cuts, tables, banks, timing

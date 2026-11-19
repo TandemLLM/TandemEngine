@@ -191,7 +191,6 @@ def test_speculative_greedy_is_plain_greedy():
                 assert torch.equal(lg[j], rows[len(out) + j]) if len(out) + j < 24 else True
             srv.commit_tree(list(range(n)))
             out += block[:n]
-            srv._hidden = srv._hidden[:, n - 1:n]            # the last kept row's head input feeds the next round
             nxt, kept, rounds = picks[n - 1], kept + n - 1, rounds + 1
         assert out[:24] == want, (out, want)
     return f"24 tokens equal in fp32 and bf16; bf16: {rounds} rounds, {kept} drafted tokens kept (random weights)"

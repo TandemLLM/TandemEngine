@@ -30,7 +30,7 @@ MODULES = ("engine/models/hy4_flash/__init__.py", "engine/models/hy4_flash/confi
            "engine/models/hy4_flash/engram.py", "engine/models/hy4_flash/ref.py", "engine/models/hy4_flash/knobs.py",
            "engine/models/hy4_flash/dfly.py", "engine/models/hy4_flash/table.py", "engine/models/hy4_flash/pack.py",
            "engine/models/hy4_flash/load.py",
-           "engine/models/flashnext/ref.py", "engine/models/flashnext/ple.py", "engine/settings.py")
+           "engine/models/flashnext/ref.py", "engine/settings.py")
 #: the model's name in ops/prices/ and models/
 MODEL_ID = "hy4-flash"
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -107,6 +107,7 @@ class Hy4FlashServing:
         self.mm = None                      # the vision tower is not served yet: the image path is off
         self.pos_delta = 0
         self._hidden = None
+        self._last = None                   # the last committed row's head input [1, H]
         self._chain = None
         self.commit_ms = 0.0
         self.captured = False
@@ -119,8 +120,8 @@ class Hy4FlashServing:
         return self._hidden
 
     def last_streams(self) -> torch.Tensor:
-        """The last row's head input [1, H] (what the draft layers fuse with the next token)."""
-        return self._hidden[0, -1:] if self._hidden is not None else torch.zeros(1, self.cfg.hidden_size)
+        """The last committed row's head input [1, H] (what the draft layers fuse with the next token)."""
+        return self._last if self._last is not None else torch.zeros(1, self.cfg.hidden_size)
 
     def cost(self) -> CostModel:
         st, c = self.st, self.cfg
@@ -209,10 +210,12 @@ class Hy4FlashServing:
             lg, n = self.fn.rows([int(ids[0])], [-1], self.st)
             self.fn.commit(self.st, [0])
             self._hidden = n.view(1, 1, -1)
+            self._last = n.view(1, -1)
             self.stats["decode_steps"] += 1
             return lg.view(1, 1, -1)
         lg = self.fn.prefill(ids, self.st)
         self._hidden = self.fn.prompt_hidden.unsqueeze(0)
+        self._last = self.fn.prompt_hidden[-1:]
         self.stats["prefill_rows"] += T
         return lg.view(1, 1, -1)
 
@@ -236,7 +239,10 @@ class Hy4FlashServing:
     @torch.no_grad()
     def commit_tree(self, path: list[int]) -> None:
         t0 = time.perf_counter()
-        self.fn.commit(self.st, [int(p) for p in path])
+        path = [int(p) for p in path]
+        self.fn.commit(self.st, path)
+        if path and self._hidden is not None and self._hidden.shape[1] > path[-1]:
+            self._last = self._hidden[0, path[-1]:path[-1] + 1].clone()
         self.commit_ms = (time.perf_counter() - t0) * 1e3
 
     @torch.no_grad()
@@ -278,13 +284,14 @@ def profile_of(path: str) -> str:
     return os.environ.get("QSE_WEIGHTS") or "hy4-" + os.path.basename(os.path.normpath(path))
 
 
-def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print, device: str = "cuda", check: bool = True):
+def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print, device: str | None = None, check: bool = True):
     """Hy4-flash for the server: the pack's weights, the engine in the loop's interface, the load-time
     self-check (a block's rows against the decode step's). Returns (serving, info)."""
     from engine.models.hy4_flash.load import load
-    from engine.settings import SETTINGS as S
-    pack, W, cuts, tables, banks, timing = load(path, device, log=log, table_policy=S.get("HY4_TABLE"),
-                                                table_cache_bytes=int(float(S.get("HY4_TABLE_CACHE_GB")) * (1 << 30)))
+    from engine.settings import SETTINGS as _S
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    pack, W, cuts, tables, banks, timing = load(path, device, log=log, table_policy=_S.get("HY4_TABLE"),
+                                                table_cache_bytes=int(float(_S.get("HY4_TABLE_CACHE_GB")) * (1 << 30)))
     mark("weights")
     eng = Hy4FlashEngine(pack.cfg, W, tables, device=device, max_len=max_len, banks=banks, cuts=cuts)
     srv = Hy4FlashServing(eng, max_len)
@@ -297,7 +304,7 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
             prompt = [(7 * i + 3) % pack.cfg.vocab_size for i in range(24)]
         res = eng.self_check([int(t) for t in prompt], log=log)
         srv.restart()
-    info = {"pack": path, "load": timing, "self_check": res, "quant": pack.quant, "dfly": pack.has_dfly,
+    info = {"pack": path, "load": timing, "device": device, "self_check": res, "quant": pack.quant, "dfly": pack.has_dfly,
             "formats": timing.get("notes"), "tables": [t.report() for t in tables.values()]}
     return srv, info
 
@@ -305,7 +312,7 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
 def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print):
     """The DFly2 draft layers and the lookup (the request's own text, `corpus`, the server's suffix store) in one
     tree a round, cut by StairCut, through the shared tree drafter."""
-    from engine.device import device_id
+    from engine.methods.device import device_id
     from engine.drafters.ngram import NgramDrafter
     from engine.methods.mtp_drafter import MTPTreeDrafter
     from engine.methods.staircut import PriceModel, StairCut
@@ -324,13 +331,13 @@ def serve(a, ctx) -> dict:
     draft layers and the lookup, when the pack holds the layers and the load-time self-check passed."""
     from transformers import AutoTokenizer
 
-    from engine.settings import SETTINGS as S
+    from engine.settings import SETTINGS as _S
     from engine.spec import Relax
     ctx.keys(a.model, [a.model])
     tok = AutoTokenizer.from_pretrained(a.model)
     srv, info = build(a.model, a.max_len, tok, mark=ctx.mark, log=ctx.log)
     drafter = None
-    if a.drafter != "none" and S.get("HY4_DFLY") == "1":
+    if a.drafter != "none" and _S.get("HY4_DFLY") == "1":
         if not info["dfly"]:
             ctx.log("[server] Hy4-flash: the pack has no DFly layers: plain decode only")
         elif not (info["self_check"] and info["self_check"]["ok"]):
@@ -340,9 +347,9 @@ def serve(a, ctx) -> dict:
             a.k = max(int(a.k or 0), srv.cfg.dfly.draft_tokens)
     ctx.mark("drafters")
     describe = (f"Hy4-flash {a.model} (exl3): load {info['load'].get('total_s')} s, drafter "
-                f"{'DFly2 + lookup + StairCut' if drafter is not None else 'none'}, Engram tables {S.get('HY4_TABLE')}, "
+                f"{'DFly2 + lookup + StairCut' if drafter is not None else 'none'}, Engram tables {_S.get('HY4_TABLE')}, "
                 f"max_len {a.max_len:,},")
-    return {"engine": srv, "tok": tok, "drafter": drafter, "path": a.model, "device": "cuda", "cfg": None, "w": None,
+    return {"engine": srv, "tok": tok, "drafter": drafter, "path": a.model, "device": info["device"], "cfg": None, "w": None,
             "describe": describe,
             "serving": {"tree": drafter is not None, "sampled_tree": "det", "relax": Relax(1.0, 1),
                         "weights_info": {"format": "exl3", "weights": a.model,

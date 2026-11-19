@@ -19,9 +19,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from engine.models.flashnext.ple import mul1_codebook  # noqa: E402
 from engine.models.hy4_flash.engram import fp8_round_trip, hash_multipliers  # noqa: E402
-from engine.models.hy4_flash.table import PREFIX, EngramTable  # noqa: E402
+from engine.models.hy4_flash.table import PREFIX, EngramTable, mul1_codebook  # noqa: E402
 
 PACK, SRC = os.environ.get("HY4_TINY_PACK"), os.environ.get("HY4_TINY_SRC")
 SKIP = None if PACK and os.path.isdir(PACK) else "skipped: HY4_TINY_PACK names no pack"
@@ -65,7 +64,9 @@ def test_a_table_file_decodes_to_the_ring_it_holds():
         ids = torch.randint(0, rows, (300,), generator=g)
         got = t.gather(ids, dtype=torch.float32)
         # a state is the last 16 bits of the symbols ending at its position: the newest symbol lowest
+        from engine.models.flashnext.ple import mul1_codebook as fn_codebook
         cb = mul1_codebook().float()
+        assert torch.equal(mul1_codebook(), fn_codebook())            # one codebook, two readers
         want = torch.empty(300, dim)
         for n, r in enumerate(ids.tolist()):
             head = max(h for h in range(len(sizes)) if offsets[h] <= r)
@@ -172,6 +173,36 @@ def test_the_engine_on_the_pack_matches_the_reference_on_it():
     assert out[torch.bfloat16][1] >= 0.9, out
     return (f"120 rows (window {c.sliding_window}, selection past {c.index_topk}): fp32 max err {out[torch.float32][0]:.1e}; "
             f"bf16 next-token agreement {out[torch.bfloat16][1]:.2f}; bf16 block rows equal the decode steps'")
+
+
+def test_the_server_loads_the_pack_and_completes():
+    """The family's builder through the server's one loader, then a raw completion through the request loop,
+    twice: the second answer comes over the caches and is the same text."""
+    if SKIP:
+        return SKIP
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_forward_tree as T  # noqa: F401  (the CPU environment before the server imports)
+    from server import app
+    from test_app_loop import Req
+    saved = dict(app.STATE)
+    try:
+        app._load(app.parser().parse_args(["--model", PACK, "--max-len", "512", "--drafter", "none", "--prompt-token-cache", "0"]))
+        info = app.STATE["weights_info"]
+        assert info["format"] == "exl3" and info["self_check"]["ok"] and app.STATE["device"] == "cpu", info
+        body = {"prompt": "".join(chr(0x61 + i % 26) for i in range(90)), "max_tokens": 12, "stream": False, "temperature": 0}
+        out = []
+        for _ in range(2):
+            head, raw = Req("/v1/completions", body).response()
+            assert head.startswith("HTTP/1.1 200"), (head, raw[:300])
+            r = json.loads(raw)
+            assert r["usage"]["completion_tokens"] == 12, r["usage"]
+            out.append(r["choices"][0]["text"])
+        assert out[0] == out[1], out
+        eng = app.STATE["engine"]
+    finally:
+        app.STATE.clear()
+        app.STATE.update(saved)
+    return f"loaded through _load on the CPU, self-check {info['self_check']['rows']} rows equal, 12 tokens twice ({eng.stats})"
 
 
 if __name__ == "__main__":

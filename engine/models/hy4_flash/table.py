@@ -28,9 +28,21 @@ import struct
 import numpy as np
 import torch
 
-from engine.models.flashnext.ple import DirectRows, mul1_codebook, page_cache_bytes
+from engine.models.flashnext.ple import DirectRows, page_cache_bytes
 
 ROW_DIM = 96
+MUL1 = 0x83DCD12D
+
+
+def mul1_codebook(device=None) -> torch.Tensor:
+    """All 65,536 mul1 codebook values (fp16), as exllamav3's `mul1_codebook` (MIT, Copyright (c) 2025 Turboderp)."""
+    s = torch.arange(65536, dtype=torch.int64, device=device)
+    prod = (s * MUL1) & 0xFFFFFFFF
+    bsum = (prod & 255) + ((prod >> 8) & 255) + ((prod >> 16) & 255) + ((prod >> 24) & 255)
+    k_inv = torch.tensor([0x1eee], dtype=torch.int16).view(torch.float16).float().item()
+    k_bias = torch.tensor([0xc931 - 0x10000], dtype=torch.int16).view(torch.float16).float().item()
+    return ((1024 + bsum).float() * k_inv + k_bias).to(torch.float16)
+
 PREFIX = "model.layers.{}.engram_layer.multi_head_embedding.embedding."
 _DT = {"F16": torch.float16, "BF16": torch.bfloat16, "F32": torch.float32, "I64": torch.int64, "I32": torch.int32}
 _SRC: dict = {}
