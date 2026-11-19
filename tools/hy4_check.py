@@ -60,6 +60,9 @@ def main() -> int:
     ap.add_argument("--fit", type=int, default=0)
     ap.add_argument("--table", default="cold")
     ap.add_argument("--no-graphs", action="store_true")
+    ap.add_argument("--caches", action="store_true")
+    ap.add_argument("--cache-chunk", type=int, default=512)
+    ap.add_argument("--skip-tolerance", action="store_true")
     a = ap.parse_args()
 
     from engine.models.hy4_flash.config import DFlyConfig
@@ -91,8 +94,10 @@ def main() -> int:
 
     g = torch.Generator().manual_seed(7)
     if a.text:
-        from transformers import AutoTokenizer
-        ids = AutoTokenizer.from_pretrained(a.pack)(open(a.text).read(), add_special_tokens=False)["input_ids"][:a.prompt]
+        from tokenizers import Tokenizer
+        ids = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json")).encode(open(a.text).read(), add_special_tokens=False).ids[:a.prompt]
+        if len(ids) < a.prompt:
+            raise SystemExit(f"--text holds {len(ids)} tokens, --prompt asks for {a.prompt}")
     else:
         ids = torch.randint(3, min(cfg.vocab_size, cfg.engram_lookup_table_size), (a.prompt,), generator=g).tolist()
 
@@ -133,7 +138,7 @@ def main() -> int:
         say("prefill_experts", layer=li, rows=256, equal_256=torch.equal(b32, b256), equal_grouped=torch.equal(b32, bg),
             ms_32=t32, ms_256=t256, ms_grouped=tg)
         res_ok_experts = torch.equal(b32, b256)
-    if str(a.device).startswith("cuda"):
+    if str(a.device).startswith("cuda") and not a.skip_tolerance:
         # the kernel row pass against the same pass on plain torch sums (HY4_ROW_TORCH), teacher-forced on the same
         # rows: how far the kernel's summation order moves a logit (a tolerance, not an equality)
         n0 = min(len(ids), deep)
@@ -228,10 +233,90 @@ def main() -> int:
         dt2 = time.perf_counter() - t0
         n_out = len(out) - 1
         say("dfly", equal=out[:a.steps] == toks[:len(out[:a.steps])], rounds=rounds, tokens=n_out, kept_per_round=round(kept / max(rounds, 1), 2),
+            accept_rate=round(kept / max(rounds * cfg.dfly.draft_tokens, 1), 3), tokens_per_round=round(n_out / max(rounds, 1), 2),
             tok_s=round(n_out / dt2, 2), ms_round=round(1e3 * dt2 / max(rounds, 1), 2), draft_ms_round=round(1e3 * draft_s / max(rounds, 1), 2),
             draft_tokens=cfg.dfly.draft_tokens, graphs=srv.graphs is not None,
             stale=head.stats["stale"])
 
+    if a.caches:
+        # the cache tiers with this family's state on the device: each gives back a cold prefill's bits
+        import shutil
+        import tempfile
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests"))
+        from disk_tier_util import waiting
+        from engine import cache, disk_cache, spill
+        CH, BIG = a.cache_chunk, 1 << 34
+        n1 = (len(ids) // CH) * CH + CH // 3
+        turn1 = (ids * (n1 // max(len(ids), 1) + 1))[:n1]
+        more = [int(t) for t in torch.randint(3, min(cfg.vocab_size, cfg.engram_lookup_table_size), (CH // 2,), generator=g)]
+
+        def fresh():
+            s2 = Hy4FlashServing(eng, a.max_len)
+            if a.no_graphs:
+                s2.graphs = None
+            return s2
+
+        def same(x, y, n):
+            ok = x.kv.length == y.kv.length == n
+            for (k, u), v in zip(x.cache_state().sections().items(), y.cache_state().sections().values()):
+                ok = ok and torch.equal(u, v)
+            for (k, u, ax), (_, v, _) in zip(x.cache_state().views(), y.cache_state().views()):
+                ok = ok and torch.equal(u.narrow(ax, 0, n), v.narrow(ax, 0, n))
+            return bool(ok)
+        t0 = time.perf_counter()
+        cold, res_ = fresh(), {}
+        lg_cold, _, _ = cache.prefill(cold, None, turn1 + more, a.device, chunk=CH)
+        step_cold = cold.forward(torch.tensor([7]), start=len(turn1) + len(more)).clone()
+        # a snapshot, the rows after it overwritten, restored
+        s1 = fresh()
+        cache.prefill(s1, None, turn1, a.device, chunk=CH)
+        snap = cache.capture(s1)
+        s1.forward(torch.tensor(more), start=len(turn1))
+        cache.restore(s1, snap)
+        lg = s1.forward(torch.tensor(more[:1]), start=len(turn1))
+        ref1 = fresh()
+        cache.prefill(ref1, None, turn1, a.device, chunk=CH)
+        res_["snapshot"] = bool(torch.equal(lg, ref1.forward(torch.tensor(more[:1]), start=len(turn1))))
+        # the resident prefix: the second turn resumes at the last anchor
+        s2, resd = fresh(), cache.ResidentPrefix(BIG, CH, stash_bytes=BIG)
+        cache.prefill(s2, None, turn1, a.device, chunk=CH, resident=resd)
+        lg2, reused, _ = cache.prefill(s2, None, turn1 + more, a.device, chunk=CH, resident=resd)
+        res_["resident"] = bool(reused == (len(turn1) // CH) * CH and torch.equal(lg2, lg_cold))
+        res_["resident_step"] = bool(torch.equal(s2.forward(torch.tensor([7]), start=len(turn1) + len(more)), step_cold))
+        d = tempfile.mkdtemp(prefix="hy4-cache-")
+        try:
+            def tier():
+                return waiting(disk_cache.DiskTier(d, chunk=CH, fingerprint="hy4-check", settings={"admit_after": 1, "budget_gb": 8},
+                                                   free_bytes=lambda p_: 10 ** 15, head_anchors=2, min_tokens=CH).open())
+            t = tier()
+            cache.prefill(fresh(), None, turn1, a.device, chunk=CH, disk=t)
+            res_["disk_flush"] = bool(t.flush())
+            t.close()
+            t2, info, s3 = tier(), {}, fresh()
+            lg3, reused3, _ = cache.prefill(s3, None, turn1 + more, a.device, chunk=CH, disk=t2, info=info)
+            res_["disk"] = bool(info.get("kind") == "disk" and reused3 == (len(turn1) // CH) * CH and torch.equal(lg3, lg_cold))
+            res_["disk_step"] = bool(torch.equal(s3.forward(torch.tensor([7]), start=len(turn1) + len(more)), step_cold))
+            sp = spill.SessionSpill(os.path.join(d, "sessions"), chunk=CH, fingerprint="hy4-check", tier=t2,
+                                    settings={"budget_gb": 8.0, "min_tokens": 64, "drain_min_tokens": CH, "codec": "off"},
+                                    free_bytes=lambda p_: 10 ** 15, floor_bytes=0).open()
+            s4, r4 = fresh(), cache.ResidentPrefix(BIG, CH, stash_bytes=BIG, end=True)
+            cache.prefill(s4, None, turn1, a.device, chunk=CH, resident=r4)
+            saved = sp.save_resident(r4, s4, None, "evict")
+            ok4 = saved is not None
+            if ok4:
+                r4.clear()
+                for _, v, _ in s4.cache_state().views():
+                    v.zero_()
+                ok4 = sp.restore(r4, s4, None, sp.entries[saved["eid"]]) is not None
+                ok4 = ok4 and all(torch.equal(u.narrow(ax, 0, len(turn1)), v.narrow(ax, 0, len(turn1)))
+                                  for (_, u, ax), (_, v, _) in zip(s4.cache_state().views(), ref1.cache_state().views()))
+            res_["spill"] = bool(ok4)
+            t2.close()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        sync(a.device)
+        say("caches", chunk=CH, rows=len(turn1), more=len(more), seconds=round(time.perf_counter() - t0, 1), **res_)
+        del cold, s1, s2, s3, s4, ref1
     if a.fit:
         del srv
         if str(a.device).startswith("cuda"):
