@@ -29,6 +29,7 @@ from engine.settings import SETTINGS as _S
 
 MODULES = ("engine/models/hy4_flash/__init__.py", "engine/models/hy4_flash/config.py", "engine/models/hy4_flash/engine.py",
            "engine/models/hy4_flash/engram.py", "engine/models/hy4_flash/ref.py", "engine/models/hy4_flash/knobs.py",
+           "engine/models/hy4_flash/kernels.py",
            "engine/models/hy4_flash/dfly.py", "engine/models/hy4_flash/table.py", "engine/models/hy4_flash/pack.py",
            "engine/models/hy4_flash/load.py",
            "engine/models/flashnext/ref.py", "engine/settings.py")
@@ -309,6 +310,7 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
     mark("weights")
     eng = Hy4FlashEngine(pack.cfg, W, tables, device=device, max_len=max_len, banks=banks, cuts=cuts)
     eng.prefill_grouped = _S.get("HY4_PREFILL_GROUPED") == "1"
+    eng.row_torch = _S.get("HY4_ROW_TORCH") == "1"
     srv = Hy4FlashServing(eng, max_len)
     mark("engine")
     res = None

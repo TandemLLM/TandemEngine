@@ -133,6 +133,22 @@ def main() -> int:
         say("prefill_experts", layer=li, rows=256, equal_256=torch.equal(b32, b256), equal_grouped=torch.equal(b32, bg),
             ms_32=t32, ms_256=t256, ms_grouped=tg)
         res_ok_experts = torch.equal(b32, b256)
+    if str(a.device).startswith("cuda"):
+        # the kernel row pass against the same pass on plain torch sums (HY4_ROW_TORCH), teacher-forced on the same
+        # rows: how far the kernel's summation order moves a logit (a tolerance, not an equality)
+        n0 = min(len(ids), deep)
+        outs = {}
+        for name, flag in (("kernel", False), ("torch", True)):
+            eng.row_torch = flag
+            st = eng.new_state(n0 + 40)
+            eng.prefill(torch.tensor(ids[:n0]), st, head=None)
+            lgs = [eng.rows(ids[i:i + 4] if len(ids) >= i + 4 else [5, 6, 7, 8], [-1, 0, 1, 2], st)[0] for i in (0, 4, 8)]
+            outs[name] = torch.cat(lgs)
+        eng.row_torch = False
+        d = (outs["kernel"] - outs["torch"]).abs()
+        say("rows_tolerance", rows=int(d.shape[0]), max_abs=round(d.max().item(), 5), mean_abs=round(d.mean().item(), 6),
+            logit_scale=round(outs["torch"].abs().mean().item(), 3),
+            agree=round((outs["kernel"].argmax(-1) == outs["torch"].argmax(-1)).float().mean().item(), 4))
     if a.ref:
         from engine.models.hy4_flash.ref import Hy4FlashRef, Hy4State
         ref = Hy4FlashRef(cfg, W, tables, dtype=eng.dtype, device=a.device, cuts=cuts)

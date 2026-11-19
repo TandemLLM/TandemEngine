@@ -13,6 +13,9 @@ KNOBS: dict[str, tuple] = {
     # a prompt's routed experts on the kernels that decode an expert's tiles once for up to 8 of its pairs (1); the
     # same bits a pair as the pair kernels (0), not yet timed at the real shapes
     'HY4_PREFILL_GROUPED': ('0', 'engine/models/hy4_flash/serving.py'),
+    # debugging: the row pass's sums in plain torch, one item a call, instead of the family's kernel (other bits;
+    # the kernel is the one served path)
+    'HY4_ROW_TORCH': ('0', 'engine/models/hy4_flash/serving.py'),
     # the DFly2 draft layers (1) or plain decode only (0)
     'HY4_DFLY': ('1', 'engine/models/hy4_flash/serving.py'),
 }

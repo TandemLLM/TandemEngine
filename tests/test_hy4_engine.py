@@ -147,6 +147,26 @@ def test_a_block_writes_nothing_until_commit():
     return "state unchanged by a block of 8"
 
 
+def test_the_row_product_reference():
+    """`mm`'s contract on its plain form: out[n] = a[n] @ b[n mod NB], any strides, and an item's bits the same in
+    any batch (the kernel itself runs on a device: tools/hy4_check.py compares it there)."""
+    from engine.models.hy4_flash import kernels as K
+    g = torch.Generator().manual_seed(3)
+    a, b = torch.randn(12, 5, 70, generator=g), torch.randn(4, 70, 9, generator=g)
+    out = K.mm_reference(a, b)
+    want = torch.stack([a[n] @ b[n % 4] for n in range(12)])
+    assert out.dtype == torch.float32 and torch.equal(out, want)
+    assert torch.equal(K.mm_reference(a[4:6], b), out[4:6]) and torch.equal(K.mm_reference(a[:1], b[:1]), out[:1])
+    bt = torch.randn(1, 9, 70, generator=g)
+    assert torch.equal(K.mm_reference(a, bt.transpose(1, 2)), torch.stack([a[n] @ bt[0].T for n in range(12)]))
+    x = torch.randn(3, 70, generator=g).to(torch.bfloat16)
+    cfg, ref, eng = tiny(torch.bfloat16)
+    assert torch.equal(eng.sumsq(x), torch.stack([(x[n].float() * x[n].float()).sum() for n in range(3)]).view(3, 1)) or \
+        (eng.sumsq(x) - x.float().square().sum(-1, keepdim=True)).abs().max() < 1e-3
+    assert K.mm_reference(a[:0], b).shape == (0, 5, 9)
+    return "items of any batch equal their one-item call; shared, cycled and strided right operands"
+
+
 def test_capacity_is_checked():
     cfg, ref, eng = tiny()
     st = eng.new_state(12)

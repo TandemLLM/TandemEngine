@@ -17,14 +17,19 @@ changes how attention reads its rows, the way latent attention is served:
                   tokens. Rings and tokens are small and copied whole by the caches; the by-slot buffers
                   are sliced by length.
 
-  rows(tokens, parents)   a decode token or a draft block of up to 32 rows in DFS pre-order. The
-                  projections of the block run together on row-invariant kernels; every other
-                  operation of a row runs on that row alone with shapes that do not depend on the
-                  block, so a row of a block is the decode step's row at that position bit for bit.
-                  Nothing but the block's scratch rows is written.
-  commit(path)    the path's scratch rows move into the state, the length moves.
-  prefill(tokens) a prompt in chunks on batched operations: the next token agrees with the row
-                  path, the bits do not.
+The row pass is the family's one path for a decode token, a draft block or tree and the DFly2 rounds'
+verify: `stage` (the host's part: positions, ancestors, the Engram rows) and `run` (the device's, what a
+graph captures). A row's bits never depend on the block it is in: the packed projections and the experts
+run on the row-invariant EXL3 kernels, every other sum is `mm` (kernels.py: one program a row, every
+element its own sum), and the rest is element-wise operations, gathers and a stable sort. So plain decode,
+drafted decode and any block size write the same tokens, and the load-time self-check holds the device to
+it row by row. Against the reference forward the pass is within rounding, measured, not bit-equal.
+
+  rows(tokens, parents)   the staged block through `run` or its captured graph; only scratch rows written
+  commit(path)            the path's scratch rows move into the state, the length moves
+  prefill(tokens)         a prompt in chunks on batched library operations: the next token agrees with
+                          the row path, the bits do not (a cache restore replays the same chunks, so it
+                          gives a cold prefill's bits)
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import torch.nn.functional as F
 
 from engine.models.flashnext.ref import topk_stable
 from engine.models.hy4_flash.config import SPARSE, Hy4FlashConfig
+from engine.models.hy4_flash import kernels as K_
 from engine.models.hy4_flash.engram import fp8_round_trip
 from engine.models.hy4_flash.ref import Hy4FlashRef, rotate
 
@@ -158,6 +164,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         self._packed = bool(self._elayers) and all(hasattr(tables[li], "gather_packed") for li in self._elayers)
         self._ebias = {li: tables[li].bias.to(self.device) for li in self._elayers} if self._packed else {}
         self._ar: dict = {}
+        self._ones: dict = {}
+        #: HY4_ROW_TORCH (debugging): the row pass's sums in plain torch, one item a call, instead of the kernel
+        self.row_torch = False
         #: the prompt's routed experts on the grouped kernels (serving sets it from HY4_PREFILL_GROUPED)
         self.prefill_grouped = False
         self.prompt_hidden = None
@@ -174,15 +183,6 @@ class Hy4FlashEngine(Hy4FlashRef):
         return t
 
     # ------------------------------------------------------------------------- primitives
-    def lin_rows(self, x: torch.Tensor, w) -> torch.Tensor:
-        """x [M, K] @ w^T with every row's bits its own: the row-invariant EXL3 kernel on a device, else one
-        launch a row (the same shape whatever the block)."""
-        if x.shape[0] == 1:
-            return self.lin1(x, w)
-        if self.kernels and hasattr(w, "bf16_cached") and x.shape[0] <= BLOCK:
-            return self.lin1(x, w)
-        return torch.cat([self.lin1(x[r:r + 1], w) for r in range(x.shape[0])])
-
     def lin(self, x: torch.Tensor, w) -> torch.Tensor:
         """On a device an EXL3 projection never dequantises: up to BLOCK rows on the row kernel, more on the
         library's GEMM."""
@@ -216,46 +216,163 @@ class Hy4FlashEngine(Hy4FlashRef):
     def pos3(self, positions: torch.Tensor) -> torch.Tensor:
         return positions.reshape(1, -1).expand(3, -1)
 
-    # ------------------------------------------------------------------------- attention, one row
-    def attend_row(self, q: torch.Tensor, K: torch.Tensor, valid: torch.Tensor, li: int) -> torch.Tensor:
-        """q [heads, qk] (turned) over the latents K [n, R + rope] it reads -> [heads, v] in the compute dtype."""
+    # ------------------------------------------------------------------------- the row pass's sums
+    def mm(self, a: torch.Tensor, b: torch.Tensor, bj: int | None = None) -> torch.Tensor:
+        """a [B, I, K] @ b [NB, K, J] -> fp32 [B, I, J] with every element its own sum (kernels.py): the one
+        way the row pass adds things up, so a row's bits never depend on the block it is in."""
+        if self.kernels and K_.HAVE_TRITON and not self.row_torch:
+            return K_.mm(a, b, bj)
+        return K_.mm_reference(a, b, bj)
+
+    def ones(self, n: int) -> torch.Tensor:
+        t = self._ones.get(n)
+        if t is None:
+            t = self._ones[n] = torch.ones(1, n, 1, dtype=torch.float32, device=self.device)
+        return t
+
+    def sumsq(self, x: torch.Tensor) -> torch.Tensor:
+        """x [B, K] -> the sum of its squares [B, 1] fp32."""
+        return self.mm(x.unsqueeze(1), x.unsqueeze(2)).view(-1, 1)
+
+    def rsum(self, x: torch.Tensor) -> torch.Tensor:
+        """x fp32 [B, K] -> its sum [B, 1]."""
+        return self.mm(x.unsqueeze(1), self.ones(x.shape[1])).view(-1, 1)
+
+    def linr(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """x [M, K] @ w^T for a plain weight [N, K] -> fp32 [M, N]."""
+        return self.mm(x.unsqueeze(1), w.t().unsqueeze(0)).view(x.shape[0], w.shape[0])
+
+    def lin_rows(self, x: torch.Tensor, w) -> torch.Tensor:
+        """x [M, K] @ w^T in x's dtype: the row-invariant EXL3 kernel for a packed projection (a device), else
+        `mm`."""
+        if self.kernels and hasattr(w, "bf16_cached") and x.dtype == torch.bfloat16:
+            return self.lin1(x, w)
+        n = self.cuts.get(id(w))
+        if not torch.is_tensor(w):
+            w = w.bf16_cached()                 # a packed projection off the kernels (the CPU): its dequantised weight
+        if x.shape[-1] < w.shape[1]:
+            x = F.pad(x, (0, w.shape[1] - x.shape[-1]))
+        y = self.linr(x, w).to(x.dtype)
+        return y if n is None else y[:, :n]
+
+    def rms_r(self, x: torch.Tensor, w: torch.Tensor | None, eps: float | None = None) -> torch.Tensor:
+        """The RMS norm of rows x [M, K]: fp32, back in x's dtype, times the weight."""
+        h = x.float() * torch.rsqrt(self.sumsq(x) / x.shape[-1] + (self.cfg.rms_norm_eps if eps is None else eps))
+        h = h.to(x.dtype)
+        return h if w is None else w.to(self.dtype) * h
+
+    def hc_r(self, h: torch.Tensor, p: str) -> tuple[torch.Tensor, torch.Tensor]:
+        """`hc` for a block's rows h [M, S, H]: the gates from `mm`, the streams added in order."""
+        S = self.cfg.hc_mult
+        flat = h.flatten(1)
+        mixes = self.linr(flat, self.w(p + "hc_fn").float())
+        mixes = mixes * torch.rsqrt(self.sumsq(flat) / flat.shape[1] + self.cfg.rms_norm_eps)
+        base, scale = self.w(p + "hc_base").float(), self.w(p + "hc_scale").float()
+        pre = torch.sigmoid(mixes[:, :S] * scale[0] + base[:S]) + self.cfg.hc_eps
+        post = self.cfg.hc_magnitude * torch.sigmoid(mixes[:, S:] * scale[1] + base[S:]) + self.cfg.hc_eps
+        x = pre[:, 0, None] * h[:, 0]
+        for k in range(1, S):
+            x = x + pre[:, k, None] * h[:, k]
+        return x.to(h.dtype), post
+
+    def final_r(self, h: torch.Tensor) -> torch.Tensor:
+        S = self.cfg.hc_mult
+        flat = h.flatten(1)
+        mixes = self.linr(flat, self.w("hc_head.hc_head_fn").float())
+        mixes = mixes * torch.rsqrt(self.sumsq(flat) / flat.shape[1] + self.cfg.rms_norm_eps)
+        pre = torch.sigmoid(mixes * self.w("hc_head.hc_head_scale").float() + self.w("hc_head.hc_head_base").float()) + self.cfg.hc_eps
+        x = pre[:, 0, None] * h[:, 0]
+        for k in range(1, S):
+            x = x + pre[:, k, None] * h[:, k]
+        return self.rms_r(x.to(h.dtype), self.w("norm.weight"))
+
+    def engram_r(self, h: torch.Tensor, rows: torch.Tensor, li: int, live: torch.Tensor) -> torch.Tensor:
+        """`engram_apply` for a block's rows: h [M, S, H], rows [M, heads, head_dim]."""
+        cfg, p = self.cfg, f"layers.{li}.engram_layer."
+        M, H, d, nh = h.shape[0], cfg.hidden_size, cfg.engram_head_dim, cfg.engram_heads
+        eps = torch.finfo(self.dtype).eps
+        hw = torch.stack([self.w(f"{p}lookup_per_head_norms.{k}.weight") for k in range(nh)]).to(self.dtype)
+        emb = (self.rms_r(rows.reshape(M * nh, d), None, eps).view(M, nh, d) * hw).flatten(1)
+        gates = []
+        for k in range(cfg.hc_mult):
+            key = (self.linr(emb, self.w(f"{p}key_projs.{k}.weight")).to(self.dtype) + self.w(f"{p}key_projs.{k}.bias").to(self.dtype))
+            key = self.rms_r(key, self.w(f"{p}norm_key.{k}.weight"), eps)
+            query = self.rms_r(h[:, k].contiguous(), self.w(f"{p}norm_query.{k}.weight"), eps)
+            g = self.mm(key.unsqueeze(1), query.unsqueeze(2)).view(M) * H ** -0.5
+            g = g.abs().clamp_min(1e-6).sqrt() * g.sign()
+            gates.append(g.sigmoid().to(self.dtype))
+        gates = torch.stack(gates, dim=1).unsqueeze(-1)
+        value = self.linr(emb, self.w(p + "value_proj.weight")).to(self.dtype) + self.w(p + "value_proj.bias").to(self.dtype)
+        main = self.w(p + "unified_pre_gamma").to(self.dtype) * self.rms_r(value, None, eps)
+        branch = torch.stack([self.w(f"{p}unified_per_hc_scales.{k}").to(self.dtype) * main for k in range(cfg.hc_mult)], dim=1)
+        out = gates * main.unsqueeze(1) + branch
+        return out.masked_fill(~live[:, None, None], 0.0)
+
+    def route_r(self, x: torch.Tensor, li: int) -> tuple[torch.Tensor, torch.Tensor]:
+        cfg, p = self.cfg, f"layers.{li}.mlp.gate."
+        scores = self.linr(x, self.w(p + "weight").float()).sigmoid()
+        idx = topk_stable(scores + self.w(p + "e_score_correction_bias").float(), cfg.num_experts_per_tok)[1]
+        wts = scores.gather(1, idx)
+        if cfg.norm_topk_prob:
+            wts = wts / (self.rsum(wts) + 1e-20)
+        return idx, wts * cfg.routed_scaling_factor
+
+    def group_keys_r(self, tks: torch.Tensor, li: int) -> torch.Tensor:
+        """Token keys [M, r, D] of the group that ends at each row -> its pooled key [M, D] (before the rotary)."""
+        cfg, p = self.cfg, f"layers.{li}.self_attn.compressed_indexer."
+        g = tks.float()
+        values = self.mm(g, self.w(p + "key_value_projection.weight").float().t().unsqueeze(0))
+        gates = self.mm(g, self.w(p + "key_gate_projection.weight").float().t().unsqueeze(0)) + self.w(p + "intra_group_ape").float()
+        e = torch.exp(gates - gates.amax(dim=1, keepdim=True))
+        z, pooled = e[:, 0], values[:, 0] * e[:, 0]
+        for k in range(1, cfg.index_kpool):
+            z = z + e[:, k]
+            pooled = pooled + values[:, k] * e[:, k]
+        pooled = pooled / z
+        pooled = pooled * torch.rsqrt(self.sumsq(pooled) / pooled.shape[1] + cfg.rms_norm_eps)
+        return (self.w(p + "key_norm.weight").to(self.dtype) * pooled).to(tks.dtype)
+
+    def attend_r(self, q: torch.Tensor, K: torch.Tensor, valid: torch.Tensor, li: int) -> torch.Tensor:
+        """q [M, heads, qk] (turned), each row over the latents it reads K [M, n, R + rope] with valid [M, n]
+        -> [M, heads, v]. The query takes the key half, the weighted latents go through the value half; the
+        sink is one more logit."""
         cfg, a = self.cfg, self.cfg.attn(li)
-        R = cfg.kv_lora_rank
-        qa = torch.bmm(q[:, None, :a.nope], self.wk[li]).squeeze(1).float()                 # [heads, R]
-        Kf = K.float()
-        s = (qa @ Kf[:, :R].T + q[:, a.nope:].float() @ Kf[:, R:].T) * (a.qk ** -0.5)       # [heads, n]
-        s = torch.cat((s.masked_fill(~valid, float("-inf")), self.sinks[li]), dim=-1)
-        s = s - s.max(dim=-1, keepdim=True).values
-        p = F.softmax(s, dim=-1)[:, :-1]
-        mix = (p @ Kf[:, :R]).to(self.dtype)                                                # [heads, R]
-        return torch.bmm(mix[:, None, :], self.wv[li]).squeeze(1)
+        M, n, R = K.shape[0], K.shape[1], cfg.kv_lora_rank
+        qa = self.mm(q[..., :a.nope].reshape(M * a.heads, 1, a.nope), self.wk[li]).view(M, a.heads, R).to(self.dtype)
+        s = (self.mm(qa, K[..., :R].transpose(1, 2)) + self.mm(q[..., a.nope:], K[..., R:].transpose(1, 2))) * (a.qk ** -0.5)
+        s = torch.cat((s.masked_fill(~valid[:, None, :], float("-inf")), self.sinks[li].expand(M, -1, -1)), dim=-1)
+        e = torch.exp(s - s.amax(dim=-1, keepdim=True))
+        p = (e / self.rsum(e.view(M * a.heads, n + 1)).view(M, a.heads, 1))[..., :n].to(self.dtype)
+        mix = self.mm(p, K[..., :R]).to(self.dtype)
+        return self.mm(mix.reshape(M * a.heads, 1, R), self.wv[li]).view(M, a.heads, a.v).to(self.dtype)
 
     def _gather(self, by_slot: torch.Tensor, scratch: torch.Tensor, q: torch.Tensor, Lt: torch.Tensor, anc: torch.Tensor) -> torch.Tensor:
-        """Rows at positions q: committed ones from the by-slot buffer, the block's from its scratch rows
-        (`anc`: the row's ancestors by depth, itself last and repeated)."""
+        """Rows at positions q [M, n]: committed ones from the by-slot buffer, the block's from its scratch rows
+        (`anc` [M, BLOCK]: each row's ancestors by depth, itself last and repeated)."""
         out = by_slot[q.clamp(0, by_slot.shape[0] - 1)]
-        pr = anc[(q - Lt).clamp(0, BLOCK - 1)]
+        pr = anc.gather(1, (q - Lt).clamp(0, BLOCK - 1))
         return torch.where((q >= Lt).unsqueeze(-1), scratch[pr], out)
 
-    def _select(self, li: int, st: Hy4EngState, iq: torch.Tensor, hw: torch.Tensor, cos, sin, p: torch.Tensor,
-                qg: torch.Tensor, gmax: torch.Tensor, cidx: torch.Tensor, bgid: torch.Tensor, bok: torch.Tensor) -> torch.Tensor:
-        """The positions a row past `index_topk` reads in a sparse layer, ascending: the 4 rows of each of its
-        best `group_topk - 1` closed groups, then its own group. Committed groups are scored from `gk`, the
-        groups its ancestors closed in this block from the slots after them (`cidx`, `bgid`, `bok`)."""
+    def _select(self, li: int, st: Hy4EngState, iq: torch.Tensor, hw: torch.Tensor, cos, sin, c: dict) -> torch.Tensor:
+        """The positions rows past `index_topk` read in a sparse layer [M, index_topk], ascending: the 4 rows of
+        each of a row's best `group_topk - 1` closed groups, then its own group. Committed groups are scored
+        from `gk`, the groups a row's ancestors closed in this block from their scratch keys; both products
+        take the same tile, so a group scores the same before and after its commit."""
         cfg = self.cfg
         rr, Gc, BG = cfg.index_kpool, st.Gc, st.BG
         nh, D, rd = cfg.index_n_heads, cfg.index_head_dim, cfg.sparse_attn.rope
-        keys = st.gk[li]
-        keys[Gc:] = st.bgk[li][cidx]
-        qi = iq.view(nh, D)
-        qi = torch.cat((qi[:, :D - rd], rotate(qi[:, D - rd:], cos, sin)), dim=-1)
-        logit = (hw.float() * (nh ** -0.5 * D ** -0.5)) @ F.relu(qi.float() @ keys.float().T)      # [Gc + BG]
+        M = iq.shape[0]
+        qi = iq.view(M, nh, D)
+        qi = torch.cat((qi[..., :D - rd], rotate(qi[..., D - rd:], cos[:, None], sin[:, None])), dim=-1)
+        sc = torch.cat((self.mm(qi, st.gk[li][:Gc].t().unsqueeze(0), 64),
+                        self.mm(qi, st.bgk[li][c["cidx"]].transpose(1, 2), 64)), dim=-1)          # [M, nh, Gc + BG]
+        logit = self.mm((hw.float() * (nh ** -0.5 * D ** -0.5)).unsqueeze(1), F.relu(sc)).view(M, Gc + BG)
         gid = self.ar(Gc + BG)
-        ok = (gid < gmax) | ((gid >= Gc) & bok[(gid - Gc).clamp(0, BG - 1)])
-        top = topk_stable(logit.masked_fill(~ok, float("-inf")).unsqueeze(0), cfg.group_topk - 1)[1][0]
-        groups = torch.where(top < Gc, top, bgid[(top - Gc).clamp(0, BG - 1)]).sort().values
+        ok = (gid[None, :] < c["gmax"][:, None]) | ((gid[None, :] >= Gc) & c["bok"].gather(1, (gid - Gc).clamp(0, BG - 1).expand(M, -1)))
+        top = topk_stable(logit.masked_fill(~ok, float("-inf")), cfg.group_topk - 1)[1]
+        groups = torch.where(top < Gc, top, c["bgid"].gather(1, (top - Gc).clamp(0, BG - 1))).sort(dim=-1).values
         off = self.ar(rr)
-        return torch.cat(((groups.unsqueeze(-1) * rr + off).flatten(), qg * rr + off))
+        return torch.cat(((groups.unsqueeze(-1) * rr + off).flatten(1), c["qg"][:, None] * rr + off), dim=-1)
 
     # ------------------------------------------------------------------------- a block's rows
     #: the staged control columns of a row: its token, position, the state's length, its group, the committed
@@ -347,92 +464,89 @@ class Hy4FlashEngine(Hy4FlashRef):
     def run(self, st: Hy4EngState, M: int, select: bool) -> None:
         """The staged block's rows on the device: logits, head inputs and greedy picks into the row buffers,
         the rows' latents and indexer keys into the scratch rows. No host decision and no host read: this is
-        what a graph captures, once for a row count and a form."""
+        what a graph captures, once for a row count and a form. Every sum is `mm`'s, everything else is
+        element-wise, a gather or a sort, so a row's bits are the same in any block."""
         cfg, rb = self.cfg, st.rb[M]
         ctl, o, BG = rb["ctl"], self.CTL, st.BG
         Wn, NS, rr = cfg.sliding_window, cfg.index_topk, cfg.index_kpool
-        Lt = ctl[0, 2]
-        info = []
-        for r in range(M):
-            p = ctl[r, 1]
-            anc = ctl[r, o:o + BLOCK]
-            wq = p - Wn + 1 + self.ar(Wn)
-            wsrc = torch.where(wq < Lt, torch.remainder(wq, Wn), Wn + anc[(wq - Lt).clamp(0, BLOCK - 1)])
-            g0 = ctl[r:r + 1, 5]
-            info.append({"p": p, "anc": anc, "wsrc": wsrc, "wval": wq >= 0, "dval": self.ar(NS) <= p,
-                         "gq": g0 + self.ar(rr), "qg": ctl[r, 3], "gmax": ctl[r, 4],
-                         "cidx": ctl[r, o + BLOCK:o + BLOCK + BG], "bgid": ctl[r, o + BLOCK + BG:o + BLOCK + 2 * BG],
-                         "bok": ctl[r, o + BLOCK + 2 * BG:] != 0,
-                         "rope": {kind: self.rope(self.pos3(ctl[r:r + 1, 1] + st.delta), kind) for kind in set(cfg.layer_types)},
-                         "grope": self.rope(self.pos3(g0 + st.delta), SPARSE)})
+        Lt, p, g0 = ctl[0, 2], ctl[:, 1], ctl[:, 5]
+        anc = ctl[:, o:o + BLOCK]
+        wq = p[:, None] - Wn + 1 + self.ar(Wn)
+        c = {"p": p, "anc": anc, "Lt": Lt, "qg": ctl[:, 3], "gmax": ctl[:, 4],
+             "wsrc": torch.where(wq < Lt, torch.remainder(wq, Wn), Wn + anc.gather(1, (wq - Lt).clamp(0, BLOCK - 1))),
+             "wval": wq >= 0, "gq": g0[:, None] + self.ar(rr),
+             "cidx": ctl[:, o + BLOCK:o + BLOCK + BG], "bgid": ctl[:, o + BLOCK + BG:o + BLOCK + 2 * BG],
+             "bok": ctl[:, o + BLOCK + 2 * BG:] != 0,
+             "rope": {kind: self.rope(self.pos3(p + st.delta), kind) for kind in set(cfg.layer_types)},
+             "grope": self.rope(self.pos3(g0 + st.delta), SPARSE)}
         live = ctl[:, 6] != 0
         h = self.embed(ctl[:, 0]).unsqueeze(1).expand(-1, cfg.hc_mult, -1).contiguous()
+        # the device takes the block's rows together: its element-wise kernels compute every element alone. A
+        # CPU's vector math does not (a value's bits can depend on where it sits in the vector), so there, and
+        # under HY4_ROW_TORCH, the same code takes one row at a time
+        parts = [slice(0, M)] if (self.kernels and not self.row_torch) else [slice(r, r + 1) for r in range(M)]
+        cs = [{k: ((v[0][sl], v[1][sl]) if k == "grope" else {kk: (vv[0][sl], vv[1][sl]) for kk, vv in v.items()} if k == "rope"
+                   else v if k == "Lt" else v[sl]) for k, v in c.items()} for sl in parts]
+
+        def rows(fn):
+            out = [fn(sl, cc) for sl, cc in zip(parts, cs)]
+            return out[0] if len(out) == 1 else torch.cat(out)
         for li in range(cfg.num_hidden_layers):
-            p = f"layers.{li}."
+            pre = f"layers.{li}."
             if li in self.hashes:
-                rows = self._engram_staged(rb, self._elayers.index(li), li, M)
-                h = h + torch.cat([self.engram_apply(h[r:r + 1], rows[r:r + 1], li, live[r:r + 1]) for r in range(M)])
-            xs, posts = zip(*[self.hc(h[r:r + 1], p + "hc_attn_layer.hc_pre.") for r in range(M)])
-            x = torch.cat([self.rms(t, self.w(p + "input_layernorm.weight")) for t in xs])
-            y = self.attention_rows(x, li, st, M, select, info, Lt)
-            h = torch.cat([self.inject(h[r:r + 1], y[r:r + 1], posts[r]) for r in range(M)])
-            xs, posts = zip(*[self.hc(h[r:r + 1], p + "hc_mlp_layer.hc_pre.") for r in range(M)])
-            x = torch.cat([self.rms(t, self.w(p + "post_attention_layernorm.weight")) for t in xs])
-            y = self.mlp_rows(x, li)
-            h = torch.cat([self.inject(h[r:r + 1], y[r:r + 1], posts[r]) for r in range(M)])
-        n = torch.cat([self.final(h[r:r + 1]) for r in range(M)])
-        lg = self.head_rows(n)
+                er = self._engram_staged(rb, self._elayers.index(li), li, M)
+                h = h + rows(lambda sl, cc: self.engram_r(h[sl], er[sl], li, live[sl]))
+            xp = [self.hc_r(h[sl], pre + "hc_attn_layer.hc_pre.") for sl in parts]
+            y = rows(lambda sl, cc: self.attention_rows(self.rms_r(xp[parts.index(sl)][0], self.w(pre + "input_layernorm.weight")),
+                                                        li, st, sl, select, cc))
+            h = self.inject(h, y, torch.cat([q[1] for q in xp]))
+            xp = [self.hc_r(h[sl], pre + "hc_mlp_layer.hc_pre.") for sl in parts]
+            y = rows(lambda sl, cc: self.mlp_rows(self.rms_r(xp[parts.index(sl)][0], self.w(pre + "post_attention_layernorm.weight")), li))
+            h = self.inject(h, y, torch.cat([q[1] for q in xp]))
+        n = rows(lambda sl, cc: self.final_r(h[sl]))
+        lg = rows(lambda sl, cc: self.head_rows(n[sl]))
         rb["hidden"].copy_(n)
         rb["logits"].copy_(lg)
         rb["next"].copy_(lg.argmax(dim=-1))
 
-    def attention_rows(self, x: torch.Tensor, li: int, st: Hy4EngState, M: int, select: bool, info: list, Lt: torch.Tensor) -> torch.Tensor:
+    def attention_rows(self, x: torch.Tensor, li: int, st: Hy4EngState, sl: slice, select: bool, c: dict) -> torch.Tensor:
+        """The attention of the block's rows `sl` (all of them on a device); their scratch rows are written."""
         cfg = self.cfg
         a, kind, p_ = cfg.attn(li), cfg.layer_types[li], f"layers.{li}.self_attn."
-        R, NS = cfg.kv_lora_rank, cfg.index_topk
+        R, NS, Lt, M = cfg.kv_lora_rank, cfg.index_topk, c["Lt"], x.shape[0]
+        rbm = st.rb[len(st.bparents)]
         gate = self.lin_rows(x, self.w(p_ + "linear_gate.weight"))
-        qres = torch.cat([self.rms(t, self.w(p_ + "q_a_layernorm.weight"))
-                          for t in self.lin_rows(x, self.w(p_ + "q_a_proj.weight")).split(1)])
-        q = self.lin_rows(qres, self.w(p_ + "q_b_proj.weight"))
+        qres = self.rms_r(self.lin_rows(x, self.w(p_ + "q_a_proj.weight")), self.w(p_ + "q_a_layernorm.weight"))
+        q = self.lin_rows(qres, self.w(p_ + "q_b_proj.weight")).view(M, a.heads, a.qk)
         ckv = self.lin_rows(x, self.w(p_ + "kv_a_proj_with_mqa.weight"))
-        sparse = kind == SPARSE
-        if sparse:
+        cos, sin = c["rope"][kind]
+        q = torch.cat((q[..., :a.nope], rotate(q[..., a.nope:], cos[:, None], sin[:, None])), dim=-1)
+        st.blat[li][sl] = torch.cat((self.rms_r(ckv[:, :R].contiguous(), self.w(p_ + "kv_a_layernorm.weight")),
+                                     rotate(ckv[:, R:], cos, sin)), dim=-1)
+        if kind == SPARSE:
             ip = p_ + "compressed_indexer."
-            tk = self.lin_rows(x, self.w(ip + "token_key_projection.weight"))
-            iq = self.lin_rows(qres, self.w(ip + "query_projection.weight"))
-            hw = self.lin_rows(x, self.w(ip + "head_weight_projection.weight"))
             D, rd = cfg.index_head_dim, a.rope
-            pi = st.pick_layers.index(li) if li in st.pick_layers else -1
-        out = []
-        for r in range(M):
-            f = info[r]
-            cos, sin = f["rope"][kind]
-            qr = q[r].view(a.heads, a.qk)
-            qr = torch.cat((qr[:, :a.nope], rotate(qr[:, a.nope:], cos, sin)), dim=-1)
-            st.blat[li][r] = torch.cat((self.rms(ckv[r:r + 1, :R], self.w(p_ + "kv_a_layernorm.weight")),
-                                        rotate(ckv[r:r + 1, R:], cos, sin)), dim=-1)[0]
-            if sparse:
-                st.bik[li][r] = self.rms(tk[r:r + 1], self.w(ip + "token_key_norm.weight"))[0]
-                # the pooled key of the group that ends at this row, turned at its first row (read only when the
-                # row closes a group: `commit` and the rows after it in the block)
-                gk = self.group_keys(self._gather(st.ik[li], st.bik[li], f["gq"], Lt, f["anc"]), li)
-                c0, s0 = f["grope"]
-                st.bgk[li][r] = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], c0, s0)), dim=-1)[0]
-                pq = self.ar(NS)
-                if select:
-                    picked = self._select(li, st, iq[r], hw[r], cos, sin, f["p"], f["qg"], f["gmax"], f["cidx"], f["bgid"], f["bok"])
-                    pq = torch.where(f["qg"] < cfg.group_topk, pq, picked)
-                valid = pq <= f["p"]
-                if pi >= 0:
-                    st.rb[M]["pick_q"][pi, r].copy_(pq)
-                    st.rb[M]["pick_ok"][pi, r].copy_(valid)
-                K = self._gather(st.lat[li], st.blat[li], pq, Lt, f["anc"])
-            else:
-                K, valid = torch.cat((st.win[li], st.blat[li]))[f["wsrc"]], f["wval"]
-            out.append(self.attend_row(qr, K, valid, li).reshape(1, -1))
-        y = torch.cat(out) * torch.sigmoid(gate)
-        o = self.lin_rows(y, self.w(p_ + "o_proj.weight"))
-        return torch.cat([self.rms(t, self.w(p_ + "post_proj_norm.weight")) for t in o.split(1)])
+            st.bik[li][sl] = self.rms_r(self.lin_rows(x, self.w(ip + "token_key_projection.weight")), self.w(ip + "token_key_norm.weight"))
+            # the pooled key of the group that ends at each row, turned at its first row (read only where the
+            # row closes a group: by `commit` and by the rows after it in the block)
+            gk = self.group_keys_r(self._gather(st.ik[li], st.bik[li], c["gq"], Lt, c["anc"]), li)
+            c0, s0 = c["grope"]
+            st.bgk[li][sl] = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], c0, s0)), dim=-1)
+            pq = self.ar(NS).expand(M, -1)
+            if select:
+                iq = self.lin_rows(qres, self.w(ip + "query_projection.weight"))
+                hw = self.lin_rows(x, self.w(ip + "head_weight_projection.weight"))
+                pq = torch.where(c["qg"][:, None] < cfg.group_topk, pq, self._select(li, st, iq, hw, cos, sin, c))
+            valid = pq <= c["p"][:, None]
+            if li in st.pick_layers:
+                pi = st.pick_layers.index(li)
+                rbm["pick_q"][pi, sl].copy_(pq)
+                rbm["pick_ok"][pi, sl].copy_(valid)
+            K = self._gather(st.lat[li], st.blat[li], pq, Lt, c["anc"])
+        else:
+            K, valid = torch.cat((st.win[li], st.blat[li]))[c["wsrc"]], c["wval"]
+        y = (self.attend_r(q, K, valid, li).reshape(M, -1) * torch.sigmoid(gate))
+        return self.rms_r(self.lin_rows(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
 
     def expert_pairs(self, z: torch.Tensor, idx: torch.Tensor, li: int, grouped: bool = False) -> torch.Tensor:
         """Every (row, slot) pair through its expert: [M * k, latent] fp32, unweighted. The clamp sits between
@@ -492,15 +606,14 @@ class Hy4FlashEngine(Hy4FlashRef):
         if self.cfg.is_dense_mlp(li):
             g = F.silu(self.lin_rows(x, self.w(p + "gate_proj.weight")))
             y = self.lin_rows(g * self.lin_rows(x, self.w(p + "up_proj.weight")), self.w(p + "down_proj.weight"))
-            return torch.cat([self.rms(t, self.w(p + "post_fc2_norm.weight")) for t in y.split(1)])
-        routes = [self.route(x[r:r + 1], li) for r in range(x.shape[0])]
-        idx, wts = torch.cat([i for i, _ in routes]), torch.cat([w for _, w in routes])
+            return self.rms_r(y, self.w(p + "post_fc2_norm.weight"))
+        idx, wts = self.route_r(x, li)
         z = self.lin_rows(x, self.w(p + "routed_expert_down_proj.weight"))
         routed = self.lin_rows(self.combine(self.expert_pairs(z, idx, li), idx, wts), self.w(p + "routed_expert_up_proj.weight"))
         sp = p + "shared_experts."
         g = F.silu(self.lin_rows(x, self.w(sp + "gate_proj.weight")))
         shared = self.lin_rows(g * self.lin_rows(x, self.w(sp + "up_proj.weight")), self.w(sp + "down_proj.weight"))
-        return torch.cat([self.rms(t, self.w(p + "combine_output_norm.weight")) for t in (routed + shared).split(1)])
+        return self.rms_r(routed + shared, self.w(p + "combine_output_norm.weight"))
 
     def _row_grams(self, st: Hy4EngState, tokens: list[int], paths: list[list[int]]) -> torch.Tensor:
         """[M, n] each row's token and the n - 1 before it: its ancestors, then the state's last tokens."""
@@ -556,7 +669,9 @@ class Hy4FlashEngine(Hy4FlashRef):
             y = y if y.dtype == torch.float32 else y.float()
             cut = self.cuts.get(id(w))
             return y if cut is None else y[:, :cut]
-        return torch.cat([Hy4FlashRef.head(self, n[r:r + 1]) for r in range(n.shape[0])])
+        if not torch.is_tensor(w):
+            w = w.bf16_cached()
+        return self.linr(n, w)[:, :self.cfg.vocab_size]
 
     @torch.no_grad()
     def commit(self, st: Hy4EngState, path: list[int]) -> None:
