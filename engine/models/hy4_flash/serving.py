@@ -353,7 +353,12 @@ def serve(a, ctx) -> dict:
     from engine.settings import SETTINGS as _S
     from engine.spec import Relax
     ctx.keys(a.model, [a.model])
+    from engine.models.hy4_flash.tokenizer import Hy4Tokenizer
     tok = AutoTokenizer.from_pretrained(a.model)
+    try:
+        tok = Hy4Tokenizer(tok)             # the model's suffixed tags under the names the server's parsers read
+    except ValueError as e:
+        ctx.log(f"[server] Hy4-flash: {e}; the tokenizer is served as it is (no tool calls, no reasoning split)")
     srv, info = build(a.model, a.max_len, tok, mark=ctx.mark, log=ctx.log)
     drafter = None
     if a.drafter != "none" and _S.get("HY4_DFLY") == "1":

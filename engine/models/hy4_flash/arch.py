@@ -13,7 +13,8 @@ ARCH = register(Arch(
     serve="engine.models.hy4_flash.serving:serve",
     manifest="engine.models.hy4_flash.serving:manifest",
     rank=6,
-    # one sequence at a time until the row path has its own kernels and graphs
+    # the arg-key form, which the model writes with suffixed tags (tokenizer.py gives them their plain names);
+    # one sequence at a time until the row path has its own kernels
     spec=ServeSpec(tool_format="argkey", side_slots=False),
     # Flash-Next's reference primitives (the stable top-k, the expert bank, an EXL3 projection's product) and
     # its n-gram table readers (the O_DIRECT row reader, the codebook)
