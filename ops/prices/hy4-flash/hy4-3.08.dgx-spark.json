@@ -12,6 +12,15 @@
   },
   "plain": {
    "1": 39.52
+  },
+  "spec": {
+   "1": 25.0
+  },
+  "prime": {
+   "1": 0.001
+  },
+  "draft": {
+   "1": 11.0
   }
  },
  "4096": {
@@ -27,6 +36,15 @@
   },
   "plain": {
    "1": 40.91
+  },
+  "spec": {
+   "1": 27.0
+  },
+  "prime": {
+   "1": 0.001
+  },
+  "draft": {
+   "1": 11.0
   }
  },
  "16384": {
@@ -42,6 +60,15 @@
   },
   "plain": {
    "1": 41.1
+  },
+  "spec": {
+   "1": 27.0
+  },
+  "prime": {
+   "1": 0.001
+  },
+  "draft": {
+   "1": 11.0
   }
  },
  "65536": {
@@ -57,8 +84,17 @@
   },
   "plain": {
    "1": 41.61
+  },
+  "spec": {
+   "1": 27.0
+  },
+  "prime": {
+   "1": 0.001
+  },
+  "draft": {
+   "1": 11.0
   }
  },
  "step_ms": 7.0,
- "measured": "2026-11-19, Hy4-flash EXL3 3.08 on the DGX Spark (tools/hy4_check.py --prices-at 1500,3600,15000,60000, one run beside another GPU job at nice 19). Context classes: Hy4FlashServing.price_class (0 below 2,048 rows, then the next 4,096 x 2^k). chain: a verify block of 1 to 8 rows (a chain of the text's next tokens) staged and replayed from its graph, the median of 7, plus 0.3 ms for the commit (0.17 measured). plain: the 1-row block plus 1.0 ms (the commit and a step's cold table rows, 0.7 ms measured on prose). 8,192, 32,768 and the classes past 65,536 are not measured and take the nearest lower class. No spec or prime prior: the cut learns them online."
+ "measured": "2026-11-19, Hy4-flash EXL3 3.08 on the DGX Spark (tools/hy4_check.py --prices-at 1500,3600,15000,60000, one run beside another GPU job at nice 19). Context classes: Hy4FlashServing.price_class (0 below 2,048 rows, then the next 4,096 x 2^k). chain: a verify block of 1 to 8 rows (a chain of the text's next tokens) staged and replayed from its graph, the median of 7, plus 0.3 ms for the commit (0.17 measured). plain: the 1-row block plus 1.0 ms (the commit and a step's cold table rows, 0.7 ms measured on prose). 8,192, 32,768 and the classes past 65,536 are not measured and take the nearest lower class. spec: a drafted round's ms a token, 27.0 from the device tool's prose run at 3,600 rows with the chain cut at a path probability of 0.3 to 0.45 (37.2 tok/s, tools/hy4_check.py --dfly-cut); class 0 ESTIMATED at 25.0 from its cheaper blocks, the classes past 4,096 take 27.0. prime: the draft layers keep no cache of their own, so a backlog row costs nothing (0.001). draft: the draft layers' pass from its graph, 11.0 ms measured at 3,600 rows, taken for every class."
 }

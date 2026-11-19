@@ -360,7 +360,15 @@ def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print)
     prices = PriceModel.load(os.path.join(ROOT, "ops", "prices", MODEL_ID, f"{profile_of(path)}.{device_id()}.json"), log=log)
     head = DFlyHead(srv, graphs=srv.graphs is not None)
     srv.heads["dfly"] = head
-    return MTPTreeDrafter(srv, head, StairCut(prices, siblings=_S.get("HY4_DFLY_SIBLINGS") == "1"), ng)
+    cut = StairCut(prices, siblings=_S.get("HY4_DFLY_SIBLINGS") == "1")
+    freeze = _S.get("HY4_DRAFT_FREEZE") == "1" and bool(prices.table)
+    if freeze:
+        for c in prices.table:                          # a frozen cut learns no draft cost: the file's
+            d = prices.prior(1, "draft", c)
+            if d is not None:
+                cut.draft[c] = d
+        log("[server] Hy4-flash drafter state frozen (HY4_DRAFT_FREEZE): the cut keeps the price file's prices")
+    return MTPTreeDrafter(srv, head, cut, ng, freeze=freeze)
 
 
 def serve(a, ctx) -> dict:

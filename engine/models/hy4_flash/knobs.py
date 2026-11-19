@@ -21,4 +21,8 @@ KNOBS: dict[str, tuple] = {
     # a drafted round as a tree: the cut may keep the draft layers' second token at a depth as a leaf beside the
     # chain (1), or the chain alone (0)
     'HY4_DFLY_SIBLINGS': ('0', 'engine/models/hy4_flash/serving.py'),
+    # the drafter keeps the price file's prices and its calibration's start (1): the same request drafts the same
+    # rounds on any server, and a first request's slow rounds do not send the class to the plain step; without a
+    # price file for the pack on this device, or at 0, the cut learns its prices as served
+    'HY4_DRAFT_FREEZE': ('1', 'engine/models/hy4_flash/serving.py'),
 }
