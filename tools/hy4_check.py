@@ -45,6 +45,185 @@ def sync(dev) -> None:
         torch.cuda.synchronize()
 
 
+def chat_ids(pack_dir: str, text: str, ask: str, effort: str = "no_think") -> tuple:
+    """A one-turn chat request rendered by the pack's own template (jinja, as transformers renders it) and its ids."""
+    import jinja2
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+    from tokenizers import Tokenizer
+
+    def raise_exception(msg):
+        raise jinja2.exceptions.TemplateError(msg)
+    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+    env.filters["tojson"] = lambda v, ensure_ascii=False, indent=None: json.dumps(v, ensure_ascii=ensure_ascii, indent=indent)
+    env.globals["raise_exception"] = raise_exception
+    tpl = env.from_string(open(os.path.join(pack_dir, "chat_template.jinja")).read())
+    prompt = tpl.render(messages=[{"role": "user", "content": text + "\n\n" + ask}], add_generation_prompt=True, reasoning_effort=effort, tools=None)
+    tok = Tokenizer.from_file(os.path.join(pack_dir, "tokenizer.json"))
+    return tok.encode(prompt, add_special_tokens=False).ids, tok
+
+
+def prose(a, eng, cfg, say) -> None:
+    """One request as a user sees it: real text, a prose answer of --answer tokens, greedy. Tokens a second from
+    token 50 on, plain and in drafted rounds (the same text), and the draft's kept tokens a round."""
+    from engine.models.hy4_flash.dfly import DFlyHead
+    from engine.models.hy4_flash.serving import Hy4FlashServing
+    text = open(a.prose).read()
+    ids, tok = chat_ids(a.pack, text, "Write a detailed essay of at least 700 words that explains the text above to a newcomer. "
+                        "Use plain prose paragraphs only: no lists, no tables, no headings, no code.")
+    srv = Hy4FlashServing(eng, a.max_len)
+    if a.no_graphs:
+        srv.graphs = None
+    t0 = time.perf_counter()
+    lg = srv.forward(torch.tensor(ids), start=0)
+    sync(a.device)
+    t_prompt = time.perf_counter() - t0
+    snap = srv.cache_state().clone()
+    first = int(lg[0, 0].argmax())
+    srv.forward(torch.tensor([first]), start=len(ids))            # captures the step's graph: undone
+    srv.cache_state().restore(snap)
+    srv.kv.length = len(ids)
+    toks, nxt, stamps = [], first, []
+    for i in range(a.answer):
+        if nxt in cfg.eos_token_ids:
+            break
+        toks.append(nxt)
+        lg = srv.forward(torch.tensor([nxt]), start=len(ids) + i)
+        nxt = int(lg[0, 0].argmax())
+        stamps.append(time.perf_counter())
+    skip = min(50, max(len(toks) - 2, 0))
+    plain = (len(toks) - skip - 1) / max(stamps[-1] - stamps[skip], 1e-9) if len(toks) > skip + 1 else 0.0
+    answer = tok.decode(toks, skip_special_tokens=False)
+    say("prose_plain", prompt_tokens=len(ids), prompt_s=round(t_prompt, 1), prompt_tok_s=round(len(ids) / t_prompt, 1), answer_tokens=len(toks),
+        ended=nxt in cfg.eos_token_ids, tok_s_from_50=round(plain, 2), ms_step=round(1e3 / plain, 2) if plain else None,
+        graphs=srv.graphs is not None, answer_head=answer[:400], answer_tail=answer[-200:])
+    if cfg.dfly is None or not a.dfly:
+        return
+    srv.cache_state().restore(snap)
+    srv.kv.length = len(ids)
+    lg = srv.forward(torch.tensor([first]), start=len(ids))       # the picks are gone with the restore: one plain step
+    out, nxt = [first], int(lg[0, 0].argmax())
+    head = DFlyHead(srv, graphs=srv.graphs is not None)
+    head.launch(srv.last_streams(), [nxt])                        # one round first, undone: it captures its graphs
+    tk, _ = head.read()
+    if tk:
+        srv.forward_tree(torch.tensor([nxt] + [t[0] for t in tk]), list(range(-1, len(tk))), start=srv.kv.length)
+        srv.discard_pending()
+        srv.st.picks_at = srv.st.length
+    rounds = kept = 0
+    draft_s, hist, marks = 0.0, [0] * (cfg.dfly.draft_tokens + 1), []
+    while len(out) < len(toks):
+        td = time.perf_counter()
+        head.launch(srv.last_streams(), [nxt])
+        tk, _ = head.read()
+        draft_s += time.perf_counter() - td
+        block = [nxt] + [t[0] for t in tk]
+        srv.forward_tree(torch.tensor(block), list(range(-1, len(block) - 1)), start=srv.kv.length)
+        picks = srv.picks.tolist()
+        n = 1
+        while n < len(block) and block[n] == picks[n - 1]:
+            n += 1
+        srv.commit_tree(list(range(n)))
+        out += block[:n]
+        nxt, kept, rounds = picks[n - 1], kept + n - 1, rounds + 1
+        hist[n - 1] += 1
+        marks.append((len(out), time.perf_counter()))
+    after = [(n, t) for n, t in marks if n >= 50]
+    rate = (after[-1][0] - after[0][0]) / max(after[-1][1] - after[0][1], 1e-9) if len(after) > 1 else 0.0
+    say("prose_dfly", equal=out[:len(toks)] == toks, rounds=rounds, tokens=len(out), tok_s_from_50=round(rate, 2),
+        tokens_per_round=round(len(out) / max(rounds, 1), 3), kept_per_round=round(kept / max(rounds, 1), 3),
+        accept_rate=round(kept / max(rounds * cfg.dfly.draft_tokens, 1), 3), kept_histogram=hist,
+        ms_round=round(1e3 * (marks[-1][1] - marks[0][1]) / max(len(marks) - 1, 1), 2), draft_ms_round=round(1e3 * draft_s / max(rounds, 1), 2),
+        draft_tokens=cfg.dfly.draft_tokens, graphs=srv.graphs is not None)
+
+
+def profile(a, eng, cfg, ids, say) -> None:
+    """One decode step and one 6-row block taken apart: exclusive wall time a part, launched one by one with a
+    device sync around every part (so the parts add up; a graph's replay of the same pass is given beside them)."""
+    from engine.models.hy4_flash.dfly import DFlyHead
+    from engine.models.hy4_flash.serving import Hy4FlashServing
+    parts = {"lin1": "packed projections (EXL3)", "expert_pairs": "experts", "combine": "experts", "route_r": "router",
+             "attend_r": "attention", "_gather": "attention (row gather)", "_select": "indexer (scores, top groups)",
+             "group_keys_r": "indexer (group keys)", "engram_r": "Engram (arithmetic)", "_engram_staged": "Engram (row decode)",
+             "hc_r": "hyper-connections", "inject": "hyper-connections", "final_r": "final norm", "head_rows": "head",
+             "rms_r": "norms", "stage": "host: stage and table reads", "commit": "host: commit"}
+    acc, stack = {}, []
+    saved = {}
+
+    def wrap(name):
+        fn = getattr(eng, name)
+        saved[name] = fn
+
+        def timed(*args, **kw):
+            sync(a.device)
+            t0 = time.perf_counter()
+            stack.append(0.0)
+            try:
+                return fn(*args, **kw)
+            finally:
+                sync(a.device)
+                dt = time.perf_counter() - t0
+                inner = stack.pop()
+                acc[parts[name]] = acc.get(parts[name], 0.0) + dt - inner
+                if stack:
+                    stack[-1] += dt
+        setattr(eng, name, timed)
+    srv = Hy4FlashServing(eng, a.max_len)
+    srv.forward(torch.tensor(ids), start=0)
+    st = srv.st
+    graphs = {} if str(a.device).startswith("cuda") else None
+    out = {}
+    for M in (1, 6):
+        toks, par = [int(t) for t in ids[:M]], list(range(-1, M - 1))
+        if graphs is not None:
+            eng.rows(toks, par, st, graphs=graphs)
+            sync(a.device)
+            t0 = time.perf_counter()
+            for _ in range(5):
+                eng.stage(toks, par, st)
+                graphs[(M, st.length // cfg.index_kpool >= cfg.group_topk)].replay()
+            sync(a.device)
+            out[f"replay_ms_{M}"] = round(1e3 * (time.perf_counter() - t0) / 5, 2)
+        eng.rows(toks, par, st)
+        for name in parts:
+            wrap(name)
+        acc.clear()
+        N = 4
+        sync(a.device)
+        t0 = time.perf_counter()
+        for _ in range(N):
+            eng.rows(toks, par, st)
+        sync(a.device)
+        total = 1e3 * (time.perf_counter() - t0) / N
+        for name, fn in saved.items():
+            setattr(eng, name, fn)
+        split = {k: round(1e3 * v / N, 2) for k, v in sorted(acc.items(), key=lambda kv: -kv[1])}
+        split["other (element-wise, embedding)"] = round(total - sum(split.values()), 2)
+        out[f"eager_ms_{M}"] = round(total, 2)
+        out[f"parts_ms_{M}"] = split
+    if cfg.dfly is not None:
+        eng.rows([int(ids[0])], [-1], st)
+        eng.commit(st, [0])
+        head = DFlyHead(srv)
+        hid = st.rb[1]["hidden"][:1].clone()
+        head.stage(7, hid, st)
+        head.run(st)
+        sync(a.device)
+        t0 = time.perf_counter()
+        for _ in range(5):
+            head.run(st)
+        sync(a.device)
+        out["draft_eager_ms"] = round(1e3 * (time.perf_counter() - t0) / 5, 2)
+        if graphs is not None:
+            g = head._capture(st)
+            sync(a.device)
+            t0 = time.perf_counter()
+            for _ in range(5):
+                g.replay()
+            sync(a.device)
+            out["draft_replay_ms"] = round(1e3 * (time.perf_counter() - t0) / 5, 2)
+    say("profile", context_rows=st.length, **out)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pack", required=True)
@@ -61,6 +240,11 @@ def main() -> int:
     ap.add_argument("--table", default="cold")
     ap.add_argument("--no-graphs", action="store_true")
     ap.add_argument("--caches", action="store_true")
+    ap.add_argument("--grouped", action="store_true", help="the prompt's experts on the grouped kernels")
+    ap.add_argument("--prose", help="a text file: a chat request to answer it in prose, decode rates from token 50 on")
+    ap.add_argument("--answer", type=int, default=600)
+    ap.add_argument("--profile", action="store_true", help="one decode step and one drafted round taken apart by part")
+    ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit)")
     ap.add_argument("--need-gib", type=float, default=0.0, help="refuse to load below this MemAvailable")
     ap.add_argument("--cache-chunk", type=int, default=512)
     ap.add_argument("--skip-tolerance", action="store_true")
@@ -94,6 +278,7 @@ def main() -> int:
         L.Hy4Pack.open = orig
         cfg = pack.cfg
     eng = Hy4FlashEngine(cfg, W, tables, device=a.device, max_len=a.max_len, banks=banks, cuts=cuts)
+    eng.prefill_grouped = a.grouped
     say("load", timing=timing, weights_gib=round(pack.resident_bytes() / (1 << 30), 3), banks=len(banks), mem=mem())
 
     g = torch.Generator().manual_seed(7)
@@ -112,18 +297,24 @@ def main() -> int:
         say("self_check_refused", why=f"--max-len {a.max_len} cannot hold the {deep} prompt rows the check needs")
         return 1
     long = (ids * (deep // max(len(ids), 1) + 1))[:deep]
-    res = eng.self_check(long, steps=12, widths=(2, 4, 6, 12), log=lambda s: print(s, flush=True))
-    say("self_check", **res)
-    if str(a.device).startswith("cuda") and not a.no_graphs:
+    only = set(a.only.split(",")) if a.only else None
+
+    def want(name):
+        return only is None or name in only
+    res = {"ok": True}
+    if want("self"):
+        res = eng.self_check(long, steps=12, widths=(2, 4, 6, 12), log=lambda s: print(s, flush=True))
+        say("self_check", **res)
+    if want("self") and str(a.device).startswith("cuda") and not a.no_graphs:
         # the same replay through the captured graphs against the plain pass's recorded rows
         rg = eng.self_check(long, steps=12, widths=(1, 2, 4, 6, 12), log=lambda s: print(s, flush=True), graphs=True)
         say("self_check_graphs", **rg)
         res["ok"] = res["ok"] and rg["ok"]
-    if not (res["covers"]["selection"] and res["covers"]["rings_wrapped"] and res["covers"]["groups_closed_in_blocks"] > 0):
+    if want("self") and not (res["covers"]["selection"] and res["covers"]["rings_wrapped"] and res["covers"]["groups_closed_in_blocks"] > 0):
         say("self_check_refused", why="the replay did not reach every read path", covers=res["covers"])
         return 1
 
-    if banks:
+    if banks and want("experts"):
         # the prompt's experts: 32-row batches of the pair kernels, one launch of 256 rows, the grouped kernels
         li = min(banks)
         x = (torch.randn(256, cfg.hidden_size, generator=g) * 0.5).to(a.device, eng.dtype)
@@ -142,7 +333,7 @@ def main() -> int:
         say("prefill_experts", layer=li, rows=256, equal_256=torch.equal(b32, b256), equal_grouped=torch.equal(b32, bg),
             ms_32=t32, ms_256=t256, ms_grouped=tg)
         res_ok_experts = torch.equal(b32, b256)
-    if str(a.device).startswith("cuda") and not a.skip_tolerance:
+    if str(a.device).startswith("cuda") and not a.skip_tolerance and want("tolerance"):
         # the kernel row pass against the same pass on plain torch sums (HY4_ROW_TORCH), teacher-forced on the same
         # rows: how far the kernel's summation order moves a logit (a tolerance, not an equality)
         n0 = min(len(ids), deep)
@@ -171,6 +362,12 @@ def main() -> int:
             agree_prompt=round((got[:cut].argmax(-1) == want[:cut].argmax(-1)).float().mean().item(), 4),
             agree_steps=round((got[cut:].argmax(-1) == want[cut:].argmax(-1)).float().mean().item(), 4))
 
+    if a.prose and want("prose"):
+        prose(a, eng, cfg, say)
+    if a.profile and want("profile"):
+        profile(a, eng, cfg, ids, say)
+    if not (want("decode") or want("dfly") or want("caches") or want("fit")):
+        return 0 if res["ok"] else 1
     srv = Hy4FlashServing(eng, a.max_len)
     if a.no_graphs:
         srv.graphs = None
@@ -198,7 +395,7 @@ def main() -> int:
         graphs=srv.graphs is not None, engram_rows=eng.stats["engram_rows"],
         tables=[t.report() for t in tables.values()] if a.table == "cold" else None)
 
-    if a.dfly and cfg.dfly is not None:
+    if a.dfly and cfg.dfly is not None and want("dfly"):
         from engine.models.hy4_flash.dfly import DFlyHead
         srv.cache_state().restore(snap)
         srv.kv.length = len(ids)
@@ -242,7 +439,7 @@ def main() -> int:
             draft_tokens=cfg.dfly.draft_tokens, graphs=srv.graphs is not None,
             stale=head.stats["stale"])
 
-    if a.caches:
+    if a.caches and want("caches"):
         # the cache tiers with this family's state on the device: each gives back a cold prefill's bits
         import shutil
         import tempfile
@@ -321,7 +518,7 @@ def main() -> int:
         sync(a.device)
         say("caches", chunk=CH, rows=len(turn1), more=len(more), seconds=round(time.perf_counter() - t0, 1), **res_)
         del cold, s1, s2, s3, s4, ref1
-    if a.fit:
+    if a.fit and want("fit"):
         del srv
         if str(a.device).startswith("cuda"):
             torch.cuda.empty_cache()
