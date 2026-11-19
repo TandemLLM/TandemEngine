@@ -419,7 +419,7 @@ def main() -> int:
         diff = (pk != pt).any(dim=-1)
         say("rows_routing", row_layers=int(diff.numel()), same_experts=int((~diff).sum()), differing=int(diff.sum()),
             first_differing=int(diff.nonzero()[0]) if bool(diff.any()) else None, moe_layers=len(banks))
-        if len(scores["kernel"]) == len(picks["kernel"]) == len(scores["torch"]) and bool(diff.any()):
+        if sum(len(x) for x in scores["kernel"]) == sum(len(x) for x in scores["torch"]) == diff.numel() and bool(diff.any()):
             # at each (row, layer): the gap between the 16th and 17th score against how far the two paths' scores
             # of that row are apart (their inputs differ by the layers before). A gap below that distance flips.
             sk, stc = torch.cat(scores["kernel"]), torch.cat(scores["torch"])
@@ -437,6 +437,8 @@ def main() -> int:
                 median_gap=float(gap.median()), median_distance=float(dist.median()),
                 median_distance_before_first=float(dist[:f].median()) if f else None,
                 gate_weight_dtype=str(eng.w("layers.1.mlp.gate.weight").dtype))
+        else:
+            say("rows_routing_margin", skipped=[sum(len(x) for x in scores[n]) for n in ("kernel", "torch")], rows=int(diff.numel()))
         d = (outs["kernel"] - outs["torch"]).abs()
         say("rows_tolerance", rows=int(d.shape[0]), max_abs=round(d.max().item(), 5), mean_abs=round(d.mean().item(), 6),
             logit_scale=round(outs["torch"].abs().mean().item(), 3),
