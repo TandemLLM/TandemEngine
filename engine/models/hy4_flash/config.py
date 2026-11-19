@@ -275,7 +275,9 @@ def config_from_dict(raw: dict, path: str = "", gen: dict | None = None) -> Hy4F
     sizes = {int(k): [s for order in v for s in order] for k, v in (t.get("engram_layer_head_vocab_sizes") or {}).items()}
 
     dfly = None
-    if top.get("dfly_num_hidden_layers"):
+    # the draft layers need their mask token and the target layers they read; a config that names only their count
+    # (a converter's tiny rehearsal model) has none to serve
+    if top.get("dfly_num_hidden_layers") and all(k in top for k in ("dfly_mask_token_id", "dfly_target_index_layer", "dfly_target_kv_layers")):
         nd = int(top["dfly_num_hidden_layers"])
         spec = top.get("speculative_config") or {}
 

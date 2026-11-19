@@ -28,7 +28,8 @@ from engine.models.state import SectionState
 
 MODULES = ("engine/models/hy4_flash/__init__.py", "engine/models/hy4_flash/config.py", "engine/models/hy4_flash/engine.py",
            "engine/models/hy4_flash/engram.py", "engine/models/hy4_flash/ref.py", "engine/models/hy4_flash/knobs.py",
-           "engine/models/hy4_flash/dfly.py",
+           "engine/models/hy4_flash/dfly.py", "engine/models/hy4_flash/table.py", "engine/models/hy4_flash/pack.py",
+           "engine/models/hy4_flash/load.py",
            "engine/models/flashnext/ref.py", "engine/models/flashnext/ple.py", "engine/settings.py")
 #: the model's name in ops/prices/ and models/
 MODEL_ID = "hy4-flash"
@@ -165,7 +166,7 @@ class Hy4FlashServing:
 
     def resident_files(self) -> list:
         """The Engram tables read through the page cache (a warm table's bytes count against the floor)."""
-        return [f for t in self.fn.tables.values() for f in getattr(t, "resident_files", lambda: [])()]
+        return [t.report() for t in self.fn.tables.values() if hasattr(t, "report")]
 
     def discard_pending(self) -> None:
         self._chain = None
@@ -270,3 +271,81 @@ def _tensors(o) -> list:
     if getattr(o, "dense", None) is not None:
         return [o.dense]
     return []
+
+
+def profile_of(path: str) -> str:
+    """The weight profile a pack is served as: the running one (QSE_WEIGHTS), else hy4-<dir>."""
+    return os.environ.get("QSE_WEIGHTS") or "hy4-" + os.path.basename(os.path.normpath(path))
+
+
+def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print, device: str = "cuda", check: bool = True):
+    """Hy4-flash for the server: the pack's weights, the engine in the loop's interface, the load-time
+    self-check (a block's rows against the decode step's). Returns (serving, info)."""
+    from engine.models.hy4_flash.load import load
+    from engine.settings import SETTINGS as S
+    pack, W, cuts, tables, banks, timing = load(path, device, log=log, table_policy=S.get("HY4_TABLE"),
+                                                table_cache_bytes=int(float(S.get("HY4_TABLE_CACHE_GB")) * (1 << 30)))
+    mark("weights")
+    eng = Hy4FlashEngine(pack.cfg, W, tables, device=device, max_len=max_len, banks=banks, cuts=cuts)
+    srv = Hy4FlashServing(eng, max_len)
+    mark("engine")
+    res = None
+    if check:
+        if tok is not None:
+            prompt = tok("Count from one to twenty in words, then name the days of the week.", add_special_tokens=False)["input_ids"]
+        else:
+            prompt = [(7 * i + 3) % pack.cfg.vocab_size for i in range(24)]
+        res = eng.self_check([int(t) for t in prompt], log=log)
+        srv.restart()
+    info = {"pack": path, "load": timing, "self_check": res, "quant": pack.quant, "dfly": pack.has_dfly,
+            "formats": timing.get("notes"), "tables": [t.report() for t in tables.values()]}
+    return srv, info
+
+
+def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print):
+    """The DFly2 draft layers and the lookup (the request's own text, `corpus`, the server's suffix store) in one
+    tree a round, cut by StairCut, through the shared tree drafter."""
+    from engine.device import device_id
+    from engine.drafters.ngram import NgramDrafter
+    from engine.methods.mtp_drafter import MTPTreeDrafter
+    from engine.methods.staircut import PriceModel, StairCut
+    from engine.models.hy4_flash.dfly import DFlyHead
+    from engine.tokfp import fingerprint
+    ng = NgramDrafter(corpus_path=corpus or "", tokenizer_sha=fingerprint(path), min_order=3, max_depth=16, min_corpus_order=8)
+    prices = PriceModel.load(os.path.join(ROOT, "ops", "prices", MODEL_ID, f"{profile_of(path)}.{device_id()}.json"), log=log)
+    head = DFlyHead(srv)
+    srv.heads["dfly"] = head
+    return MTPTreeDrafter(srv, head, StairCut(prices, siblings=False), ng)
+
+
+def serve(a, ctx) -> dict:
+    """Tencent's Hy4-flash from an EXL3 pack for the server (`--model <dir>`, the registry's `serve`). Text only:
+    the vision tower is not served yet. Plain decode on the row path; with `--drafter` other than none the DFly2
+    draft layers and the lookup, when the pack holds the layers and the load-time self-check passed."""
+    from transformers import AutoTokenizer
+
+    from engine.settings import SETTINGS as S
+    from engine.spec import Relax
+    ctx.keys(a.model, [a.model])
+    tok = AutoTokenizer.from_pretrained(a.model)
+    srv, info = build(a.model, a.max_len, tok, mark=ctx.mark, log=ctx.log)
+    drafter = None
+    if a.drafter != "none" and S.get("HY4_DFLY") == "1":
+        if not info["dfly"]:
+            ctx.log("[server] Hy4-flash: the pack has no DFly layers: plain decode only")
+        elif not (info["self_check"] and info["self_check"]["ok"]):
+            ctx.log("[server] Hy4-flash self-check FAILED: speculation off, plain decode only")
+        else:
+            drafter = dfly_drafter(srv, a.model, a.corpus, ctx.log)
+            a.k = max(int(a.k or 0), srv.cfg.dfly.draft_tokens)
+    ctx.mark("drafters")
+    describe = (f"Hy4-flash {a.model} (exl3): load {info['load'].get('total_s')} s, drafter "
+                f"{'DFly2 + lookup + StairCut' if drafter is not None else 'none'}, Engram tables {S.get('HY4_TABLE')}, "
+                f"max_len {a.max_len:,},")
+    return {"engine": srv, "tok": tok, "drafter": drafter, "path": a.model, "device": "cuda", "cfg": None, "w": None,
+            "describe": describe,
+            "serving": {"tree": drafter is not None, "sampled_tree": "det", "relax": Relax(1.0, 1),
+                        "weights_info": {"format": "exl3", "weights": a.model,
+                                         "drafters": "DFly2 + lookup" if drafter is not None else None,
+                                         "load_s": info["load"].get("total_s"), "self_check": info["self_check"],
+                                         "kv_cache": "bf16 latents", "tables": info["tables"]}}}

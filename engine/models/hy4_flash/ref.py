@@ -92,8 +92,9 @@ class Hy4FlashRef:
     layer's index to its table (`gather(ids, dtype) -> [n, 96]`; `fp8_done` True when its rows already
     went through the e4m3 round trip)."""
 
-    def __init__(self, cfg: Hy4FlashConfig, W: dict, tables: dict, dtype=torch.bfloat16, device="cpu"):
+    def __init__(self, cfg: Hy4FlashConfig, W: dict, tables: dict, dtype=torch.bfloat16, device="cpu", cuts: dict | None = None):
         self.cfg, self.W, self.tables, self.dtype, self.device = cfg, W, tables, dtype, torch.device(device)
+        self.cuts = cuts or {}
         self.hashes = {li: EngramHash.from_config(cfg, lid, W[f"layers.{li}.engram_layer.lookup_table"])
                        for li, lid in cfg.engram_layers.items()}
         self.inv_freq = {}
@@ -106,7 +107,14 @@ class Hy4FlashRef:
         return self.W[name]
 
     def lin(self, x, w):
-        return lin(x, w)
+        """x @ w^T. A projection the converter padded to a multiple of 128 takes x padded with zeros and gives its
+        real width (`cuts`: id(weight) -> width)."""
+        k = getattr(w, "K", None)
+        if k is not None and x.shape[-1] < k:
+            x = F.pad(x, (0, k - x.shape[-1]))
+        y = lin(x, w)
+        n = self.cuts.get(id(w))
+        return y if n is None else y[..., :n]
 
     def rms(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         """`HYV4FlashRMSNorm`: the norm in fp32, cast back, then times the weight."""
@@ -156,7 +164,7 @@ class Hy4FlashRef:
     def engram_rows(self, li: int, ids: torch.Tensor) -> torch.Tensor:
         """Table rows [..., heads, head_dim] in the compute dtype, as the reference reads them."""
         t = self.tables[li]
-        e = t.gather(ids.reshape(-1), dtype=self.dtype).to(self.device).reshape(*ids.shape, -1)
+        e = t.gather(ids.reshape(-1).cpu(), dtype=self.dtype).to(self.device).reshape(*ids.shape, -1)
         if self.cfg.engram_fp8_embedding and not getattr(t, "fp8_done", False):
             e = fp8_round_trip(e)
         return e

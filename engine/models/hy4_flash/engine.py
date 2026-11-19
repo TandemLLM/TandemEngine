@@ -107,8 +107,8 @@ class Hy4FlashEngine(Hy4FlashRef):
     a kernel bank (`banks[layer]`, tools/fn_kernels.MoEBank) instead of `ExpertBank`s."""
 
     def __init__(self, cfg: Hy4FlashConfig, W: dict, tables: dict, dtype=torch.bfloat16, device="cpu",
-                 max_len: int = 32768, banks: dict | None = None):
-        super().__init__(cfg, W, tables, dtype=dtype, device=device)
+                 max_len: int = 32768, banks: dict | None = None, cuts: dict | None = None):
+        super().__init__(cfg, W, tables, dtype=dtype, device=device, cuts=cuts)
         self.max_len = int(max_len)
         self.banks = banks or {}
         self.kernels = self.device.type == "cuda"
@@ -140,10 +140,34 @@ class Hy4FlashEngine(Hy4FlashRef):
             return self.lin1(x, w)
         return torch.cat([self.lin1(x[r:r + 1], w) for r in range(x.shape[0])])
 
+    def lin(self, x: torch.Tensor, w) -> torch.Tensor:
+        """On a device an EXL3 projection never dequantises: up to BLOCK rows on the row kernel, more on the
+        library's GEMM."""
+        if not (self.kernels and hasattr(w, "bf16_cached") and x.dtype == torch.bfloat16):
+            return super().lin(x, w)
+        x2 = x.reshape(-1, x.shape[-1])
+        if x2.shape[0] <= BLOCK:
+            return self.lin1(x2, w).view(*x.shape[:-1], -1)
+        from tools.exl3_linear import exl3_matmul
+        if x2.shape[-1] < w.K:
+            x2 = F.pad(x2, (0, w.K - x2.shape[-1]))
+        y = exl3_matmul(x2.contiguous(), w)
+        n = self.cuts.get(id(w))
+        return (y if n is None else y[:, :n]).view(*x.shape[:-1], -1)
+
+    def head(self, n: torch.Tensor) -> torch.Tensor:
+        if self.kernels and hasattr(self.w("lm_head.weight"), "bf16_cached") and n.dtype == torch.bfloat16:
+            return torch.cat([self.head_rows(n[i:i + BLOCK]) for i in range(0, n.shape[0], BLOCK)])
+        return super().head(n)
+
     def lin1(self, x: torch.Tensor, w) -> torch.Tensor:
-        if self.kernels and hasattr(w, "bf16_cached"):
+        if self.kernels and hasattr(w, "bf16_cached") and x.dtype == torch.bfloat16:
             from tools import fn_kernels as FK
-            return FK.dense(x.contiguous(), w)
+            if x.shape[-1] < w.K:
+                x = F.pad(x, (0, w.K - x.shape[-1]))
+            y = FK.dense(x.contiguous(), w)
+            n = self.cuts.get(id(w))
+            return y if n is None else y[:, :n]
         return self.lin(x, w)
 
     def pos3(self, positions: torch.Tensor) -> torch.Tensor:
@@ -362,9 +386,11 @@ class Hy4FlashEngine(Hy4FlashRef):
         w = self.w("lm_head.weight")
         if self.kernels and hasattr(w, "bf16_cached"):
             from tools import fn_kernels as FK
-            out = torch.empty(n.shape[0], w.N, dtype=torch.float32, device=n.device)
-            return FK.dense(n.contiguous(), w, out=out)
-        return torch.cat([self.head(n[r:r + 1]) for r in range(n.shape[0])])
+            y = FK.dense(n.contiguous(), w)
+            y = y if y.dtype == torch.float32 else y.float()
+            cut = self.cuts.get(id(w))
+            return y if cut is None else y[:, :cut]
+        return torch.cat([Hy4FlashRef.head(self, n[r:r + 1]) for r in range(n.shape[0])])
 
     @torch.no_grad()
     def commit(self, st: Hy4EngState, path: list[int]) -> None:
