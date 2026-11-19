@@ -4,6 +4,7 @@ target (its latents at the last committed row's picks), and that a draft never c
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -194,6 +195,54 @@ def test_speculative_greedy_is_plain_greedy():
             nxt, kept, rounds = picks[n - 1], kept + n - 1, rounds + 1
         assert out[:24] == want, (out, want)
     return f"24 tokens equal in fp32 and bf16; bf16: {rounds} rounds, {kept} drafted tokens kept (random weights)"
+
+
+def test_the_served_loop_drafts_and_writes_the_plain_text():
+    """The server's request loop over the family's engine with the DFly head, the lookup and the cut (the chain,
+    then with second-choice leaves): the completion is the plain one's text, and rounds were drafted."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_forward_tree as T  # noqa: F401  (the CPU environment before the server imports)
+    from engine.drafters.ngram import NgramDrafter
+    from engine.methods.mtp_drafter import MTPTreeDrafter
+    from engine.methods.staircut import PriceModel, StairCut
+    from engine.penalty import PenaltySpec
+    from engine.spec import Relax
+    from server import app
+    from test_app_loop import FakeTok, Req
+    saved = dict(app.STATE)
+    body = {"prompt": "the quick brown fox jumps over the lazy dog and runs", "max_tokens": 24, "stream": False, "temperature": 0}
+    out, stats = {}, {}
+    try:
+        for tag in ("plain", "chain", "tree"):
+            cfg, eng, srv, head = setup(torch.bfloat16)
+            drafter = None
+            if tag != "plain":
+                ng = NgramDrafter(corpus_path="", min_order=3, max_depth=16)
+                drafter = MTPTreeDrafter(srv, head, StairCut(PriceModel(), siblings=tag == "tree"), ng)
+                srv.heads["dfly"] = head
+            app.STATE.clear()
+            app.STATE.update(engine=srv, drafter=drafter, k=head.depth, tree=drafter is not None, sampled_tree="det",
+                             relax=Relax(1.0, 1), verbose=False, state_store=None, prefix_cache=False,
+                             prefix_chunk=0, session_cache=False, tok=FakeTok(), device="cpu",
+                             max_len=srv.max_len, default_max_tokens=64, pen_spec=PenaltySpec(), model="t",
+                             cfg_eos=None, think_budget=0, think_stall=False, reasoning_format="tags",
+                             request_timeout=0.0, max_queue=8, queue_timeout=5.0, pattern_stop=None,
+                             response_cache=None, suffix_store=None)
+            texts = []
+            for _ in range(2):
+                headline, raw = Req("/v1/completions", body).response()
+                assert headline.startswith("HTTP/1.1 200"), (tag, headline, raw[:400])
+                r = json.loads(raw)
+                assert r["usage"]["completion_tokens"] == 24, (tag, r["usage"])
+                texts.append(r["choices"][0]["text"])
+            assert texts[0] == texts[1], (tag, texts)
+            out[tag], stats[tag] = texts[0], dict(srv.stats)
+    finally:
+        app.STATE.clear()
+        app.STATE.update(saved)
+    assert out["chain"] == out["plain"] and out["tree"] == out["plain"], out
+    assert stats["chain"]["verify_blocks"] > 0 and stats["tree"]["verify_blocks"] > 0, stats
+    return f"24 tokens twice, plain, chain and tree: the same text; {stats['chain']} / {stats['tree']}"
 
 
 if __name__ == "__main__":

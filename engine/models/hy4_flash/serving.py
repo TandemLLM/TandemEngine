@@ -141,6 +141,7 @@ class Hy4FlashServing:
         return c
 
     # --- cold verbs ------------------------------------------------------------------------------
+    @property
     def hidden_post_norm(self) -> torch.Tensor:
         return self._hidden
 
