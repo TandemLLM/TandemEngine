@@ -13,7 +13,8 @@
 #              (default 600), at most --deadline seconds; no idle window, no hold.
 # 4. hold      under the box lock, the live release's own ops/hold.sh stops the service, runs
 #              tools/hy4_check.py (load, the self-check on the plain pass and through the graphs, the prompt's
-#              experts, plain decode, drafted rounds, the fit run of --fit tokens) and restarts the service.
+#              experts, plain decode, drafted rounds, the cache tiers, the fit run of --fit tokens) and restarts
+#              the service.
 # 5. record    OUT/gate.log with the UTC start and end of every step, OUT/check.jsonl with the tool's lines,
 #              and the live engine's /health after the hold.
 #
@@ -51,7 +52,10 @@ live_tree() {
 }
 LIVE="${HY4_LIVE:-$(live_tree)}"
 PY="${HY4_PY:-${LIVE:+$LIVE/../venv/bin/python}}"
-CHECK="$PY tools/hy4_check.py --pack $DIR --max-len 8192 --prompt 4096 --steps 128 --dfly --table cold --fit $FIT"
+# HY4_CHECK_ARGS: the tool's arguments after --pack, for a shorter or a split window (default: every check)
+CHECK="$PY tools/hy4_check.py --pack $DIR ${HY4_CHECK_ARGS:---max-len 8192 --prompt 4096 --steps 128 --dfly --table cold --caches --fit $FIT}"
+# HY4_GATE_BUSY: a pgrep -f pattern of other jobs that need the GPU; the window waits while one runs
+BUSY_PAT="${HY4_GATE_BUSY:-}"
 HOLD="flock $LOCK bash $LIVE/ops/hold.sh $MIN -- env -C $TREE PYTHONDONTWRITEBYTECODE=1 $CHECK"
 
 if [ "$DRY" = 1 ]; then
@@ -131,6 +135,7 @@ while :; do
     t=$(date +%s)
     [ "$t" -gt "$deadline" ] && { say "no idle window of $IDLE s in $DEADLINE s: no hold"; exit 6; }
     busy=$(curl -s -m 5 "$HEALTH" | python3 -c "import json,sys; f=json.load(sys.stdin)['inflight']; print(f['running']+f['waiting'])" 2>/dev/null || echo NA)
+    [ -n "$BUSY_PAT" ] && [ "$busy" = 0 ] && pgrep -f "$BUSY_PAT" >/dev/null 2>&1 && busy=job
     if [ "$busy" = 0 ]; then [ -z "$start" ] && start=$t; else start=""; fi
     [ -n "$start" ] && [ $(( t - start )) -ge "$IDLE" ] && break
     sleep "${HY4_GATE_POLL:-20}"
