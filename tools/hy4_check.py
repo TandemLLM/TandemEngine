@@ -59,6 +59,7 @@ def main() -> int:
     ap.add_argument("--mask-id", type=int)
     ap.add_argument("--fit", type=int, default=0)
     ap.add_argument("--table", default="cold")
+    ap.add_argument("--no-graphs", action="store_true")
     a = ap.parse_args()
 
     from engine.models.hy4_flash.config import DFlyConfig
@@ -104,10 +105,34 @@ def main() -> int:
     long = (ids * (deep // max(len(ids), 1) + 1))[:deep]
     res = eng.self_check(long, steps=12, widths=(2, 4, 6, 12), log=lambda s: print(s, flush=True))
     say("self_check", **res)
+    if str(a.device).startswith("cuda") and not a.no_graphs:
+        # the same replay through the captured graphs against the plain pass's recorded rows
+        rg = eng.self_check(long, steps=12, widths=(1, 2, 4, 6, 12), log=lambda s: print(s, flush=True), graphs=True)
+        say("self_check_graphs", **rg)
+        res["ok"] = res["ok"] and rg["ok"]
     if not (res["covers"]["selection"] and res["covers"]["rings_wrapped"] and res["covers"]["groups_closed_in_blocks"] > 0):
         say("self_check_refused", why="the replay did not reach every read path", covers=res["covers"])
         return 1
 
+    if banks:
+        # the prompt's experts: 32-row batches of the pair kernels, one launch of 256 rows, the grouped kernels
+        li = min(banks)
+        x = (torch.randn(256, cfg.hidden_size, generator=g) * 0.5).to(a.device, eng.dtype)
+        idx, wts = eng.route(x, li)
+        z = eng.lin(x, W[f"layers.{li}.mlp.routed_expert_down_proj.weight"])
+
+        def experts(B, grouped):
+            for _ in range(2):
+                sync(a.device)
+                t0 = time.perf_counter()
+                out = torch.cat([eng.combine(eng.expert_pairs(z[i:i + B], idx[i:i + B], li, grouped=grouped), idx[i:i + B], wts[i:i + B])
+                                 for i in range(0, 256, B)])
+                sync(a.device)
+            return out, round(1e3 * (time.perf_counter() - t0), 2)
+        (b32, t32), (b256, t256), (bg, tg) = experts(32, False), experts(256, False), experts(256, True)
+        say("prefill_experts", layer=li, rows=256, equal_256=torch.equal(b32, b256), equal_grouped=torch.equal(b32, bg),
+            ms_32=t32, ms_256=t256, ms_grouped=tg)
+        res_ok_experts = torch.equal(b32, b256)
     if a.ref:
         from engine.models.hy4_flash.ref import Hy4FlashRef, Hy4State
         ref = Hy4FlashRef(cfg, W, tables, dtype=eng.dtype, device=a.device, cuts=cuts)
@@ -122,6 +147,8 @@ def main() -> int:
             agree_steps=round((got[cut:].argmax(-1) == want[cut:].argmax(-1)).float().mean().item(), 4))
 
     srv = Hy4FlashServing(eng, a.max_len)
+    if a.no_graphs:
+        srv.graphs = None
     t0 = time.perf_counter()
     lg = srv.forward(torch.tensor(ids), start=0)
     sync(a.device)
@@ -129,8 +156,12 @@ def main() -> int:
     hidden0 = srv.last_streams().clone()
     snap = srv.cache_state().clone()
     first = int(lg[0, 0].argmax())
+    # the first step captures the decode graph: outside the timed steps
+    srv.forward(torch.tensor([first]), start=len(ids))
+    srv.cache_state().restore(snap)
+    srv.kv.length = len(ids)
     toks, nxt = [], first
-    t0 = time.perf_counter()
+    stage_s, t0 = 0.0, time.perf_counter()
     for i in range(a.steps):
         toks.append(nxt)
         lg = srv.forward(torch.tensor([nxt]), start=len(ids) + i)
@@ -138,7 +169,8 @@ def main() -> int:
     sync(a.device)
     dt = time.perf_counter() - t0
     say("decode", prompt_rows=len(ids), prompt_s=round(t_prompt, 2), prompt_tok_s=round(len(ids) / t_prompt, 1), steps=a.steps,
-        tok_s=round(a.steps / dt, 2), ms_step=round(1e3 * dt / a.steps, 2), graphs=False, engram_rows=eng.stats["engram_rows"],
+        tok_s=round(a.steps / dt, 2), ms_step=round(1e3 * dt / a.steps, 2), ms_layer=round(1e3 * dt / a.steps / cfg.num_hidden_layers, 3),
+        graphs=srv.graphs is not None, engram_rows=eng.stats["engram_rows"],
         tables=[t.report() for t in tables.values()] if a.table == "cold" else None)
 
     if a.dfly and cfg.dfly is not None:
@@ -150,7 +182,14 @@ def main() -> int:
         out, nxt = [first], None
         lg = srv.forward(torch.tensor([first]), start=len(ids))
         nxt = int(lg[0, 0].argmax())
-        head = DFlyHead(srv)
+        head = DFlyHead(srv, graphs=srv.graphs is not None)
+        # one round first, undone: it captures the draft graph and the block's graph
+        head.launch(srv.last_streams(), [nxt])
+        tok, _ = head.read()
+        if tok:
+            srv.forward_tree(torch.tensor([nxt] + [t[0] for t in tok]), list(range(-1, len(tok))), start=srv.kv.length)
+            srv.discard_pending()
+            srv.st.picks_at = srv.st.length
         rounds = kept = 0
         draft_s = 0.0
         t0 = time.perf_counter()
@@ -173,7 +212,8 @@ def main() -> int:
         dt2 = time.perf_counter() - t0
         n_out = len(out) - 1
         say("dfly", equal=out[:a.steps] == toks[:len(out[:a.steps])], rounds=rounds, tokens=n_out, kept_per_round=round(kept / max(rounds, 1), 2),
-            tok_s=round(n_out / dt2, 2), draft_ms_round=round(1e3 * draft_s / max(rounds, 1), 2), draft_tokens=cfg.dfly.draft_tokens,
+            tok_s=round(n_out / dt2, 2), ms_round=round(1e3 * dt2 / max(rounds, 1), 2), draft_ms_round=round(1e3 * draft_s / max(rounds, 1), 2),
+            draft_tokens=cfg.dfly.draft_tokens, graphs=srv.graphs is not None,
             stale=head.stats["stale"])
 
     if a.fit:

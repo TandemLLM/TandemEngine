@@ -37,7 +37,7 @@ class DFlyHead:
 
     captures = 0
 
-    def __init__(self, srv, W: dict | None = None):
+    def __init__(self, srv, W: dict | None = None, graphs: bool = False):
         self.srv, self.fn, self.cfg = srv, srv.fn, srv.cfg
         d = self.cfg.dfly
         if d is None:
@@ -58,13 +58,22 @@ class DFlyHead:
             self.wk[i], self.wv[i] = w[:, :a.nope].contiguous(), w[:, a.nope:].transpose(1, 2).contiguous()
             self.sinks[i], self.shape[i] = sink, AttnShape(heads, a.nope, a.rope, a.v)
         self.st = type("DFlyRows", (), {"length": 0})()        # rows the drafter fed (the head keeps none)
-        self._out = ([], [])
+        dev = fn.device
+        self.buf = {"ctl_h": torch.zeros(2, dtype=torch.int64), "ctl": torch.zeros(2, dtype=torch.int64, device=dev),
+                    "th": torch.zeros(1, c.hidden_size, dtype=fn.dtype, device=dev),
+                    "tok": torch.zeros(self.depth, 2, dtype=torch.int64, device=dev),
+                    "prob": torch.zeros(self.depth, 2, dtype=torch.float32, device=dev)}
+        self._mask = torch.full((self.depth,), d.mask_token_id, dtype=torch.int64, device=dev)
+        self._tril = torch.ones(self.depth + 1, self.depth + 1, dtype=torch.bool, device=dev).tril()
+        self.graphs = graphs and dev.type == "cuda"
+        self.graph = None
+        self._ready = False
         self.stats = {"rounds": 0, "stale": 0}
 
     # --- the head interface ------------------------------------------------------------------------
     def reset(self) -> None:
         self.st.length = 0
-        self._out = ([], [])
+        self._ready = False
 
     def prime(self, rows, nexts) -> None:
         self.st.length += len(nexts)
@@ -78,20 +87,50 @@ class DFlyHead:
     def views(self) -> list:
         return []
 
+    def stage(self, anchor: int, target_hidden: torch.Tensor, st) -> None:
+        b = self.buf
+        b["ctl_h"][0], b["ctl_h"][1] = int(anchor), st.length
+        b["ctl"].copy_(b["ctl_h"])
+        b["th"].copy_(target_hidden.reshape(1, -1))
+
     def launch(self, rows: torch.Tensor, nexts: list[int]) -> None:
         """`rows[-1]`: the last committed row's head input; `nexts[-1]`: the anchor token."""
         self.st.length += len(nexts)
         st = self.srv.st
-        if st.picks_at != st.length or len(st.picks) != len(self.fn.pick_layers):
+        self._ready = False
+        if st.picks_at != st.length or len(st.pick_layers) != len(self.fn.pick_layers):
             self.stats["stale"] += 1                         # after a restore: this round drafts nothing
-            self._out = ([], [])
             return
-        self._out = self.draft(int(nexts[-1]), rows[-1:].reshape(1, -1), st)
+        self.stage(int(nexts[-1]), rows[-1:], st)
+        if self.graphs:
+            if self.graph is None:
+                self.graph = self._capture(st)
+                self.captures += 1
+            self.graph.replay()
+        else:
+            self.run(st)
+        self._ready = True
         self.stats["rounds"] += 1
 
     def read(self) -> tuple[list, list]:
-        out, self._out = self._out, ([], [])
-        return out
+        if not self._ready:
+            return [], []
+        self._ready = False
+        return self.buf["tok"].tolist(), self.buf["prob"].tolist()
+
+    def _capture(self, st):
+        from engine import capture_lock
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(2):
+                self.run(st)
+        torch.cuda.current_stream().wait_stream(s)
+        g = torch.cuda.CUDAGraph()
+        with capture_lock.LOCK, torch.cuda.graph(g):
+            self.run(st)
+        torch.cuda.synchronize()
+        return g
 
     # --- the arithmetic ----------------------------------------------------------------------------
     def w(self, name: str):
@@ -119,7 +158,7 @@ class DFlyHead:
         q = torch.cat((q[..., :a.nope], rotate(q[..., a.nope:], cos[:, None], sin[:, None])), dim=-1)
         ckv = fn.lin(x, self.w(s + "kv_a_proj_with_mqa.weight"))
         own = torch.cat((fn.rms(ckv[:, :R], self.w(s + "kv_a_layernorm.weight")), rotate(ckv[:, R:], cos, sin)), dim=-1)
-        allowed = torch.cat((ctx_ok.unsqueeze(0).expand(Q, -1), torch.ones(Q, Q, dtype=torch.bool, device=h.device).tril()), dim=-1)
+        allowed = torch.cat((ctx_ok.unsqueeze(0).expand(Q, -1), self._tril), dim=-1)
         y = fn.attend_chunk(q, torch.cat((ctx, own)), allowed, -1, w=(self.wk[i], self.wv[i], self.sinks[i], a))
         y = (y * torch.sigmoid(gate).view(Q, a.heads, a.v)).reshape(Q, a.heads * a.v)
         h = h + fn.rms(fn.lin(y, self.w(s + "o_proj.weight")), self.w(s + "post_proj_norm.weight"))
@@ -127,33 +166,43 @@ class DFlyHead:
         g = F.silu(fn.lin(x, self.w(f"{i}.mlp.gate_proj.weight")))
         return h + fn.lin(g * fn.lin(x, self.w(f"{i}.mlp.up_proj.weight")), self.w(f"{i}.mlp.down_proj.weight"))
 
-    @torch.no_grad()
-    def hidden(self, anchor: int, target_hidden: torch.Tensor, st) -> torch.Tensor:
-        """The block's rows after the draft layers and their norm [depth + 1, H]."""
-        fn, d = self.fn, self.d
-        Q, L = self.depth + 1, st.length
-        ids = torch.tensor([anchor] + [d.mask_token_id] * self.depth, dtype=torch.int64)
-        e = fn.embed(ids)
-        h = torch.cat((self.fuse(e[:1], target_hidden.to(fn.device)), e[1:]))
-        cos, sin = fn.rope(fn.pos3(torch.arange(L, L + Q) + st.delta), SPARSE)
+    def _hidden(self, st) -> torch.Tensor:
+        """The staged block's rows after the draft layers and their norm [depth + 1, H] (device only)."""
+        fn, d, b = self.fn, self.d, self.buf
+        Q, Lt = self.depth + 1, b["ctl"][1]
+        e = fn.embed(torch.cat((b["ctl"][:1], self._mask)))
+        h = torch.cat((self.fuse(e[:1], b["th"]), e[1:]))
+        cos, sin = fn.rope(fn.pos3(Lt + fn.ar(Q) + st.delta), SPARSE)
         for i in range(d.layers):
-            pq, ok = st.picks[d.index_layers[i]]
-            ok = ok & (pq < L)
-            ctx = st.lat[d.kv_layers[i]][pq.clamp(0, max(L - 1, 0))]
-            h = self.layer(i, h, ctx, ok, cos, sin)
+            pi = st.pick_layers.index(d.index_layers[i])
+            pq = st.pick_q[pi]
+            ok = st.pick_ok[pi] & (pq < Lt)
+            lat = st.lat[d.kv_layers[i]]
+            h = self.layer(i, h, lat[pq.clamp(0, lat.shape[0] - 1)], ok, cos, sin)
         return fn.rms(h, self.w("final_norm.weight"))
 
     @torch.no_grad()
-    def draft(self, anchor: int, target_hidden: torch.Tensor, st) -> tuple[list, list]:
-        """Per drafted position its two best tokens and their probabilities, along the best tokens' chain."""
-        fn = self.fn
-        h = self.hidden(anchor, target_hidden, st)
-        toks, probs, prev = [], [], anchor
+    def run(self, st) -> None:
+        """The staged round on the device: per drafted position its two best tokens and their probabilities,
+        along the best tokens' chain, into the head's buffers. What the draft graph captures."""
+        fn, b = self.fn, self.buf
+        h = self._hidden(st)
+        prev = b["ctl"][:1]
         for j in range(self.depth):
-            c = self.correct(h[j + 1:j + 2], fn.embed(torch.tensor([prev])))
-            p = torch.softmax(fn.head(c)[0].float(), dim=-1)
-            top = torch.topk(p, 2)
-            toks.append(top.indices.tolist())
-            probs.append(top.values.tolist())
-            prev = toks[-1][0]
-        return toks, probs
+            c = self.correct(h[j + 1:j + 2], fn.embed(prev))
+            top = torch.topk(torch.softmax(fn.head(c)[0].float(), dim=-1), 2)
+            b["tok"][j].copy_(top.indices)
+            b["prob"][j].copy_(top.values)
+            prev = top.indices[:1]
+
+    @torch.no_grad()
+    def hidden(self, anchor: int, target_hidden: torch.Tensor, st) -> torch.Tensor:
+        self.stage(anchor, target_hidden, st)
+        return self._hidden(st)
+
+    @torch.no_grad()
+    def draft(self, anchor: int, target_hidden: torch.Tensor, st) -> tuple[list, list]:
+        """Per drafted position its two best tokens and their probabilities (the plain pass, no graph)."""
+        self.stage(anchor, target_hidden, st)
+        self.run(st)
+        return self.buf["tok"].tolist(), self.buf["prob"].tolist()

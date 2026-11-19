@@ -25,6 +25,7 @@ from engine.methods.manifest import Manifest
 from engine.models.adapter import Capabilities, CostModel
 from engine.models.hy4_flash.engine import BLOCK, PREFILL_CHUNK, Hy4FlashEngine
 from engine.models.state import SectionState
+from engine.settings import SETTINGS as _S
 
 MODULES = ("engine/models/hy4_flash/__init__.py", "engine/models/hy4_flash/config.py", "engine/models/hy4_flash/engine.py",
            "engine/models/hy4_flash/engram.py", "engine/models/hy4_flash/ref.py", "engine/models/hy4_flash/knobs.py",
@@ -65,6 +66,7 @@ class _KV:
             raise ValueError(f"the Hy4-flash state cannot hold {v} rows (capacity {self.max_len})")
         self._s._chain = None
         self._s.st.length = v
+        self._s.st.touched()
 
     @property
     def max_len(self) -> int:
@@ -87,6 +89,10 @@ class Hy4CacheState(SectionState):
         for li in sorted(st.lat):
             out += [(f"lat.{li}", st.lat[li], 0), (f"ik.{li}", st.ik[li], 0)]
         return out
+
+    def restore(self, snap) -> None:
+        super().restore(snap)
+        self.s.st.touched()
 
 
 class Hy4FlashServing:
@@ -113,6 +119,8 @@ class Hy4FlashServing:
         self.captured = False
         self.plain_captured = False
         self.heads: dict = {}
+        # HY4_GRAPHS: the row pass replays captured graphs (a device), one a row count and form
+        self.graphs: dict | None = {} if (_S.get("HY4_GRAPHS") == "1" and eng.device.type == "cuda") else None
         self.stats = {"prefill_rows": 0, "decode_steps": 0, "verify_blocks": 0, "verify_rows": 0}
 
     # --- cold verbs ------------------------------------------------------------------------------
@@ -170,8 +178,10 @@ class Hy4FlashServing:
         return [t.report() for t in self.fn.tables.values() if hasattr(t, "report")]
 
     def discard_pending(self) -> None:
+        """Forget what is pending after the state was overwritten (a restore)."""
         self._chain = None
         self.picks = None
+        self.st.touched()
 
     def trim_pending(self, n: int) -> bool:
         """Back to length `n` inside work not committed yet (a chain block whose commit waits)."""
@@ -207,10 +217,12 @@ class Hy4FlashServing:
         self._at(start)
         T = ids.numel()
         if T == 1 and start > 0:
-            lg, n = self.fn.rows([int(ids[0])], [-1], self.st)
+            n0 = len(self.graphs) if self.graphs is not None else 0
+            lg, n = self.fn.rows([int(ids[0])], [-1], self.st, graphs=self.graphs, clone=False)
+            self.plain_captured = self.graphs is not None and len(self.graphs) != n0
             self.fn.commit(self.st, [0])
             self._hidden = n.view(1, 1, -1)
-            self._last = n.view(1, -1)
+            self._last = n.view(1, -1).clone()
             self.stats["decode_steps"] += 1
             return lg.view(1, 1, -1)
         lg = self.fn.prefill(ids, self.st)
@@ -226,8 +238,10 @@ class Hy4FlashServing:
         self._settle_chain()
         self._at(start)
         toks = [int(t) for t in block.view(-1).tolist()]
-        lg, n = self.fn.rows(toks, [int(p) for p in parents], self.st)
-        self.picks = lg.argmax(dim=-1)
+        n0 = len(self.graphs) if self.graphs is not None else 0
+        lg, n = self.fn.rows(toks, [int(p) for p in parents], self.st, graphs=self.graphs, clone=False)
+        self.captured = self.graphs is not None and len(self.graphs) != n0
+        self.picks = self.st.rb[len(toks)]["next"]
         self._hidden = n.unsqueeze(0)
         self.stats["verify_blocks"] += 1
         self.stats["verify_rows"] += len(toks)
@@ -294,6 +308,7 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
                                                 table_cache_bytes=int(float(_S.get("HY4_TABLE_CACHE_GB")) * (1 << 30)))
     mark("weights")
     eng = Hy4FlashEngine(pack.cfg, W, tables, device=device, max_len=max_len, banks=banks, cuts=cuts)
+    eng.prefill_grouped = _S.get("HY4_PREFILL_GROUPED") == "1"
     srv = Hy4FlashServing(eng, max_len)
     mark("engine")
     res = None
@@ -306,7 +321,7 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
         else:
             text = [(7 * i + 3) % pack.cfg.vocab_size for i in range(24)]
         prompt = [int(text[i % len(text)]) for i in range(max(n, 8))]
-        res = eng.self_check(prompt, widths=(2, 4, 6), log=log)
+        res = eng.self_check(prompt, widths=(2, 4, 6), log=log, graphs=srv.graphs is not None)
         srv.restart()
     info = {"pack": path, "load": timing, "device": device, "self_check": res, "quant": pack.quant, "dfly": pack.has_dfly,
             "formats": timing.get("notes"), "tables": [t.report() for t in tables.values()]}
@@ -324,7 +339,7 @@ def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print)
     from engine.tokfp import fingerprint
     ng = NgramDrafter(corpus_path=corpus or "", tokenizer_sha=fingerprint(path), min_order=3, max_depth=16, min_corpus_order=8)
     prices = PriceModel.load(os.path.join(ROOT, "ops", "prices", MODEL_ID, f"{profile_of(path)}.{device_id()}.json"), log=log)
-    head = DFlyHead(srv)
+    head = DFlyHead(srv, graphs=srv.graphs is not None)
     srv.heads["dfly"] = head
     return MTPTreeDrafter(srv, head, StairCut(prices, siblings=False), ng)
 

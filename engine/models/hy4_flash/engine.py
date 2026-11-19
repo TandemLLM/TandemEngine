@@ -34,6 +34,7 @@ import torch.nn.functional as F
 
 from engine.models.flashnext.ref import topk_stable
 from engine.models.hy4_flash.config import SPARSE, Hy4FlashConfig
+from engine.models.hy4_flash.engram import fp8_round_trip
 from engine.models.hy4_flash.ref import Hy4FlashRef, rotate
 
 #: rows a block may hold: the anchor and 31 drafted rows (the row kernels' limit)
@@ -44,44 +45,71 @@ PREFILL_CHUNK = 4096
 SUB = 256
 #: rows of a prompt chunk a sparse layer takes at a time once its rows read lists
 SUB_LIST = 32
+#: rows of a prompt chunk the routed experts take in one launch (a row's bits do not depend on the batch: the
+#: device check compares)
+EXPERT_SUB = 256
 
 
 class Hy4EngState:
-    """One sequence: the by-slot buffers, the rings, the last tokens, and a block's scratch rows."""
+    """One sequence: the by-slot buffers, the rings, the last tokens, and a block's scratch rows.
 
-    def __init__(self, cfg: Hy4FlashConfig, cap: int, dtype, device):
+    The layers' buffers are slices of one tensor a kind (`lat_all` [sparse layers, cap, 576] and so on), so a
+    commit is a handful of copies. `gk` mirrors the indexer keys of closed groups by group ([cap / group, D],
+    then a few slots a block's own closed groups take while a row is scored); it is derived from `ik` and
+    rebuilt when a length is set by hand (`gk_dirty`). `rb` holds a block's staged inputs and its outputs by
+    row count: what a captured graph reads and writes."""
+
+    def __init__(self, cfg: Hy4FlashConfig, cap: int, dtype, device, pick_layers=()):
         self.cfg, self.cap, self.length, self.delta = cfg, int(cap), 0, 0
-        R, D = cfg.kv_lora_rank + cfg.sparse_attn.rope, cfg.index_head_dim
+        R, D, rr = cfg.kv_lora_rank + cfg.sparse_attn.rope, cfg.index_head_dim, cfg.index_kpool
+        sp, wn = cfg.sparse_layers, cfg.window_layers
 
         def z(*shape):
             return torch.zeros(*shape, dtype=dtype, device=device)
-        self.lat = {li: z(self.cap, R) for li in cfg.sparse_layers}
-        self.ik = {li: z(self.cap, D) for li in cfg.sparse_layers}
-        self.win = {li: z(cfg.sliding_window, R) for li in cfg.window_layers}
+        self.lat_all, self.ik_all = z(len(sp), self.cap, R), z(len(sp), self.cap, D)
+        self.win_all = z(len(wn), cfg.sliding_window, R)
+        self.lat = {li: self.lat_all[i] for i, li in enumerate(sp)}
+        self.ik = {li: self.ik_all[i] for i, li in enumerate(sp)}
+        self.win = {li: self.win_all[i] for i, li in enumerate(wn)}
         self.hist = torch.full((max(cfg.engram_max_ngram_size - 1, 1),), cfg.engram_pad_id, dtype=torch.int64, device=device)
-        # a block's rows, written by `rows` and read by `commit`
-        self.blat = {li: z(BLOCK, R) for li in range(cfg.num_hidden_layers)}
-        self.bik = {li: z(BLOCK, D) for li in cfg.sparse_layers}
-        self.bgk = {li: z(BLOCK, D) for li in cfg.sparse_layers}
+        # a block's rows, written by the row pass and read by `commit`
+        self.blat_all = z(cfg.num_hidden_layers, BLOCK, R)
+        self.bik_all, self.bgk_all = z(len(sp), BLOCK, D), z(len(sp), BLOCK, D)
+        self.blat = {li: self.blat_all[li] for li in range(cfg.num_hidden_layers)}
+        self.bik = {li: self.bik_all[i] for i, li in enumerate(sp)}
+        self.bgk = {li: self.bgk_all[i] for i, li in enumerate(sp)}
+        self.Gc, self.BG = self.cap // rr, BLOCK // rr + 1
+        self.gk_all = z(len(sp), self.Gc + self.BG, D)
+        self.gk = {li: self.gk_all[i] for i, li in enumerate(sp)}
+        self.gk_dirty = False
+        # the rows the last committed row read in the layers a draft head follows, good while `picks_at` is the
+        # length (a restore or a length set by hand leaves them stale)
+        self.pick_layers = sorted(pick_layers)
+        self.pick_q = torch.zeros(len(self.pick_layers), cfg.index_topk, dtype=torch.int64, device=device)
+        self.pick_ok = torch.zeros(len(self.pick_layers), cfg.index_topk, dtype=torch.bool, device=device)
+        self.picks_at = -1
+        self.rb: dict = {}
         self.btok: list[int] = []
         self.bparents: list[int] = []
-        # the rows the last committed row read in the layers a draft head follows: layer -> (positions, mask),
-        # good while `picks_at` is the length (a restore or a length set by hand leaves them stale)
-        self.bpick: dict = {}
-        self.picks: dict = {}
-        self.picks_at = -1
+
+    @property
+    def picks(self) -> dict:
+        return {li: (self.pick_q[i], self.pick_ok[i]) for i, li in enumerate(self.pick_layers)}
+
+    def touched(self) -> None:
+        """The rows or the length were set from outside (a restore): the derived parts are rebuilt or dropped."""
+        self.gk_dirty, self.picks_at = True, -1
+        self.btok, self.bparents = [], []
 
     def reset_inplace(self) -> None:
         """A fresh sequence in the same tensors (the by-slot rows stay: nothing reads past the length)."""
         self.length, self.delta = 0, 0
-        for t in self.win.values():
-            t.zero_()
+        self.win_all.zero_()
         self.hist.fill_(self.cfg.engram_pad_id)
-        self.btok, self.bparents = [], []
-        self.bpick, self.picks, self.picks_at = {}, {}, -1
+        self.btok, self.bparents, self.picks_at = [], [], -1
 
     def nbytes(self) -> int:
-        return sum(t.numel() * t.element_size() for d in (self.lat, self.ik, self.win) for t in d.values())
+        return sum(t.numel() * t.element_size() for t in (self.lat_all, self.ik_all, self.win_all))
 
 
 def _paths(parents: list[int]) -> tuple[list[int], list[list[int]]]:
@@ -124,11 +152,26 @@ class Hy4FlashEngine(Hy4FlashRef):
                       for li in range(cfg.num_hidden_layers)}
         #: the sparse layers whose last row's read list is kept for a draft head
         self.pick_layers = set(cfg.dfly.index_layers) if cfg.dfly is not None else set()
+        self._sidx = torch.tensor(cfg.sparse_layers, dtype=torch.int64, device=self.device)
+        self._widx = torch.tensor(cfg.window_layers, dtype=torch.int64, device=self.device)
+        self._elayers = sorted(self.hashes)
+        self._packed = bool(self._elayers) and all(hasattr(tables[li], "gather_packed") for li in self._elayers)
+        self._ebias = {li: tables[li].bias.to(self.device) for li in self._elayers} if self._packed else {}
+        self._ar: dict = {}
+        #: the prompt's routed experts on the grouped kernels (serving sets it from HY4_PREFILL_GROUPED)
+        self.prefill_grouped = False
         self.prompt_hidden = None
         self.stats = {"rows": 0, "blocks": 0, "prefill_rows": 0, "engram_rows": 0}
 
     def new_state(self, cap: int | None = None) -> Hy4EngState:
-        return Hy4EngState(self.cfg, cap or self.max_len, self.dtype, self.device)
+        return Hy4EngState(self.cfg, cap or self.max_len, self.dtype, self.device, self.pick_layers)
+
+    def ar(self, n: int) -> torch.Tensor:
+        """arange(n) on the device, made once (a captured graph must not build its constants)."""
+        t = self._ar.get(n)
+        if t is None:
+            t = self._ar[n] = torch.arange(n, device=self.device)
+        return t
 
     # ------------------------------------------------------------------------- primitives
     def lin_rows(self, x: torch.Tensor, w) -> torch.Tensor:
@@ -187,57 +230,166 @@ class Hy4FlashEngine(Hy4FlashRef):
         mix = (p @ Kf[:, :R]).to(self.dtype)                                                # [heads, R]
         return torch.bmm(mix[:, None, :], self.wv[li]).squeeze(1)
 
-    def _window_list(self, p: int, L: int, path: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Positions p - window + 1 .. p as rows of cat(ring, scratch), and which of them exist."""
-        Wn = self.cfg.sliding_window
-        q = torch.arange(p - Wn + 1, p + 1, device=self.device)
-        blk = (q - L).clamp(min=0)
-        src = torch.where(q < L, q % Wn, Wn + torch.tensor(path, device=self.device)[blk.clamp(max=len(path) - 1)])
-        return src, q >= 0
+    def _gather(self, by_slot: torch.Tensor, scratch: torch.Tensor, q: torch.Tensor, Lt: torch.Tensor, anc: torch.Tensor) -> torch.Tensor:
+        """Rows at positions q: committed ones from the by-slot buffer, the block's from its scratch rows
+        (`anc`: the row's ancestors by depth, itself last and repeated)."""
+        out = by_slot[q.clamp(0, by_slot.shape[0] - 1)]
+        pr = anc[(q - Lt).clamp(0, BLOCK - 1)]
+        return torch.where((q >= Lt).unsqueeze(-1), scratch[pr], out)
 
-    def _gather(self, by_slot: torch.Tensor, scratch: torch.Tensor, q: torch.Tensor, L: int, path: list[int]) -> torch.Tensor:
-        """Rows at positions q: committed ones from the by-slot buffer, the block's from its scratch rows."""
-        out = by_slot[q.clamp(0, max(L - 1, 0))]
-        blk = q >= L
-        if bool(blk.any()):
-            pr = torch.tensor(path, device=self.device)[(q - L).clamp(0, len(path) - 1)]
-            out = torch.where(blk.unsqueeze(-1), scratch[pr], out)
-        return out
-
-    def _sparse_positions(self, li: int, st: Hy4EngState, r: int, p: int, depth: list[int], path: list[int],
-                          x: torch.Tensor, iq: torch.Tensor, hw: torch.Tensor, cos, sin) -> tuple[torch.Tensor, torch.Tensor]:
-        """The positions row r of a sparse layer reads, ascending, padded to `index_topk`, and their mask."""
+    def _select(self, li: int, st: Hy4EngState, iq: torch.Tensor, hw: torch.Tensor, cos, sin, p: torch.Tensor,
+                qg: torch.Tensor, gmax: torch.Tensor, cidx: torch.Tensor, bgid: torch.Tensor, bok: torch.Tensor) -> torch.Tensor:
+        """The positions a row past `index_topk` reads in a sparse layer, ascending: the 4 rows of each of its
+        best `group_topk - 1` closed groups, then its own group. Committed groups are scored from `gk`, the
+        groups its ancestors closed in this block from the slots after them (`cidx`, `bgid`, `bok`)."""
         cfg = self.cfg
-        NS, rr, L = cfg.index_topk, cfg.index_kpool, st.length
-        qg = p // rr
-        if qg < cfg.group_topk:                           # everything so far fits: no selection
-            q = torch.arange(NS, device=self.device)
-            return q, q <= p
+        rr, Gc, BG = cfg.index_kpool, st.Gc, st.BG
         nh, D, rd = cfg.index_n_heads, cfg.index_head_dim, cfg.sparse_attn.rope
-        Gc = st.cap // rr
-        closed = [a for a in path[:-1] if (L + depth[a]) % rr == rr - 1]         # ancestors that closed a group
-        BG = BLOCK // rr + 1
-        bkeys = torch.zeros(BG, D, dtype=self.dtype, device=self.device)
-        if closed:
-            bkeys[:len(closed)] = st.bgk[li][torch.tensor(closed, device=self.device)]
-        keys = torch.cat((st.ik[li][rr - 1::rr][:Gc], bkeys))
+        keys = st.gk[li]
+        keys[Gc:] = st.bgk[li][cidx]
         qi = iq.view(nh, D)
         qi = torch.cat((qi[:, :D - rd], rotate(qi[:, D - rd:], cos, sin)), dim=-1)
         logit = (hw.float() * (nh ** -0.5 * D ** -0.5)) @ F.relu(qi.float() @ keys.float().T)      # [Gc + BG]
-        gid = torch.arange(Gc + BG, device=self.device)
-        ok = (gid < min(qg, L // rr)) | ((gid >= Gc) & (gid < Gc + len(closed)))
+        gid = self.ar(Gc + BG)
+        ok = (gid < gmax) | ((gid >= Gc) & bok[(gid - Gc).clamp(0, BG - 1)])
         top = topk_stable(logit.masked_fill(~ok, float("-inf")).unsqueeze(0), cfg.group_topk - 1)[1][0]
-        bg = torch.tensor([(L + depth[a]) // rr for a in closed] + [0] * (BG - len(closed)), device=self.device)
-        groups = torch.where(top < Gc, top, bg[(top - Gc).clamp(min=0)]).sort().values
-        off = torch.arange(rr, device=self.device)
-        q = torch.cat(((groups.unsqueeze(-1) * rr + off).flatten(), qg * rr + off))
-        return q, q <= p
+        groups = torch.where(top < Gc, top, bgid[(top - Gc).clamp(0, BG - 1)]).sort().values
+        off = self.ar(rr)
+        return torch.cat(((groups.unsqueeze(-1) * rr + off).flatten(), qg * rr + off))
 
     # ------------------------------------------------------------------------- a block's rows
-    def attention_rows(self, x: torch.Tensor, li: int, st: Hy4EngState, depth: list[int], paths: list[list[int]]) -> torch.Tensor:
+    #: the staged control columns of a row: its token, position, the state's length, its group, the committed
+    #: groups it may read, its group key's first position, whether it owns an n-gram; then its ancestors by depth,
+    #: and the groups its ancestors closed in the block (their rows, their ids, which slots are real)
+    CTL = 7
+
+    def _rb(self, st: Hy4EngState, M: int) -> dict:
+        rb = st.rb.get(M)
+        if rb is None:
+            cfg, dev = self.cfg, self.device
+            C = self.CTL + BLOCK + 3 * st.BG
+            rb = {"ctl_h": torch.zeros(M, C, dtype=torch.int64), "ctl": torch.zeros(M, C, dtype=torch.int64, device=dev),
+                  "logits": torch.zeros(M, cfg.vocab_size, dtype=torch.float32, device=dev),
+                  "hidden": torch.zeros(M, cfg.hidden_size, dtype=self.dtype, device=dev),
+                  "next": torch.zeros(M, dtype=torch.int64, device=dev),
+                  "pick_q": torch.zeros(len(st.pick_layers), M, cfg.index_topk, dtype=torch.int64, device=dev),
+                  "pick_ok": torch.zeros(len(st.pick_layers), M, cfg.index_topk, dtype=torch.bool, device=dev)}
+            nE, heads = len(self._elayers), cfg.engram_heads
+            if self._packed:
+                words = self.tables[self._elayers[0]].words
+                rb["epk_h"] = torch.zeros(nE, M * heads, words, dtype=torch.int16)
+                rb["epk"] = torch.zeros(nE, M * heads, words, dtype=torch.int16, device=dev)
+                rb["ehead"] = self.ar(heads).repeat(M)
+            elif nE:
+                rb["erows"] = torch.zeros(nE, M, heads, cfg.engram_head_dim, dtype=self.dtype, device=dev)
+            st.rb[M] = rb
+        return rb
+
+    def stage(self, tokens: list[int], parents: list[int], st: Hy4EngState) -> tuple[int, bool]:
+        """A block in DFS pre-order (row 0 at the state's length) into the state's row buffers: everything the
+        host decides (positions, ancestors, the block's closed groups, the Engram rows read from the tables).
+        Returns the row count and whether a row selects groups (the two forms of the row pass)."""
+        cfg = self.cfg
+        M = len(tokens)
+        if not 1 <= M <= BLOCK or len(parents) != M:
+            raise ValueError(f"a block holds 1 to {BLOCK} rows")
+        depth, paths = _paths([int(p) for p in parents])
+        L, rr = st.length, cfg.index_kpool
+        if L + max(depth) >= st.cap:
+            raise ValueError(f"the state holds {L} of {st.cap} rows: no room for this block")
+        if st.gk_dirty:
+            st.gk_all[:, :st.Gc] = st.ik_all[:, rr - 1::rr][:, :st.Gc]
+            st.gk_dirty = False
+        rb = self._rb(st, M)
+        c, BG, o = rb["ctl_h"], st.BG, self.CTL
+        select = False
+        for r in range(M):
+            pos, path, t = L + depth[r], paths[r], int(tokens[r])
+            qg = pos // rr
+            select = select or qg >= cfg.group_topk
+            live = t != cfg.engram_pad_id and t not in (cfg.image_token_id, cfg.video_token_id)
+            closed = [a for a in path[:-1] if (L + depth[a]) % rr == rr - 1]
+            row = [t, pos, L, qg, min(qg, L // rr), pos - rr + 1, int(live)]
+            row += path + [path[-1]] * (BLOCK - len(path))
+            row += closed + [0] * (BG - len(closed))
+            row += [(L + depth[a]) // rr for a in closed] + [0] * (BG - len(closed))
+            row += [1] * len(closed) + [0] * (BG - len(closed))
+            c[r] = torch.tensor(row, dtype=torch.int64)
+        rb["ctl"].copy_(c)
+        st.btok, st.bparents = [int(t) for t in tokens], [int(p) for p in parents]
+        if self._elayers:
+            grams = self._row_grams(st, st.btok, paths)
+            for k, li in enumerate(self._elayers):
+                ids = self.hashes[li].ids(grams)
+                if self._packed:
+                    rb["epk_h"][k] = self.tables[li].gather_packed(ids)
+                else:
+                    rb["erows"][k].copy_(self.tables[li].gather(ids.reshape(-1), dtype=self.dtype).view(M, cfg.engram_heads, -1))
+            if self._packed:
+                rb["epk"].copy_(rb["epk_h"])
+            self.stats["engram_rows"] += M * cfg.engram_heads * len(self._elayers)
+        return M, bool(select)
+
+    def _engram_staged(self, rb: dict, k: int, li: int, M: int) -> torch.Tensor:
+        """The block's table rows of Engram layer li [M, heads, head_dim], from what `stage` read."""
+        cfg = self.cfg
+        if self._packed:
+            from engine.models.hy4_flash.table import decode_rows
+            t = self.tables[li]
+            rows = decode_rows(rb["epk"][k], rb["ehead"], self._ebias[li], t.K, t.codebook(self.device), t.dim)
+            return rows.to(self.dtype).view(M, cfg.engram_heads, -1)
+        rows = rb["erows"][k]
+        if cfg.engram_fp8_embedding and not getattr(self.tables[li], "fp8_done", False):
+            rows = fp8_round_trip(rows)
+        return rows
+
+    @torch.no_grad()
+    def run(self, st: Hy4EngState, M: int, select: bool) -> None:
+        """The staged block's rows on the device: logits, head inputs and greedy picks into the row buffers,
+        the rows' latents and indexer keys into the scratch rows. No host decision and no host read: this is
+        what a graph captures, once for a row count and a form."""
+        cfg, rb = self.cfg, st.rb[M]
+        ctl, o, BG = rb["ctl"], self.CTL, st.BG
+        Wn, NS, rr = cfg.sliding_window, cfg.index_topk, cfg.index_kpool
+        Lt = ctl[0, 2]
+        info = []
+        for r in range(M):
+            p = ctl[r, 1]
+            anc = ctl[r, o:o + BLOCK]
+            wq = p - Wn + 1 + self.ar(Wn)
+            wsrc = torch.where(wq < Lt, torch.remainder(wq, Wn), Wn + anc[(wq - Lt).clamp(0, BLOCK - 1)])
+            g0 = ctl[r:r + 1, 5]
+            info.append({"p": p, "anc": anc, "wsrc": wsrc, "wval": wq >= 0, "dval": self.ar(NS) <= p,
+                         "gq": g0 + self.ar(rr), "qg": ctl[r, 3], "gmax": ctl[r, 4],
+                         "cidx": ctl[r, o + BLOCK:o + BLOCK + BG], "bgid": ctl[r, o + BLOCK + BG:o + BLOCK + 2 * BG],
+                         "bok": ctl[r, o + BLOCK + 2 * BG:] != 0,
+                         "rope": {kind: self.rope(self.pos3(ctl[r:r + 1, 1] + st.delta), kind) for kind in set(cfg.layer_types)},
+                         "grope": self.rope(self.pos3(g0 + st.delta), SPARSE)})
+        live = ctl[:, 6] != 0
+        h = self.embed(ctl[:, 0]).unsqueeze(1).expand(-1, cfg.hc_mult, -1).contiguous()
+        for li in range(cfg.num_hidden_layers):
+            p = f"layers.{li}."
+            if li in self.hashes:
+                rows = self._engram_staged(rb, self._elayers.index(li), li, M)
+                h = h + torch.cat([self.engram_apply(h[r:r + 1], rows[r:r + 1], li, live[r:r + 1]) for r in range(M)])
+            xs, posts = zip(*[self.hc(h[r:r + 1], p + "hc_attn_layer.hc_pre.") for r in range(M)])
+            x = torch.cat([self.rms(t, self.w(p + "input_layernorm.weight")) for t in xs])
+            y = self.attention_rows(x, li, st, M, select, info, Lt)
+            h = torch.cat([self.inject(h[r:r + 1], y[r:r + 1], posts[r]) for r in range(M)])
+            xs, posts = zip(*[self.hc(h[r:r + 1], p + "hc_mlp_layer.hc_pre.") for r in range(M)])
+            x = torch.cat([self.rms(t, self.w(p + "post_attention_layernorm.weight")) for t in xs])
+            y = self.mlp_rows(x, li)
+            h = torch.cat([self.inject(h[r:r + 1], y[r:r + 1], posts[r]) for r in range(M)])
+        n = torch.cat([self.final(h[r:r + 1]) for r in range(M)])
+        lg = self.head_rows(n)
+        rb["hidden"].copy_(n)
+        rb["logits"].copy_(lg)
+        rb["next"].copy_(lg.argmax(dim=-1))
+
+    def attention_rows(self, x: torch.Tensor, li: int, st: Hy4EngState, M: int, select: bool, info: list, Lt: torch.Tensor) -> torch.Tensor:
         cfg = self.cfg
         a, kind, p_ = cfg.attn(li), cfg.layer_types[li], f"layers.{li}.self_attn."
-        M, R, L, rr = x.shape[0], cfg.kv_lora_rank, st.length, cfg.index_kpool
+        R, NS = cfg.kv_lora_rank, cfg.index_topk
         gate = self.lin_rows(x, self.w(p_ + "linear_gate.weight"))
         qres = torch.cat([self.rms(t, self.w(p_ + "q_a_layernorm.weight"))
                           for t in self.lin_rows(x, self.w(p_ + "q_a_proj.weight")).split(1)])
@@ -250,36 +402,42 @@ class Hy4FlashEngine(Hy4FlashRef):
             iq = self.lin_rows(qres, self.w(ip + "query_projection.weight"))
             hw = self.lin_rows(x, self.w(ip + "head_weight_projection.weight"))
             D, rd = cfg.index_head_dim, a.rope
+            pi = st.pick_layers.index(li) if li in st.pick_layers else -1
         out = []
         for r in range(M):
-            pos = L + depth[r]
-            cos, sin = self.rope(self.pos3(torch.tensor([pos + st.delta])), kind)
+            f = info[r]
+            cos, sin = f["rope"][kind]
             qr = q[r].view(a.heads, a.qk)
             qr = torch.cat((qr[:, :a.nope], rotate(qr[:, a.nope:], cos, sin)), dim=-1)
             st.blat[li][r] = torch.cat((self.rms(ckv[r:r + 1, :R], self.w(p_ + "kv_a_layernorm.weight")),
                                         rotate(ckv[r:r + 1, R:], cos, sin)), dim=-1)[0]
             if sparse:
                 st.bik[li][r] = self.rms(tk[r:r + 1], self.w(ip + "token_key_norm.weight"))[0]
-                if pos % rr == rr - 1:                    # the row closes its group: pool it, turn it at its first row
-                    g0 = pos - rr + 1
-                    tks = self._gather(st.ik[li], st.bik[li], torch.arange(g0, pos + 1, device=self.device), L, paths[r])
-                    gk = self.group_keys(tks, li)
-                    c0, s0 = self.rope(self.pos3(torch.tensor([g0 + st.delta])), kind)
-                    st.bgk[li][r] = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], c0, s0)), dim=-1)[0]
-                pq, valid = self._sparse_positions(li, st, r, pos, depth, paths[r], x[r], iq[r], hw[r], cos, sin)
-                if li in self.pick_layers:
-                    st.bpick[(li, r)] = (pq, valid)
-                K = self._gather(st.lat[li], st.blat[li], pq, L, paths[r])
+                # the pooled key of the group that ends at this row, turned at its first row (read only when the
+                # row closes a group: `commit` and the rows after it in the block)
+                gk = self.group_keys(self._gather(st.ik[li], st.bik[li], f["gq"], Lt, f["anc"]), li)
+                c0, s0 = f["grope"]
+                st.bgk[li][r] = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], c0, s0)), dim=-1)[0]
+                pq = self.ar(NS)
+                if select:
+                    picked = self._select(li, st, iq[r], hw[r], cos, sin, f["p"], f["qg"], f["gmax"], f["cidx"], f["bgid"], f["bok"])
+                    pq = torch.where(f["qg"] < cfg.group_topk, pq, picked)
+                valid = pq <= f["p"]
+                if pi >= 0:
+                    st.rb[M]["pick_q"][pi, r].copy_(pq)
+                    st.rb[M]["pick_ok"][pi, r].copy_(valid)
+                K = self._gather(st.lat[li], st.blat[li], pq, Lt, f["anc"])
             else:
-                src, valid = self._window_list(pos, L, paths[r])
-                K = torch.cat((st.win[li], st.blat[li]))[src]
+                K, valid = torch.cat((st.win[li], st.blat[li]))[f["wsrc"]], f["wval"]
             out.append(self.attend_row(qr, K, valid, li).reshape(1, -1))
         y = torch.cat(out) * torch.sigmoid(gate)
         o = self.lin_rows(y, self.w(p_ + "o_proj.weight"))
         return torch.cat([self.rms(t, self.w(p_ + "post_proj_norm.weight")) for t in o.split(1)])
 
-    def expert_pairs(self, z: torch.Tensor, idx: torch.Tensor, li: int) -> torch.Tensor:
-        """Every (row, slot) pair through its expert: [M * k, latent] fp32, unweighted."""
+    def expert_pairs(self, z: torch.Tensor, idx: torch.Tensor, li: int, grouped: bool = False) -> torch.Tensor:
+        """Every (row, slot) pair through its expert: [M * k, latent] fp32, unweighted. The clamp sits between
+        the kernels' two launches, on the gate|up buffer. `grouped`: the kernels that decode an expert's tiles
+        once for up to 8 of its pairs (a prompt chunk's pairs share experts); the same bits a pair."""
         lim = self.cfg.swiglu_limit
         M, k = idx.shape
         if li in self.banks:
@@ -289,6 +447,16 @@ class Hy4FlashEngine(Hy4FlashRef):
             order = FK.expert_order(idx.to(torch.int32)) if M > 1 else torch.empty(0, dtype=torch.int32, device=z.device)
             ygu = torch.empty(M * k, 2, bank.I, dtype=torch.bfloat16, device=z.device)
             yd = torch.empty(M * k, bank.H, dtype=torch.float32, device=z.device)
+            if grouped and M > 1:
+                gt = torch.empty(M * k, 2 + FK.MOE_GR, dtype=torch.int32, device=z.device)
+                ng = torch.empty(1, dtype=torch.int32, device=z.device)
+                mod.fn_moe_groups(flat, order, gt, ng)
+                xs = torch.empty(0, dtype=torch.float16, device=z.device)
+                mod.fn_moe_gu_group(z.contiguous(), gt, ng, k, bank.tr, bank.kb, bank.su, bank.sv, ygu, bank.ks[-1], xs)
+                ygu[:, 0].clamp_(max=lim)
+                ygu[:, 1].clamp_(min=-lim, max=lim)
+                mod.fn_moe_down_group(ygu, gt, ng, bank.tr, bank.kb, bank.su, bank.sv, yd, bank.ks[-1])
+                return yd
             mod.fn_moe_gu(z.contiguous(), flat, order, bank.tr, bank.kb, bank.su, bank.sv, ygu, bank.ks[-1])
             ygu[:, 0].clamp_(max=lim)
             ygu[:, 1].clamp_(min=-lim, max=lim)
@@ -344,43 +512,41 @@ class Hy4FlashEngine(Hy4FlashRef):
             out.append([chain[-1 - j] for j in range(n)])
         return torch.tensor(out, dtype=torch.int64)
 
+    def capture(self, st: Hy4EngState, M: int, select: bool):
+        """The staged block's row pass as a CUDA graph (two runs on a side stream first: the kernels' first
+        calls and the constants). The pass writes scratch rows and row buffers only, so nothing is restored."""
+        from engine import capture_lock
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(2):
+                self.run(st, M, select)
+        torch.cuda.current_stream().wait_stream(s)
+        g = torch.cuda.CUDAGraph()
+        with capture_lock.LOCK, torch.cuda.graph(g):
+            self.run(st, M, select)
+        torch.cuda.synchronize()
+        return g
+
     @torch.no_grad()
-    def rows(self, tokens: list[int], parents: list[int], st: Hy4EngState) -> tuple[torch.Tensor, torch.Tensor]:
+    def rows(self, tokens: list[int], parents: list[int], st: Hy4EngState, graphs: dict | None = None,
+             clone: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
         """A block in DFS pre-order (row 0 at the state's length) -> fp32 logits [M, vocab] and the head's
-        input [M, H]. Only the block's scratch rows are written."""
-        cfg = self.cfg
-        M = len(tokens)
-        if not 1 <= M <= BLOCK or len(parents) != M:
-            raise ValueError(f"a block holds 1 to {BLOCK} rows")
-        depth, paths = _paths([int(p) for p in parents])
-        if st.length + max(depth) >= st.cap:
-            raise ValueError(f"the state holds {st.length} of {st.cap} rows: no room for this block")
-        tok = torch.tensor(tokens, dtype=torch.int64)
-        st.btok, st.bparents = [int(t) for t in tokens], [int(p) for p in parents]
-        live = tok != cfg.engram_pad_id
-        for skip in (cfg.image_token_id, cfg.video_token_id):
-            if skip is not None:
-                live = live & (tok != skip)
-        grams = self._row_grams(st, st.btok, paths) if self.hashes else None
-        h = self.embed(tok).unsqueeze(1).expand(-1, cfg.hc_mult, -1).contiguous()
-        for li in range(cfg.num_hidden_layers):
-            p = f"layers.{li}."
-            if li in self.hashes:
-                rows = self.engram_rows(li, self.hashes[li].ids(grams))
-                self.stats["engram_rows"] += rows.shape[0] * rows.shape[1]
-                h = h + torch.cat([self.engram_apply(h[r:r + 1], rows[r:r + 1], li, live[r:r + 1]) for r in range(M)])
-            xs, posts = zip(*[self.hc(h[r:r + 1], p + "hc_attn_layer.hc_pre.") for r in range(M)])
-            x = torch.cat([self.rms(t, self.w(p + "input_layernorm.weight")) for t in xs])
-            y = self.attention_rows(x, li, st, depth, paths)
-            h = torch.cat([self.inject(h[r:r + 1], y[r:r + 1], posts[r]) for r in range(M)])
-            xs, posts = zip(*[self.hc(h[r:r + 1], p + "hc_mlp_layer.hc_pre.") for r in range(M)])
-            x = torch.cat([self.rms(t, self.w(p + "post_attention_layernorm.weight")) for t in xs])
-            y = self.mlp_rows(x, li)
-            h = torch.cat([self.inject(h[r:r + 1], y[r:r + 1], posts[r]) for r in range(M)])
-        n = torch.cat([self.final(h[r:r + 1]) for r in range(M)])
+        input [M, H]. Only the block's scratch rows are written. `graphs` (a device): the pass replays its
+        captured graph for this state, row count and form, captured at its first use; the same operations,
+        the same bits. `clone` False hands out the row buffers themselves (the next block overwrites them)."""
+        M, select = self.stage(tokens, parents, st)
+        if graphs is not None and self.device.type == "cuda":
+            g = graphs.get((M, select))
+            if g is None:
+                g = graphs[(M, select)] = self.capture(st, M, select)
+            g.replay()
+        else:
+            self.run(st, M, select)
         self.stats["rows"] += M
         self.stats["blocks"] += 1
-        return self.head_rows(n), n
+        rb = st.rb[M]
+        return (rb["logits"].clone(), rb["hidden"].clone()) if clone else (rb["logits"], rb["hidden"])
 
     def head_rows(self, n: torch.Tensor) -> torch.Tensor:
         w = self.w("lm_head.weight")
@@ -400,28 +566,32 @@ class Hy4FlashEngine(Hy4FlashRef):
         for i, r in enumerate(path):
             if r >= len(st.bparents) or st.bparents[r] != (path[i - 1] if i else -1):
                 raise ValueError(f"{path} is not a chain of the last block from its anchor")
-        L, rr, Wn = st.length, cfg.index_kpool, cfg.sliding_window
+        L, rr, Wn, n = st.length, cfg.index_kpool, cfg.sliding_window, len(path)
         if not path:
             return
+        M = len(st.bparents)
         rows = torch.tensor(path, device=self.device)
-        slots = torch.arange(L, L + len(path), device=self.device)
-        closes = (slots % rr == rr - 1).unsqueeze(-1)
-        for li in cfg.sparse_layers:
-            st.lat[li][slots] = st.blat[li][rows]
-            st.ik[li][slots] = torch.where(closes, st.bgk[li][rows], st.bik[li][rows])
-        for li in cfg.window_layers:
-            st.win[li][slots % Wn] = st.blat[li][rows]
-        toks = st.hist.tolist() + [st.btok[r] for r in path]
-        st.hist.copy_(torch.tensor(toks[-st.hist.shape[0]:], dtype=torch.int64))
-        st.length = L + len(path)
-        st.picks = {li: st.bpick[(li, path[-1])] for li in self.pick_layers if (li, path[-1]) in st.bpick}
-        st.picks_at = st.length if len(st.picks) == len(self.pick_layers) else -1
-        st.btok, st.bparents, st.bpick = [], [], {}
+        slots = torch.arange(L, L + n, device=self.device)
+        closes = [(L + i) % rr == rr - 1 for i in range(n)]
+        ct = torch.tensor(closes, device=self.device)
+        st.lat_all[:, slots] = st.blat_all[self._sidx][:, rows]
+        st.ik_all[:, slots] = torch.where(ct[None, :, None], st.bgk_all[:, rows], st.bik_all[:, rows])
+        if any(closes):
+            st.gk_all[:, slots[ct] // rr] = st.bgk_all[:, rows[ct]]
+        st.win_all[:, slots[-Wn:] % Wn] = st.blat_all[self._widx][:, rows[-Wn:]]
+        toks = torch.tensor([st.btok[r] for r in path], dtype=torch.int64, device=self.device)
+        st.hist.copy_(torch.cat((st.hist, toks))[-st.hist.shape[0]:])
+        st.length = L + n
+        if st.pick_layers:
+            st.pick_q.copy_(st.rb[M]["pick_q"][:, path[-1]])
+            st.pick_ok.copy_(st.rb[M]["pick_ok"][:, path[-1]])
+            st.picks_at = st.length
+        st.btok, st.bparents = [], []
 
     @torch.no_grad()
-    def step(self, token: int, st: Hy4EngState) -> torch.Tensor:
+    def step(self, token: int, st: Hy4EngState, graphs: dict | None = None) -> torch.Tensor:
         """One decode token: its row, committed. Logits [1, vocab] fp32."""
-        lg, _ = self.rows([int(token)], [-1], st)
+        lg, _ = self.rows([int(token)], [-1], st, graphs=graphs)
         self.commit(st, [0])
         return lg
 
@@ -454,6 +624,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         n_ctx = st.hist.shape[0]
         hist = st.hist.cpu()
         full = torch.cat((hist, tokens))
+        if st.gk_dirty:
+            st.gk_all[:, :st.Gc] = st.ik_all[:, cfg.index_kpool - 1::cfg.index_kpool][:, :st.Gc]
+            st.gk_dirty = False
         grams = torch.stack([full[n_ctx - j: n_ctx - j + T] for j in range(cfg.engram_max_ngram_size)], dim=-1) if self.hashes else None
         h = self.embed(tokens).unsqueeze(1).expand(-1, cfg.hc_mult, -1).contiguous()
         for li in range(cfg.num_hidden_layers):
@@ -471,7 +644,7 @@ class Hy4FlashEngine(Hy4FlashRef):
         st.hist.copy_(full[-n_ctx:])
         st.length = L0 + T
         st.picks_at = st.length if self.pick_layers else -1
-        st.btok, st.bparents, st.bpick = [], [], {}
+        st.btok, st.bparents = [], []
         self.prompt_hidden = self.final(h)
         self.stats["prefill_rows"] += T
         return self.prompt_hidden
@@ -494,8 +667,9 @@ class Hy4FlashEngine(Hy4FlashRef):
             L = L0 + T
             if (L - 1) // rr < cfg.group_topk:                    # every row still reads everything before it
                 if li in self.pick_layers:
-                    pq = torch.arange(cfg.index_topk, device=self.device)
-                    st.picks[li] = (pq, pq <= L - 1)
+                    pi = st.pick_layers.index(li)
+                    st.pick_q[pi].copy_(self.ar(cfg.index_topk))
+                    st.pick_ok[pi].copy_(self.ar(cfg.index_topk) <= L - 1)
                 for i in range(0, T, SUB):
                     sl = slots[i:i + SUB]
                     n = int(sl[-1]) + 1
@@ -510,7 +684,9 @@ class Hy4FlashEngine(Hy4FlashRef):
                                                              cos[i:i + SUB_LIST], sin[i:i + SUB_LIST])
                     out[i:i + SUB_LIST] = self.attend_lists(q[i:i + SUB_LIST], st.lat[li][pq.clamp(max=L - 1)], valid, li)
                 if li in self.pick_layers:
-                    st.picks[li] = (pq[-1], valid[-1])
+                    pi = st.pick_layers.index(li)
+                    st.pick_q[pi].copy_(pq[-1])
+                    st.pick_ok[pi].copy_(valid[-1])
         else:
             # the ring's rows before the chunk in position order, then the chunk's own
             before = torch.arange(L0 - Wn + 1, L0, device=self.device)
@@ -567,7 +743,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         gk = self.group_keys(st.ik[li][g0 * rr:g1 * rr], li)
         first = torch.arange(g0, g1) * rr
         cos, sin = self.rope(self.pos3(first + st.delta), SPARSE)
-        st.ik[li][first.to(self.device) + rr - 1] = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], cos, sin)), dim=-1)
+        keys = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], cos, sin)), dim=-1)
+        st.ik[li][first.to(self.device) + rr - 1] = keys
+        st.gk[li][g0:g1] = keys
 
     def _sparse_positions_chunk(self, li: int, st: Hy4EngState, slots: torch.Tensor, iq: torch.Tensor, hw: torch.Tensor,
                                 cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -602,8 +780,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         idx, wts = self.route(x, li)
         z = self.lin(x, self.w(p + "routed_expert_down_proj.weight"))
         if li in self.banks:
-            routed = torch.cat([self.combine(self.expert_pairs(z[i:i + BLOCK], idx[i:i + BLOCK], li), idx[i:i + BLOCK], wts[i:i + BLOCK])
-                                for i in range(0, x.shape[0], BLOCK)])
+            B, gr = EXPERT_SUB, self.prefill_grouped
+            routed = torch.cat([self.combine(self.expert_pairs(z[i:i + B], idx[i:i + B], li, grouped=gr), idx[i:i + B], wts[i:i + B])
+                                for i in range(0, x.shape[0], B)])
         else:
             routed = self._experts_grouped(z, idx, wts, li)
         routed = self.lin(routed, self.w(p + "routed_expert_up_proj.weight"))
@@ -632,18 +811,18 @@ class Hy4FlashEngine(Hy4FlashRef):
     def copy_state(self, src: Hy4EngState, dst: Hy4EngState) -> None:
         """`dst` becomes `src` (the rows up to its length, the rings, the last tokens, the last row's picks)."""
         n = src.length
-        for li in src.lat:
-            dst.lat[li][:n] = src.lat[li][:n]
-            dst.ik[li][:n] = src.ik[li][:n]
-        for li in src.win:
-            dst.win[li].copy_(src.win[li])
+        dst.lat_all[:, :n] = src.lat_all[:, :n]
+        dst.ik_all[:, :n] = src.ik_all[:, :n]
+        dst.win_all.copy_(src.win_all)
         dst.hist.copy_(src.hist)
         dst.length, dst.delta = n, src.delta
-        dst.picks, dst.picks_at = {k: (a.clone(), b.clone()) for k, (a, b) in src.picks.items()}, src.picks_at
-        dst.btok, dst.bparents, dst.bpick = [], [], {}
+        dst.pick_q.copy_(src.pick_q)
+        dst.pick_ok.copy_(src.pick_ok)
+        dst.touched()
+        dst.picks_at = src.picks_at
 
     @torch.no_grad()
-    def self_check(self, prompt: list[int], steps: int = 12, widths=(2, 4, 8), log=print) -> dict:
+    def self_check(self, prompt: list[int], steps: int = 12, widths=(2, 4, 8), log=print, graphs: bool = False) -> dict:
         """A prompt, then `steps` greedy decode steps recorded; the same tokens replayed as chain blocks of
         every width and as trees with a wrong branch: every row must be the decode step's bit for bit.
         `covers` says which read paths the replay reached: a prompt shorter than `check_rows()` leaves the
@@ -654,6 +833,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         base = base_st.length
         st = self.new_state(base_st.cap)
         self.copy_state(base_st, st)
+        # `graphs`: the replay runs the captured graphs, the recorded decode stays on the plain pass, so a row
+        # that differs names a graph that does not compute the plain pass's bits
+        gs = {} if graphs and self.device.type == "cuda" else None
         toks, want = [], []
         nxt = int(lg[0].argmax())
         for _ in range(steps):
@@ -669,7 +851,7 @@ class Hy4FlashEngine(Hy4FlashRef):
                 blk = toks[i:i + wdt]
                 # groups that close inside the block before its last row: scored from the block's own rows
                 closed += sum(1 for j in range(len(blk) - 1) if (st.length + j) % rr == rr - 1)
-                got, _ = self.rows(blk, list(range(-1, len(blk) - 1)), st)
+                got, _ = self.rows(blk, list(range(-1, len(blk) - 1)), st, graphs=gs)
                 for j in range(len(blk)):
                     rows += 1
                     if not torch.equal(got[j], want[i + j]):
@@ -680,7 +862,7 @@ class Hy4FlashEngine(Hy4FlashRef):
         i = 0
         while i + 3 <= steps:
             wrong = (toks[i + 1] + 1) % c.vocab_size
-            got, _ = self.rows([toks[i], wrong, toks[i + 2], toks[i + 1], toks[i + 2]], [-1, 0, 1, 0, 3], st)
+            got, _ = self.rows([toks[i], wrong, toks[i + 2], toks[i + 1], toks[i + 2]], [-1, 0, 1, 0, 3], st, graphs=gs)
             for j, r in ((0, 0), (1, 3), (2, 4)):
                 rows += 1
                 if not torch.equal(got[r], want[i + j]):
@@ -694,4 +876,4 @@ class Hy4FlashEngine(Hy4FlashRef):
             f"(group selection {'reached' if covers['selection'] else 'NOT reached'}, rings "
             f"{'wrapped' if covers['rings_wrapped'] else 'NOT wrapped'}, {closed} groups closed inside blocks): "
             + ("every row equal" if ok else f"{len(bad)} rows differ, first {bad[0]}"))
-        return {"ok": ok, "rows": rows, "bad": bad[:8], "steps": steps, "covers": covers}
+        return {"ok": ok, "rows": rows, "bad": bad[:8], "steps": steps, "covers": covers, "graphs": len(gs) if gs is not None else None}

@@ -70,7 +70,7 @@ def test_the_loop_verbs():
     lg = s.forward(torch.tensor(ids[:20]), start=0)
     plain.forward(torch.tensor(ids[:20]), start=0)
     assert lg.shape == (1, 1, s.cfg.vocab_size) and s.kv.length == 20 and s.hidden_post_norm().shape == (1, 20, s.cfg.hidden_size)
-    want = [plain.forward(torch.tensor([t]), start=20 + i) for i, t in enumerate(ids[20:30])]
+    want = [plain.forward(torch.tensor([t]), start=20 + i).clone() for i, t in enumerate(ids[20:30])]
     _raises(lambda: s.forward(torch.tensor([1]), start=3), "forward at 3", "holds 20 rows")
     # a tree with a rejected branch, its moved path committed
     lg = s.forward_tree(torch.tensor([ids[20], 9, ids[21], ids[22]]), [-1, 0, 0, 2], start=20)
