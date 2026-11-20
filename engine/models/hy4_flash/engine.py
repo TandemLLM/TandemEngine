@@ -108,16 +108,34 @@ class Hy4EngState:
     commit is a handful of copies. `gk` mirrors the indexer keys of closed groups by group ([cap / group, D],
     then a few slots a block's own closed groups take while a row is scored); it is derived from `ik` and
     rebuilt when a length is set by hand (`gk_dirty`). `rb` holds a block's staged inputs and its outputs by
-    row count: what a captured graph reads and writes."""
+    row count: what a captured graph reads and writes.
 
-    def __init__(self, cfg: Hy4FlashConfig, cap: int, dtype, device, pick_layers=()):
+    ENG-485: `paged` with the KV pool on (engine/kvpool.py), as Flash-Next's and LFM2.5's states: `lat_all` and
+    `ik_all` are each one `PagedBuffer` (row axis 1) of the state's `pages`, reserved as addresses and committed
+    by rows before every write and every read past the length (`Hy4FlashServing._ensure`, with the indexer's
+    read floor). The rings, the last tokens, the group-key mirror and the scratch stay plain tensors. `graphs`:
+    the slot's graph set (engine/models/graph_set.py), whose stream and pool its captures use."""
+
+    def __init__(self, cfg: Hy4FlashConfig, cap: int, dtype, device, pick_layers=(), paged: bool = False):
         self.cfg, self.cap, self.length, self.delta = cfg, int(cap), 0, 0
         R, D, rr = cfg.kv_lora_rank + cfg.sparse_attn.rope, cfg.index_head_dim, cfg.index_kpool
         sp, wn = cfg.sparse_layers, cfg.window_layers
 
         def z(*shape):
             return torch.zeros(*shape, dtype=dtype, device=device)
-        self.lat_all, self.ik_all = z(len(sp), self.cap, R), z(len(sp), self.cap, D)
+        from engine import kvpool as _kvp
+        self.pages = None
+        self.graphs = None
+        self.prompt_hidden = None           # the last prompt chunk's head inputs (`forward_chunk`)
+        if paged and _kvp.POOL is not None and self.cap >= _kvp.PAGED_MIN_ROWS and str(device).startswith("cuda"):
+            self.pages = _kvp.PagedSet(_kvp.OWNER)
+
+        def by_row(name, *shape):
+            if self.pages is None:
+                return z(*shape)
+            return self.pages.add(_kvp.PagedBuffer(shape, 1, dtype, device, owner=self.pages.owner,
+                                                   name=f"hy4.{name}")).tensor
+        self.lat_all, self.ik_all = by_row("lat", len(sp), self.cap, R), by_row("ik", len(sp), self.cap, D)
         self.win_all = z(len(wn), cfg.sliding_window, R)
         self.lat = {li: self.lat_all[i] for i, li in enumerate(sp)}
         self.ik = {li: self.ik_all[i] for i, li in enumerate(sp)}
@@ -161,6 +179,23 @@ class Hy4EngState:
 
     def nbytes(self) -> int:
         return sum(t.numel() * t.element_size() for t in (self.lat_all, self.ik_all, self.win_all))
+
+
+def _mirror(st: Hy4EngState, rr: int) -> None:
+    """The group-key mirror rebuilt from the indexer keys after a length was set by hand: the committed groups
+    only (ENG-485: a paged `ik_all` holds no pages past the committed rows; Flash-Next's `build_pool` the same).
+    A group past the length is never read (`gmax`), so the bits a row reads do not move."""
+    G = min(st.Gc, st.length // rr)
+    if G:
+        st.gk_all[:, :G] = st.ik_all[:, rr - 1::rr][:, :G]
+    st.gk_dirty = False
+
+
+def capture_args(st) -> dict:
+    """ENG-485: a capture of this state's graphs on its slot's graph set (its own stream, one memory pool for the
+    slot's graphs: they never run at once); without a set, torch's shared stream and a private pool as before."""
+    gs = getattr(st, "graphs", None)
+    return {} if gs is None else {"pool": gs.pool(), "stream": gs.stream()}
 
 
 def _paths(parents: list[int]) -> tuple[list[int], list[list[int]]]:
@@ -239,8 +274,8 @@ class Hy4FlashEngine(Hy4FlashRef):
         self.prompt_hidden = None
         self.stats = {"rows": 0, "blocks": 0, "prefill_rows": 0, "engram_rows": 0}
 
-    def new_state(self, cap: int | None = None) -> Hy4EngState:
-        return Hy4EngState(self.cfg, cap or self.max_len, self.dtype, self.device, self.pick_layers)
+    def new_state(self, cap: int | None = None, paged: bool = False) -> Hy4EngState:
+        return Hy4EngState(self.cfg, cap or self.max_len, self.dtype, self.device, self.pick_layers, paged=paged)
 
     def ar(self, n: int) -> torch.Tensor:
         """arange(n) on the device, made once (a captured graph must not build its constants)."""
@@ -507,8 +542,7 @@ class Hy4FlashEngine(Hy4FlashRef):
         if L + max(depth) >= st.cap:
             raise ValueError(f"the state holds {L} of {st.cap} rows: no room for this block")
         if st.gk_dirty:
-            st.gk_all[:, :st.Gc] = st.ik_all[:, rr - 1::rr][:, :st.Gc]
-            st.gk_dirty = False
+            _mirror(st, rr)
         rb = self._rb(st, M)
         c, BG, o = rb["ctl_h"], st.BG, self.CTL
         select = False
@@ -820,7 +854,7 @@ class Hy4FlashEngine(Hy4FlashRef):
                 self.run(st, M, select)
         torch.cuda.current_stream().wait_stream(s)
         g = torch.cuda.CUDAGraph()
-        with capture_lock.LOCK, torch.cuda.graph(g):
+        with capture_lock.LOCK, torch.cuda.graph(g, **capture_args(st)):
             self.run(st, M, select)
         torch.cuda.synchronize()
         return g
@@ -907,7 +941,7 @@ class Hy4FlashEngine(Hy4FlashRef):
                 out.append(self.head(n))
         if head == "all":
             return torch.cat(out)
-        return self.head(self.prompt_hidden[-1:]) if head == "last" else None
+        return self.head(st.prompt_hidden[-1:]) if head == "last" else None
 
     def _chunk_begin(self, tokens: torch.Tensor, st: Hy4EngState) -> tuple:
         """What a chunk's layers share: its slots, the rows that own an n-gram, the tokens with the state's last ones,
@@ -925,8 +959,7 @@ class Hy4FlashEngine(Hy4FlashRef):
         hist = st.hist.cpu()
         full = torch.cat((hist, tokens))
         if st.gk_dirty:
-            st.gk_all[:, :st.Gc] = st.ik_all[:, cfg.index_kpool - 1::cfg.index_kpool][:, :st.Gc]
-            st.gk_dirty = False
+            _mirror(st, cfg.index_kpool)
         grams = torch.stack([full[n_ctx - j: n_ctx - j + T] for j in range(cfg.engram_max_ngram_size)], dim=-1) if self.hashes else None
         # every Engram layer's table rows read and decoded on the reader thread, in layer order, while the layers run
         reads = self._engram_reads(grams) if self.hashes else {}
@@ -937,9 +970,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         st.length = L0 + T
         st.picks_at = st.length if self.pick_layers else -1
         st.btok, st.bparents = [], []
-        self.prompt_hidden = hidden
+        st.prompt_hidden = self.prompt_hidden = hidden      # ENG-485: the state's; the engine's for the tools
         self.stats["prefill_rows"] += T
-        return self.prompt_hidden
+        return st.prompt_hidden
 
     def forward_chunk(self, tokens: torch.Tensor, st: Hy4EngState) -> torch.Tensor:
         """`tokens` [T] appended to the state on batched operations -> the head's inputs [T, H]. With `prefill_v2` the

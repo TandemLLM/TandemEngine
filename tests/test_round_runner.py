@@ -2,7 +2,8 @@
 
 Two and three requests decoding at once through the round runner (server/round_runner.py) write, each,
 the tokens they write alone; the runner ran joint passes (the requests verified together); every slot
-leaves with its phase cleared and the turn free.
+leaves with its phase cleared and the turn free. ENG-485: with no meeting (a family whose lanes take turns, or
+--parallel-batch off) the runner verifies one lane a pass, never in another family's joint pass, never cut.
 
 Run: python tests/test_round_runner.py
 """
@@ -1098,6 +1099,134 @@ def test_spd249_no_automatic_collection_in_the_rounds_and_memory_stays_bounded()
     assert seen["peak"] <= 300 * 4 and _Cyc.alive == 0, (seen, _Cyc.alive)
     return (f"{out}; {frozen} frozen, young in {st['young_busy'][0]} waits, full {st['full_busy'][0]} in waits + "
             f"{st['full_idle'][0]} idle, peak {seen['peak']} live cyclic objects")
+
+# ------------------------------------------------------------------ ENG-485: lanes that take turns
+
+def _no_meeting(engine_cls, k=2, n=40):
+    """ENG-485: `k` requests decoding at once through the runner on a pool with no meeting (a family whose lanes
+    take turns, `caps.joint_verify` False, or --parallel-batch off), each slot's engine an `engine_cls`:
+    (the texts, each request's alone text, the runner's stats, the slots' phases after)."""
+    import threading
+    import torch
+    from server import app, slots
+    cfg = T.tiny_config()
+    w = T.FakeWeights(cfg, seed=5)
+    prompts = [[(3 + 7 * i + 11 * j) % 96 + 1 for j in range(10 + 3 * i)] for i in range(k)]
+    refs = [T._greedy(cfg, w, p, n) for p in prompts]
+    fulls = [p + r for p, r in zip(prompts, refs)]
+    alone = [T._alone(cfg, w, p, f, n) for p, f in zip(prompts, fulls)]
+
+    def engine():
+        eng = engine_cls(cfg, w, max_len=256, device="cpu")
+        eng.kv.k = eng.kv.k.to(T.DT)
+        eng.kv.v = eng.kv.v.to(T.DT)
+        eng.state.conv = eng.state.conv.to(T.DT)
+        return eng
+    pool = T._setup([engine() for _ in prompts], [T.OracleTree(f) for f in fulls])
+    pool.meeting = None
+    R.RUNNER = None
+    outs, errs = {}, []
+    go = threading.Barrier(k)
+
+    def run(i):
+        try:
+            go.wait()
+            if i == 0:
+                with app.LOCK:
+                    with torch.no_grad():
+                        outs[i] = list(app.generate_stream(torch.tensor(prompts[i]), n, set()))
+                return
+            s = pool.slots[i]
+            slots.bind(s)
+            pool.turn.reset(i)
+            pool.turn.acquire(i)
+            try:
+                with torch.no_grad():
+                    outs[i] = list(app.generate_stream(torch.tensor(prompts[i]), n, set()))
+            finally:
+                if pool.turn.held_by(i):
+                    pool.turn.release(i)
+                slots.bind(None)
+        except BaseException as exc:                               # noqa: BLE001
+            errs.append(exc)
+
+    ths = [threading.Thread(target=run, args=(i,), daemon=True) for i in range(k)]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(120)
+    alive = [th.is_alive() for th in ths]
+    stats = dict(R.RUNNER.stats) if R.RUNNER is not None else None
+    phases = [s.phase for s in pool.slots]
+    T._teardown()
+    if errs:
+        raise errs[0]
+    assert not any(alive), f"a request never ended: {alive}"
+    return [outs[i] for i in range(k)], alone, stats, phases
+
+
+def test_no_meeting_means_one_lane_a_pass():
+    """ENG-485 (the design's step 1, test 1): a family that takes turns (`joint_verify` False, no joint pass of its
+    own) through the runner: each lane verifies alone, the 27B's joint pass is never called on its lanes, and each
+    request writes its alone text. Before the fix the runner put both lanes into one pass and called the 27B's
+    function on them."""
+    import dataclasses
+    import engine.model as M
+    from engine.models.qwen3_5.adapter import Qwen38Engine
+
+    class Turns(Qwen38Engine):
+        caps = dataclasses.replace(Qwen38Engine.caps, joint_verify=False)
+        forward_tree_multi = None
+    called = []
+    real = M.forward_tree_multi
+
+    def foreign(items):
+        called.append(len(items))
+        raise AssertionError(f"another family's joint pass called with {len(items)} lanes")
+    M.forward_tree_multi = foreign
+    try:
+        texts, alone, stats, phases = _no_meeting(Turns)
+    finally:
+        M.forward_tree_multi = real
+    assert not called, called
+    for i, (a, b) in enumerate(zip(texts, alone)):
+        assert a == b, (i, b, a)
+    assert stats is not None and stats["joint"] == 0 and stats["errors"] == 0 and stats["rounds"] > 0, stats
+    assert all(p == "" for p in phases), phases
+    return f"2 requests, {stats['rounds']} rounds, each lane its own verify; each its alone text"
+
+
+def test_parallel_batch_off_cuts_nothing_and_shares_no_pass():
+    """ENG-485 (test 2): --parallel-batch off on a family that has a joint pass: no meeting, so the runner neither
+    cuts a tree nor hands two lanes to the family's pass (before the fix both lanes went to it uncut, past its row
+    cap); each request writes its alone text."""
+    import engine.model as M
+    from engine.models.qwen3_5.adapter import Qwen38Engine
+    from server import slots
+    calls, cuts = [], []
+    real_multi, real_cut = M.forward_tree_multi, slots.joint_cut
+
+    class Joint(Qwen38Engine):
+        @staticmethod
+        def forward_tree_multi(items):
+            calls.append(len(items))
+            return real_multi(items)
+
+    def cut(trees, *a, **kw):
+        cuts.append(len(trees))
+        return real_cut(trees, *a, **kw)
+    slots.joint_cut = cut
+    try:
+        texts, alone, stats, _ = _no_meeting(Joint)
+    finally:
+        slots.joint_cut = real_cut
+    assert not any(n > 1 for n in calls), calls
+    assert not cuts, cuts
+    for i, (a, b) in enumerate(zip(texts, alone)):
+        assert a == b, (i, b, a)
+    assert stats is not None and stats["errors"] == 0 and stats["joint"] == len(calls), (stats, calls)
+    return f"{stats['rounds']} rounds, no pass of two lanes, no cut; each its alone text"
+
 
 if __name__ == "__main__":
     passed = 0

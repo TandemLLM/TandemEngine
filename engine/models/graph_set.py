@@ -12,8 +12,15 @@ life (one a slot: no other owner ever captures on it, and nothing waits for it t
 every graph captured on it at once. The server drops the graph sets of idle slots, the least recently used first,
 under memory pressure and over a cap (server/app.py `_drop_slot_graphs`).
 
+ENG-485: a slot's graphs never run at the same time, so they may share one memory pool (`pool`: one
+`torch.cuda.graph_pool_handle()`, made at the first ask and replaced after a drop), as the 27B's verify graphs
+(engine/verify_graph.py) and Flash-Next's joint graphs keep theirs by hand. A slot then holds its largest graph's
+scratch, not every graph's. It is safe only for graphs whose outputs live outside the pool (buffers made before the
+capture); a family opts in by asking for it.
+
     gs = GraphSet()
     torch.cuda.graph(g, stream=gs.stream())      # every capture of the slot
+    torch.cuda.graph(g, pool=gs.pool(), stream=gs.stream())    # ENG-485: or with one memory pool for them all
     gs.used()                                    # a round on the slot (the LRU order)
     gs.drop(graphs)                              # each CUDAGraph reset; the caller empties the allocator
 """
@@ -29,6 +36,7 @@ from engine import capture_lock
 class GraphSet:
     def __init__(self):
         self._stream = None
+        self._pool = None                   # ENG-485: the slot's graphs' shared memory pool, made when first asked
         #: an idle capture's step holds it, so does a drop: a drop never lands inside a step another thread runs
         self.lock = threading.Lock()
         self.t_used = 0.0                   # time.monotonic() of the slot's last round, 0: none yet
@@ -44,6 +52,14 @@ class GraphSet:
             self._stream = capture_lock.lease_stream()
         self.holding = True
         return self._stream
+
+    def pool(self):
+        """The memory pool every capture of this slot shares, made at the first ask and kept until a drop (the
+        reset graphs give it back; the next capture takes a new one). A set that is never asked makes none."""
+        if self._pool is None:
+            import torch
+            self._pool = torch.cuda.graph_pool_handle()
+        return self._pool
 
     def used(self) -> None:
         self.t_used = time.monotonic()
@@ -61,6 +77,7 @@ class GraphSet:
             torch.cuda.synchronize()
         for g in graphs:
             g.reset()
+        self._pool = None
         self.holding = False
         self.dropped = True
         self.stats["drops"] += 1

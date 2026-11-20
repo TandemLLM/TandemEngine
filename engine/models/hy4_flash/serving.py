@@ -25,7 +25,9 @@ import time
 import torch
 
 from engine.methods.manifest import Manifest
+from engine.methods.side_slot import ensure_rows, lane_drafter, open_pool, side_slot_bytes
 from engine.models.adapter import Capabilities, CostModel
+from engine.models.graph_set import GraphSet
 from engine.models.hy4_flash.engine import BLOCK, PREFILL_CHUNK, Hy4FlashEngine
 from engine.models.state import SectionState
 from engine.settings import SETTINGS as _S
@@ -43,6 +45,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 
 #: the tables the arithmetic reads (a dense split is a summation order)
 TABLES = ("ops/hy4-dense-splits.json",)
+#: SRV-905: the rows a second a prompt is read at through the server (measured, docs/hy4-flash.md "Limits"): the
+#: prior the router's guard, the disk tier and the spill price a read at until a request has measured one, in place
+#: of the 27B's 740 (a 2,345-row question was priced at 3.2 s and took 18.8)
+PREFILL_TOK_S = 140.0
 
 
 def manifest() -> Manifest:
@@ -54,10 +60,18 @@ class _KV:
     Zero starts a new sequence in place; any other length keeps the by-slot rows by length -- the rings
     and the last tokens are the caller's to restore first (`state.restore`)."""
 
-    pages = None
-
     def __init__(self, serving: "Hy4FlashServing"):
         self._s = serving
+
+    @property
+    def pages(self):
+        """ENG-485: the KV pool's paged set of the state's latents and indexer keys, or None (the pool off)."""
+        return self._s.st.pages
+
+    def ensure(self, rows: int) -> None:
+        """ENG-485: rows [0, rows) committed before a pass writes or reads them, with the indexer's read floor (the
+        round runner asks before every lane's pass: a pool that cannot give them stops that lane, not the round)."""
+        self._s._ensure(rows)
 
     @property
     def length(self) -> int:
@@ -92,11 +106,11 @@ class Hy4CacheState(SectionState):
         return out
 
     def views(self) -> list:
+        """ENG-485: the sparse layers' latents and indexer keys as two whole tensors, row axis 1 ([layers, rows,
+        dim]): the caches find a paged buffer by its tensor's base address (engine/kvpool.py), which a layer's
+        slice does not have."""
         st = self.s.st
-        out = []
-        for li in sorted(st.lat):
-            out += [(f"lat.{li}", st.lat[li], 0), (f"ik.{li}", st.ik[li], 0)]
-        return out
+        return [("lat", st.lat_all, 1), ("ik", st.ik_all, 1)]
 
     def restore(self, snap) -> None:
         super().restore(snap)
@@ -106,10 +120,11 @@ class Hy4CacheState(SectionState):
 class Hy4FlashServing:
     """`Hy4FlashEngine` with one state, in the server's engine interface."""
 
-    # the caches on the prefill's grid; one sequence at a time until the row path has its kernels and
-    # graphs (no side slots, no joint passes, no side lane); the shadow reader was validated on Qwen text. The
-    # router's notes have no place in its prompt (`notes: False`, as Flint's): it asks for none (SRV-899)
-    caps = Capabilities(caches=True, side_slots=False, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=False,
+    # the caches on the prefill's grid; side slots, each the full window through the KV pool, whose lanes take
+    # turns (ENG-485: `joint_verify` False, each lane its own verify; no joint pass, no side lane); the shadow
+    # reader was validated on Qwen text. The router's notes have no place in its prompt (`notes: False`, as
+    # Flint's): it asks for none (SRV-899)
+    caps = Capabilities(caches=True, side_slots=True, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=False,
                         side_lane=False, joint_plain=False, conductor={"notes": False})
 
     # the conversation cache on one lane (SRV-907): a chat's next turn is never a guest of its own rows, and
@@ -117,13 +132,13 @@ class Hy4FlashServing:
     # prompt without a plan is marked where its first user turn starts, so a repeated head is read once
     # (SRV-905, server/app.py `_head_mark`)
     caps = dataclasses.replace(caps, chat_first=True, head_mark=True)
-    # INTERIM (SRV-907): a second chat the store remembers takes the one lane (`Capabilities.solo`); delete this
-    # line with the capability in the commit that builds this family's side slots
-    caps = dataclasses.replace(caps, solo=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)
-        self.st = eng.new_state(self.max_len)
+        # ENG-485: paged through the KV pool when the server opened one (its owner named around `side_slot`)
+        self.st = eng.new_state(self.max_len, paged=True)
+        self.graph_set = GraphSet()         # the slot's captures: its stream, its one pool, dropped at once
+        self.st.graphs = self.graph_set
         self.state = Hy4CacheState(self)
         self.kv = _KV(self)
         self.picks = None
@@ -166,7 +181,8 @@ class Hy4FlashServing:
         st, c = self.st, self.cfg
         sec = sum(t.numel() * t.element_size() for t in self.state.sections().values())
         row = sum(t.numel() // t.shape[ax] * t.element_size() for _, t, ax in self.state.views())
-        return CostModel(section_bytes=sec, view_bytes_per_token=row, parts={"recurrent": sec, "conv": 0})
+        return CostModel(section_bytes=sec, view_bytes_per_token=row, parts={"recurrent": sec, "conv": 0},
+                         prefill_tok_s=PREFILL_TOK_S)
 
     def manifest(self) -> Manifest:
         return manifest()
@@ -201,8 +217,64 @@ class Hy4FlashServing:
                     seen.add(s.data_ptr())
                     w += s.nbytes()
         st = self.st
-        return {"weights": w, "kv_pool": sum(int(t.numel() * t.element_size()) for d in (st.lat, st.ik) for t in d.values()),
-                "drafter_kv": 0, "gdn_state": sum(int(t.numel() * t.element_size()) for t in st.win.values())}
+        from engine import kvpool as _kvp
+        # a paged tensor's size is its address range: its committed pages are the pool's figure (memsplit)
+        kv = sum(int(t.numel() * t.element_size()) for t in (st.lat_all, st.ik_all) if not _kvp.paged(t))
+        return {"weights": w, "kv_pool": kv, "drafter_kv": 0,
+                "gdn_state": sum(int(t.numel() * t.element_size()) for t in st.win.values())}
+
+    # --- side slots (ENG-485) ----------------------------------------------------------------------
+    def side_slot(self, max_len: int, drafter0=None) -> tuple:
+        """A side slot's serving and drafter over this engine (`fn`, the weights and the Engram tables once): its
+        own state (paged as slot 0's when the pool is on, made here under the slot's owner), rings, row buffers,
+        graph set and draft head; the drafter's cut from the same prices and freeze (`priced_cut`, as slot 0's),
+        its lookup over slot 0's corpus. Lanes take turns, so only the turn's holder runs."""
+        e2 = type(self)(self.fn, max_len)
+        d2 = None
+        if drafter0 is not None and hasattr(drafter0, "cut"):
+            from engine.models.hy4_flash.dfly import DFlyHead
+            head = DFlyHead(e2, graphs=e2.graphs is not None)
+            e2.heads["dfly"] = head
+            freeze = getattr(drafter0, "freeze", False)
+            d2 = lane_drafter(e2, head, drafter0, make_cut=lambda prices, sib: priced_cut(prices, sib, freeze)[0])
+        return e2, d2
+
+    def side_slot_bytes(self, max_len: int, paged: bool) -> tuple:
+        """(bytes a token, constant bytes) a side slot allocates at its build: its latents and indexer keys a token
+        unless the window is paged; its rings and last tokens, and the group-key mirror (not paged)."""
+        return side_slot_bytes(self.cost(), paged, _mirror_bytes(self.cfg, max_len))
+
+    def _graph_objects(self) -> list:
+        out = list(self.graphs.values()) if self.graphs is not None else []
+        return out + [h.graph for h in self.heads.values() if getattr(h, "graph", None) is not None]
+
+    def graph_count(self) -> int:
+        """The graphs the slot keeps, for /health; no CUDA call."""
+        return (len(self.graphs) if self.graphs is not None else 0) + sum(
+            1 for h in list(self.heads.values()) if getattr(h, "graph", None) is not None)
+
+    def graph_pools(self) -> set:
+        """The memory pools of the slot's graphs (`CUDAGraph.pool()`): what a drop gives back."""
+        out = set()
+        for g in self._graph_objects():
+            try:
+                out.add(tuple(g.pool()))
+            except (RuntimeError, AttributeError):
+                pass
+        return out
+
+    def drop_graphs(self) -> int:
+        """Every graph of this slot reset at once (`GraphSet.drop`: all captured on the slot's stream, into its one
+        pool), as Flash-Next's; the passes capture them again at their next use. Only for a slot no round and no
+        capture uses (server/app.py `_drop_slot_graphs` holds its lock). Returns the graphs reset."""
+        self._settle_chain()
+        n = self.graph_set.drop(self._graph_objects())
+        if self.graphs is not None:
+            self.graphs.clear()
+        for h in self.heads.values():
+            if getattr(h, "graph", None) is not None:
+                h.graph = None
+        return n
 
     def resident_files(self) -> list:
         """The Engram tables read through the page cache (a warm table's bytes count against the floor)."""
@@ -247,6 +319,8 @@ class Hy4FlashServing:
         ids = ids.view(-1)
         self._at(start)
         T = ids.numel()
+        self._ensure(start + T + BLOCK)
+        self.graph_set.used()
         if T == 1 and start > 0:
             n0 = len(self.graphs) if self.graphs is not None else 0
             lg, n = self.fn.rows([int(ids[0])], [-1], self.st, graphs=self.graphs, clone=False)
@@ -257,8 +331,8 @@ class Hy4FlashServing:
             self.stats["decode_steps"] += 1
             return lg.view(1, 1, -1)
         lg = self.fn.prefill(ids, self.st)
-        self._hidden = self.fn.prompt_hidden.unsqueeze(0)
-        self._last = self.fn.prompt_hidden[-1:]
+        self._hidden = self.st.prompt_hidden.unsqueeze(0)
+        self._last = self.st.prompt_hidden[-1:]
         self.stats["prefill_rows"] += T
         return lg.view(1, 1, -1)
 
@@ -268,6 +342,8 @@ class Hy4FlashServing:
         fp32, its greedy pick in `picks`. Nothing is written to the state until `commit_tree`."""
         self._settle_chain()
         self._at(start)
+        self._ensure(start + BLOCK)
+        self.graph_set.used()
         toks = [int(t) for t in block.view(-1).tolist()]
         n0 = len(self.graphs) if self.graphs is not None else 0
         lg, n = self.fn.rows(toks, [int(p) for p in parents], self.st, graphs=self.graphs, clone=False)
@@ -308,9 +384,23 @@ class Hy4FlashServing:
             n, self._chain = self._chain, None
             self.commit_tree(list(range(n)))
 
+    def _ensure(self, rows: int) -> None:
+        """ENG-485: the KV pool's pages for rows [0, rows) committed before a write reaches them, and at least the
+        indexer's read floor: a sparse layer gathers its first `index_topk` positions before it masks the ones past
+        the length (and a draft head its picks), so a short state still reads those rows. A fresh page is zeros, as
+        the buffer was, and a masked row weighs nothing: the bits do not move. Never inside a capture."""
+        ensure_rows(self.st.pages, rows, self.max_len, floor=self.cfg.index_topk + BLOCK)
+
     def _at(self, start: int) -> None:
         if int(start) != self.st.length:
             raise ValueError(f"Hy4-flash forward at {start}, the state holds {self.st.length} rows")
+
+
+def _mirror_bytes(cfg, max_len: int) -> int:
+    """The group-key mirror of a state of `max_len` rows (`Hy4EngState.gk_all`, a plain tensor: every select pass
+    scores all of it), bf16."""
+    rr = cfg.index_kpool
+    return len(cfg.sparse_layers) * (int(max_len) // rr + BLOCK // rr + 1) * cfg.index_head_dim * 2
 
 
 def _tensors(o) -> list:
@@ -341,7 +431,8 @@ def profile_of(path: str) -> str:
     return "hy4-" + os.path.basename(os.path.normpath(path))
 
 
-def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print, device: str | None = None, check: bool = True):
+def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print, device: str | None = None, check: bool = True,
+          kv_pool=None):
     """Hy4-flash for the server: the pack's weights, the engine in the loop's interface, the load-time
     self-check (a block's rows against the decode step's). Returns (serving, info)."""
     from engine.models.hy4_flash.load import load
@@ -357,6 +448,8 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
     if eng.prefill_experts not in ("group", "rows"):
         raise ValueError(f"QWEN38_HY4_PREFILL_EXPERTS={eng.prefill_experts!r}: group or rows")
     eng.prefill_v2 = _S.get("HY4_PREFILL_V2") == "1"
+    if kv_pool is not None:
+        kv_pool()                           # ENG-485: the KV pool, before the state that pages through it
     srv = Hy4FlashServing(eng, max_len)
     mark("engine")
     res = None
@@ -458,7 +551,7 @@ def serve(a, ctx) -> dict:
         tok = Hy4Tokenizer(tok)             # the model's suffixed tags under the names the server's parsers read
     except ValueError as e:
         ctx.log(f"[server] Hy4-flash: {e}; the tokenizer is served as it is (no tool calls, no reasoning split)")
-    srv, info = build(a.model, a.max_len, tok, mark=ctx.mark, log=ctx.log)
+    srv, info = build(a.model, a.max_len, tok, mark=ctx.mark, log=ctx.log, kv_pool=open_pool(a, ctx))
     # the server's default limits are another model's (70 and 77 GiB): a start that names none takes this pack's,
     # from what the weights and the window's state hold on the device
     if (info["device"] == "cuda" and getattr(a, "mem_ceiling_gib", None) == SERVER_LIMITS[0]

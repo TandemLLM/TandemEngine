@@ -945,9 +945,11 @@ class Runner:
                 self._bind(t)
                 self._plain(t)
         if group:
-            # SRV-707: more decoding lanes than one pass holds (two rows each) verify in more passes
+            # SRV-707: more decoding lanes than one pass holds (two rows each) verify in more passes. ENG-485: no
+            # meeting (a family whose lanes take turns, `caps.joint_verify` False, or --parallel-batch off): one lane
+            # a pass, each its own verify (the slot loop's turns), never another family's joint pass
             meet = self.pool.meeting
-            k = meet.per_pass() if meet is not None and hasattr(meet, "per_pass") else len(group)
+            k = meet.per_pass() if hasattr(meet, "per_pass") else (1 if meet is None else len(group))
             for i in range(0, len(group), max(1, k)):
                 self._verify(group[i:i + k])
                 passes += 1
