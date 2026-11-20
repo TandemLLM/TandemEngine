@@ -59,7 +59,7 @@ def test_the_default_effort_spec_is_the_shared_words():
         want = word if word in app.thinking_mod.TEMPLATE_WORDS else None
         assert d.word(word) == want, word
     own = sorted(n for n, a in REGISTRY.items() if a.spec.reasoning.effort != d)
-    assert own in ([], ["hy_v4_flash"]), own
+    assert own == ["hy_v4_flash"], own
     return f"{len(REGISTRY) - len(own)} families on the shared words, own: {own or 'none'}"
 
 

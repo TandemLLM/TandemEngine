@@ -47,14 +47,21 @@ The caches restore exactly, but on a chat they save less than on other models. T
 - Anchors sit every 4,096 tokens, so the engine reads a repeated prompt shorter than that again in full.
 - After a restore the first round drafts nothing, and drafting resumes on the next round.
 
-Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. For now the engine uses one thinking mode, the template's `high`, and maps every request onto it or onto `no_think`. This effort handling is being moved onto the engine's shared effort policy, so the table below describes this build only:
+Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. The template takes three modes: `no_think`, `high` (its default) and `max`. The family's spec (`engine/models/hy4_flash/arch.py`) maps the engine's effort levels onto them, and the shared effort policy does the rest, as for every model:
 
-| request | template mode |
-|-|-|
-| `enable_thinking: false`, or effort `none` or `off` | `no_think` |
-| any effort from `low` to `max`, or none given | `high` |
+| level | reached by | template mode | thinking cap |
+|-|-|-|-|
+| off | the client, or the server default `off` | `no_think` | none: no thinking |
+| off | a conductor category (`summarize`) | `high`; the router closes the block at the end of the prompt | none: no thinking |
+| low | the client, a category | `high` | 1,024 tokens |
+| medium | the client, a category, or nobody: the engine's default for this model | `high` | 8,192 |
+| high | the client, a category | `high` | 16,384 |
+| xhigh | a category | `high` | none below the conductor's backstop of 30,720 |
+| xhigh or max | the client | `max` | none; the block closes 2,048 tokens and the closing phrase before the output limit |
 
-The effort word still sets the server's reasoning cap: 1,024 tokens at `low`, 8,192 at `medium`, 16,384 at `high`, none at `xhigh` and `max`. At `high` a small question took 82 thinking tokens and the model stopped by itself. The template in these packs also takes a `max` mode, but that mode has no budget of its own: one chat turn in it thought for 7,759 tokens over 4 minutes. Tencent's later template drops `max`, and this build never asks for it.
+A request that names no effort, on the engine alone, thinks in mode `high` and stops at 8,192 thinking tokens, with the answer reserve after them; the server's `--think-budget` wins when it is set. `--reasoning-effort` keeps one job here: `off` turns thinking off for a request that says nothing about thinking. Any other value is not used, and the start log says so. Under the conductor, a category decides the cap and never the mode, and whether a client's word wins over the category is the profile's own rule (TandemApp's `thinking.client_word`).
+
+Only a client's own `xhigh` or `max` reaches `max`, and that mode has no steady length. Three turns in it thought 82, 7,759 and 25,806 tokens; the longest ran 853.8 s and came from a category's xhigh with a server default of xhigh, before this mapping. Four Chat turns in mode `high` thought 45 to 536 tokens. Tencent's later template drops `max`, so a pack built from it would map xhigh to `high` in its spec.
 
 Tool calls use the model's own tags, which the tokenizer reads under the `argkey` form's names. One served call passed on `hy4-3.56`: the answer ended with `finish_reason` `tool_calls` and one well-formed call, and the model answered the follow-up turn that carried the tool's result. That is one call and one follow-up, so the model card says `tools: true`, and `parallel_tool_calls` and `structured` stay false: neither is tested. A forced `tool_choice` (required or named) is not checked with these tags.
 

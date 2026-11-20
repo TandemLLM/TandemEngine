@@ -106,9 +106,10 @@ class Hy4FlashServing:
     """`Hy4FlashEngine` with one state, in the server's engine interface."""
 
     # the caches on the prefill's grid; one sequence at a time until the row path has its kernels and
-    # graphs (no side slots, no joint passes, no side lane); the shadow reader was validated on Qwen text
+    # graphs (no side slots, no joint passes, no side lane); the shadow reader was validated on Qwen text. The
+    # router's notes have no place in its prompt (`notes: False`, as Flint's): it asks for none (SRV-899)
     caps = Capabilities(caches=True, side_slots=False, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=False,
-                        side_lane=False, joint_plain=False)
+                        side_lane=False, joint_plain=False, conductor={"notes": False})
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)

@@ -17,10 +17,8 @@ the one place text and ids meet:
   apply_chat_template    the checkpoint's own template, untouched, so the prompt holds the model's real tags and
                          the wrapper around an earlier turn's calls. Thinking is the template's `reasoning_effort`:
                          `no_think` when the request turns thinking off (the template then closes the block in the
-                         prompt), else `high`, the template's default, for every effort word. The model card
-                         documents `high` and `no_think`. The template this pack carries also takes `max`, which
-                         has no budget of its own and thought for thousands of tokens on a short question, and
-                         Tencent's later template drops it, so no effort word reaches it.
+                         prompt), else the mode the server hands it, one of the template's own (the family's
+                         EffortSpec in arch.py maps the effort levels onto them), else `high`, its default.
 
 Everything else is the wrapped tokenizer's.
 """
@@ -32,8 +30,8 @@ SUFFIX = ":opensource"
 TAGS = {f"<{slash}{name}>": f"<{slash}{name}{SUFFIX}>" for name in ("think", "tool_call", "arg_key", "arg_value") for slash in ("", "/")}
 #: the wrapper around a turn's calls: written by the model and by the template, not part of the arg-key form
 WRAPPERS = (f"<tool_calls{SUFFIX}>", f"</tool_calls{SUFFIX}>")
-#: a request's effort word -> the template's
-EFFORT = {"xhigh": "high", "max": "high", "high": "high", "medium": "high", "low": "high", "no_think": "no_think"}
+#: the modes the pack's template takes as `reasoning_effort` (its chat_template.jinja, lines 38-46)
+MODES = ("max", "high", "no_think")
 
 
 def plain(text: str) -> str:
@@ -57,10 +55,12 @@ def real(text: str) -> str:
 
 
 def effort_of(kwargs: dict) -> str:
-    """The template's `reasoning_effort` for a request's template arguments (`enable_thinking`, an effort word)."""
+    """The template's `reasoning_effort` for a request's template arguments: `no_think` with thinking off, the mode
+    the server handed when it is one of the template's, else `high`."""
     if kwargs.get("enable_thinking") is False:
         return "no_think"
-    return EFFORT.get(str(kwargs.get("reasoning_effort") or "high"), "high")
+    word = kwargs.get("reasoning_effort")
+    return word if word in MODES else "high"
 
 
 class Hy4Tokenizer:

@@ -389,13 +389,13 @@ parallelism:
 methods:
 - id: reasoning_effort
   label: Thinking effort
-  what: Whether the model thinks before it answers, when a client does not say. On this build every effort word from
-    low to max uses one thinking mode (the template's high), and none or off turns thinking off; this family's effort
-    handling is moving onto the engine's shared effort policy.
+  what: Whether the model thinks before it answers, when a client does not say. On, such a request thinks in the
+    model's normal mode with the medium cap of 8,192 tokens; off turns thinking off. A client's own effort is served
+    as asked, and only an explicit xhigh or max reaches the model's strongest mode.
   type: enum
   options:
   - value: medium
-    label: 'on (the model''s one thinking mode)'
+    label: 'on (normal mode, up to 8,192 thinking tokens)'
   - value: 'off'
     label: 'off'
   default: medium

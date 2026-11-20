@@ -289,6 +289,14 @@ def test_the_fingerprint_covers_the_kernels_the_family_compiles():
     return f"{len(rels)} files; a line more in the shared kernels, the EXL3 source or the family's kernel moves the fingerprint"
 
 
+def test_the_caps_carry_the_conductor_fit():
+    """SRV-899: the router's notes have no place in Hy4-flash's prompt (every route row said
+    `no_insertion_point`): its caps say `notes: False`, the key Flint declares for the same reason."""
+    from engine.models.flint.serving import FlintServing
+    assert Hy4FlashServing.caps.conductor == {"notes": False} == FlintServing.caps.conductor
+    assert not Hy4FlashServing.caps.side_slots and Hy4FlashServing.caps.caches
+
+
 def test_the_packs_limits_reach_the_cache_policy():
     """A start on serve.env's 70 and 77 GiB takes the pack's limits (serving.memory_limits over what the load holds),
     and they stay the cache policy's after a request refreshes the residency limits (server/memlimits.py), which
