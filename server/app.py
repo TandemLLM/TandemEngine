@@ -7542,7 +7542,8 @@ def build_prompt(body: dict, client: "thinking_mod.Client | None" = None, *, cou
         word = eff.word(client.effort)
         if word:
             kwargs["reasoning_effort"] = word
-        elif kwargs.get("reasoning_effort") not in dict(eff.words):
+        elif kwargs.get("reasoning_effort") not in tuple(lv for lv, _ in eff.words):
+            # a tuple, as TEMPLATE_WORDS was: a list or a dict a lenient read let through compares unequal, not unhashable
             kwargs.pop("reasoning_effort", None)
         effort = eff.word(eff.default) if eff.default else STATE.get("reasoning_effort")
         if effort:

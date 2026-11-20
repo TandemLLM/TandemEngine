@@ -48,6 +48,9 @@ WORDS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 REQUESTS = ([("nothing", {}), ("enable_thinking=false", {"chat_template_kwargs": {"enable_thinking": False}})]
             + [(f"reasoning_effort={w}", {"reasoning_effort": w}) for w in WORDS]
             + [(f"kwargs.reasoning_effort={w}", {"chat_template_kwargs": {"reasoning_effort": w}}) for w in WORDS]
+            # a value no template word is: a lenient read (/v1/tokenize, the router's count) lets it through
+            + [("kwargs.reasoning_effort=list", {"chat_template_kwargs": {"reasoning_effort": ["low"]}}),
+               ("kwargs.reasoning_effort=dict", {"chat_template_kwargs": {"reasoning_effort": {"level": "low"}}})]
             + [("max_reasoning_tokens=512", {"max_reasoning_tokens": 512}),
                ("reasoning.enabled", {"reasoning": {"enabled": True}}),
                ("thinking.type=enabled", {"thinking": {"type": "enabled"}})])
@@ -90,8 +93,22 @@ def key(family: str, request: str, default, limit, plan: str | None = None) -> s
     return "|".join(parts + ([f"plan={plan}"] if plan else []))
 
 
+@contextlib.contextmanager
+def _served(spec, default):
+    """The fake engine with `spec` in force and `default` as --reasoning-effort, for the block; yields the loop's
+    calls. The server's state and its loop are put back as they were after it."""
+    saved, real = dict(app.STATE), app.generate_stream
+    try:
+        yield _start(spec, default)
+    finally:
+        app.generate_stream = real
+        app.STATE.clear()
+        app.STATE.update(saved)
+
+
 def _start(spec, default) -> list:
-    """The fake engine with `spec` in force and `default` as --reasoning-effort; returns the loop's calls."""
+    """The fake engine with `spec` in force and `default` as --reasoning-effort; returns the loop's calls. Call it
+    through `_served`, which puts the server's state and loop back."""
     argv = ["--fake-engine", "--fake-tps", "200000", "--max-len", "65536"]
     if default:
         argv += ["--reasoning-effort", default]
@@ -116,12 +133,12 @@ def _start(spec, default) -> list:
 class _Req(app.Handler):
     """The handler without a socket."""
 
-    def __init__(self, body):
+    def __init__(self, body, path: str = "/v1/chat/completions"):
         raw = json.dumps(body).encode()
         self.rfile, self.wfile = io.BytesIO(raw), io.BytesIO()
         self.headers = {"Content-Length": str(len(raw))}
-        self.path, self.command, self.request_version = "/v1/chat/completions", "POST", "HTTP/1.1"
-        self.requestline, self.client_address = "POST /v1/chat/completions", ("127.0.0.1", 0)
+        self.path, self.command, self.request_version = path, "POST", "HTTP/1.1"
+        self.requestline, self.client_address = "POST " + path, ("127.0.0.1", 0)
         self.close_connection = True
 
 
@@ -141,12 +158,10 @@ def row_of(calls: list, seen: list, out: str, head: str) -> dict:
 def rows(families=None) -> dict:
     """This tree's rows without a plan, for every family (or `families`)."""
     out = {}
-    real_gen = app.generate_stream
-    try:
-        for name in sorted(families or REGISTRY):
-            spec = REGISTRY[name].spec
-            for default in DEFAULTS:
-                seen = _start(spec, default)
+    for name in sorted(families or REGISTRY):
+        spec = REGISTRY[name].spec
+        for default in DEFAULTS:
+            with _served(spec, default) as seen:
                 tok = app.STATE["tok"]
                 for label, extra in REQUESTS:
                     for limit in LIMITS:
@@ -160,9 +175,6 @@ def rows(families=None) -> dict:
                             req.do_POST()
                         head = req.wfile.getvalue().partition(b"\r\n\r\n")[0].decode()
                         out[key(name, label, default, limit)] = row_of(tok.calls, seen, buf.getvalue(), head)
-                app.generate_stream = real_gen
-    finally:
-        app.generate_stream = real_gen
     return out
 
 
@@ -178,19 +190,20 @@ def real_hy4_rows() -> dict | None:
     real = Hy4Tokenizer(AutoTokenizer.from_pretrained(path))
     out = {}
     for default in DEFAULTS:
-        _start(REGISTRY["hy_v4_flash"].spec, default)
-        app.STATE["tok"] = real
-        for label, extra in REQUESTS:
-            body = dict(copy.deepcopy(extra), messages=copy.deepcopy(MESSAGES))
-            if app.STATE.get("thinking_default") == "off":
-                body = thinking.server_default_off(body)
-            client = thinking.read(body, app._effort_caps())
-            ids = app.build_prompt(body, client, count="ids")
-            text = real._tok.decode(ids, skip_special_tokens=False)
-            modes = re.findall(r"reasoning_effort:([a-z_]+)", text)
-            out[key("hy_v4_flash", label, default, "-")] = {
-                "modes": modes, "ids_sha": _sha([int(t) for t in ids]), "len": len(ids),
-                "ends": text[-40:]}
+        with _served(REGISTRY["hy_v4_flash"].spec, default):
+            app.STATE["tok"] = real
+            for label, extra in REQUESTS:
+                body = dict(copy.deepcopy(extra), messages=copy.deepcopy(MESSAGES))
+                if app.STATE.get("thinking_default") == "off":
+                    body = thinking.server_default_off(body)
+                # the lenient read, as the router's count and /v1/tokenize read (a bad value is left unread)
+                client = thinking.read(body, app._effort_caps(), strict=False)
+                ids = app.build_prompt(body, client, count="ids")
+                text = real._tok.decode(ids, skip_special_tokens=False)
+                modes = re.findall(r"reasoning_effort:([a-z_]+)", text)
+                out[key("hy_v4_flash", label, default, "-")] = {
+                    "modes": modes, "ids_sha": _sha([int(t) for t in ids]), "len": len(ids),
+                    "ends": text[-40:]}
     return out
 
 
@@ -249,6 +262,25 @@ def test_the_table_without_a_plan():
     _say("table", counts)
     assert not bad, f"{len(bad)} rows moved:\n" + "\n".join(bad[:40])
     return f"{sum(1 for k in want if k.split('|', 1)[0] in only)} rows, {len(only)} families"
+
+
+def test_a_list_or_dict_effort_in_kwargs_tokenizes():
+    """/v1/tokenize reads a request leniently: a `chat_template_kwargs.reasoning_effort` that is a list or a dict is
+    no template word, so the template gets none and the count answers 200, as on main (a membership test on a dict
+    raised TypeError for both, a 400). Every family's spec on this tree."""
+    seen = []
+    for name in sorted(REGISTRY):
+        with _served(REGISTRY[name].spec, "xhigh"):
+            for value in (["low"], {"level": "low"}):
+                body = {"messages": copy.deepcopy(MESSAGES), "chat_template_kwargs": {"reasoning_effort": value}}
+                req = _Req(body, "/v1/tokenize")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    req.do_POST()
+                head, _, raw = req.wfile.getvalue().partition(b"\r\n\r\n")
+                assert head.startswith(b"HTTP/1.1 200"), (name, value, head[:60], raw[:200])
+                assert json.loads(raw)["tokens"] > 0, (name, value, raw[:200])
+                seen.append(name)
+    return f"{len(set(seen))} families, a list and a dict each: 200"
 
 
 def test_the_real_hy4_template():
