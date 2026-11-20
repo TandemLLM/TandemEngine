@@ -4798,7 +4798,30 @@ def _peek_rate() -> float | None:
         t = STATE.get(name)
         if t is not None and getattr(t, "prefill_tok_s", None):
             return float(t.prefill_tok_s)
-    return None
+    r = STATE.get("prefill_prior")               # SRV-905: the family's own, with both tiers off
+    return float(r) if r else None
+
+
+def _read_rate_prior(eng=None) -> float | None:
+    """SRV-905: the prefill rate the served family declares (`CostModel.prefill_tok_s`, engine/models/adapter.py),
+    kept as `_peek_rate`'s last fallback and written into the disk tier's and the spill's own prior
+    (`prefill_tok_s`, otherwise one model's measured 740 rows a second for every family). Until a request has
+    measured a rate (`cache_peek.RATES`), the router's guard then prices a question at the family's own rate, and
+    the tiers weigh a re-read at it. A family that declares nothing keeps the tiers' prior and no fallback. Called
+    once the tiers exist; returns the rate kept."""
+    eng = STATE.get("engine") if eng is None else eng
+    try:
+        rate = getattr(eng.cost(), "prefill_tok_s", None)
+    except Exception:                                              # noqa: BLE001  (an engine without the verb)
+        rate = None
+    rate = float(rate) if rate else None
+    STATE["prefill_prior"] = rate
+    if rate:
+        for name in ("disk_cache", "spill"):
+            t = STATE.get(name)
+            if t is not None and hasattr(t, "prefill_tok_s"):
+                t.prefill_tok_s = rate
+    return rate
 
 
 #: with no request waiting, a peek or a prewarm waits this long for the engine lock (s): the end of a
@@ -14764,6 +14787,9 @@ def _serve(a, led) -> None:
     # Live conversations on the NVMe (engine/spill.py), and the one the last planned
     # stop wrote read back before the first request
     STATE["spill"] = diskcache_mod.start_spill(STATE, a, STATE["disk_cache"], journal)
+    if _read_rate_prior():
+        print(f"[cache] a prompt read is priced at {STATE['prefill_prior']:g} rows a second until one is measured "
+              f"(the model's own figure)", flush=True)
     if _side_spills(STATE["spill"]):
         print("[spill] side slots read and write it: a conversation reclaimed on its slot comes "
               "back there", flush=True)

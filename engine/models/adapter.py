@@ -58,6 +58,10 @@ class CostModel:
     # `workspace_per_token`. SRV-775: it may take `line` (False: by the rows alone, a cold prompt without the line's
     # floor: the admission's count of a prefill in flight)
     workspace_rows: Callable[..., int] | None = None
+    # SRV-905: the rate the family reads a prompt at (rows a second) until this process has measured one: the
+    # router's guard, the disk tier and the spill price a read at it (server/app.py `_read_rate_prior`); None: their
+    # prior, measured on the 27B (engine/disk_cache.py PREFILL_TOK_S)
+    prefill_tok_s: float | None = None
 
     def snapshot_cost(self) -> dict:
         """The dashboard's `cache.snapshot_cost` row (contract 1.3 keys)."""

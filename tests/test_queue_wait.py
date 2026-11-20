@@ -21,6 +21,11 @@ On 2026-10-04 a second opencode session's turn waited behind a running turn and 
      wrote past what it has written) at its own rate, capped by its max_tokens; the W18 shape
      (35.8 s behind a thinking turn 14.8 s in) is no longer read as 20 s; no basis falls back
      to the hold times; the handler's `_live_of` reads a record in both phases
+  8  SRV-905: before any request measured a prefill rate, a family's declared rate (`CostModel.prefill_tok_s`)
+     is the prior: the disk tier's and the spill's, and `_peek_rate`'s with both tiers off; a family that
+     declares nothing keeps 740 (with a tier) or none (without); the router's estimate of a 2,345-row question
+     is then over its 8 s at Hy4-flash's 140 rows a second (it was 3.2 s at 740, and the question took 18.8 s);
+     a measured rate still comes first
 
 Run: python tests/test_queue_wait.py
 """
@@ -330,6 +335,70 @@ def test_6_a_short_wait_shows_no_line_and_own_work_is_measured():
     from server.api import ledger, usage
     assert "wait_own_ms" in ledger.COLUMNS and "wait_own_ms" in usage.RequestRecord(
         "x", "chat", False).row()
+
+
+# ------------------------------------------------------------------ 8: the family's own read rate
+def test_8_a_declared_read_rate_seeds_the_prior():
+    import types
+    from engine import disk_cache as dc
+    from engine.models.adapter import CostModel
+    from engine.models.hy4_flash import serving as hy4
+    from server import app, cache_peek
+    from server import round_runner as RR
+    from test_conductor_router import setup
+
+    class _Tier:
+        """A disk tier or a spill: its own prior, as it starts."""
+
+        def __init__(self):
+            self.prefill_tok_s = dc.PREFILL_TOK_S
+
+    # Hy4-flash declares its measured 140 rows a second
+    stub = types.SimpleNamespace(st=None, cfg=None, state=types.SimpleNamespace(sections=lambda: {}, views=lambda: []))
+    assert hy4.Hy4FlashServing.cost(stub).prefill_tok_s == hy4.PREFILL_TOK_S == 140.0
+    assert CostModel(section_bytes=0, view_bytes_per_token=0).prefill_tok_s is None
+    setup()
+    saved = (list(cache_peek.RATES._q), list(cache_peek.SOLO_RATES._q), RR.RUNNER)
+    cache_peek.RATES._q.clear()
+    cache_peek.SOLO_RATES._q.clear()
+    RR.RUNNER = None
+    question = ("q", "z" * 2328)                       # 16 template rows + 2,329: the 2,345-row package question
+    try:
+        etas = {}
+        for declared in (None, 140.0):
+            eng = types.SimpleNamespace(cost=lambda d=declared: CostModel(section_bytes=0, view_bytes_per_token=0,
+                                                                          prefill_tok_s=d))
+            for tiers in (("disk_cache", "spill"), ("spill",), ()):
+                app.STATE.update(engine=eng, disk_cache=None, spill=None, prefill_prior=None)
+                for name in tiers:
+                    app.STATE[name] = _Tier()
+                assert app._read_rate_prior() == declared
+                want = declared or (dc.PREFILL_TOK_S if tiers else None)
+                assert app._peek_rate() == want, (declared, tiers, app._peek_rate())
+                for name in tiers:
+                    assert app.STATE[name].prefill_tok_s == (declared or dc.PREFILL_TOK_S), (declared, name)
+                eta = app._own_eta_ms(question)
+                if want is None:
+                    assert eta is None, "no rate: the question is asked as before"
+                else:
+                    assert abs(eta - 1e3 * 2345 / want) < 1e-6, (declared, tiers, eta)
+                    etas[declared] = eta
+        assert etas[None] < 8000.0 < etas[140.0], etas
+        # a measured rate comes first, whatever was declared
+        cache_peek.RATES.note(2048, 1000.0)
+        assert app._peek_rate() == 2048.0
+        # an engine without the cost verb (the fake engine) declares nothing
+        app.STATE.update(engine=types.SimpleNamespace(), spill=_Tier(), disk_cache=None)
+        assert app._read_rate_prior() is None and app.STATE["spill"].prefill_tok_s == dc.PREFILL_TOK_S
+    finally:
+        cache_peek.RATES._q.clear()
+        cache_peek.RATES._q.extend(saved[0])
+        cache_peek.SOLO_RATES._q.clear()
+        cache_peek.SOLO_RATES._q.extend(saved[1])
+        RR.RUNNER = saved[2]
+        for k in ("engine", "disk_cache", "spill", "prefill_prior"):
+            app.STATE.pop(k, None)
+    return f"2,345 rows: {etas[None]:.0f} ms at 740, {etas[140.0]:.0f} ms at 140"
 
 
 def _needs_torch() -> bool:

@@ -42,6 +42,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 
 #: the tables the arithmetic reads (a dense split is a summation order)
 TABLES = ("ops/hy4-dense-splits.json",)
+#: SRV-905: the rows a second a prompt is read at through the server (measured, docs/hy4-flash.md "Limits"): the
+#: prior the router's guard, the disk tier and the spill price a read at until a request has measured one, in place
+#: of the 27B's 740 (a 2,345-row question was priced at 3.2 s and took 18.8)
+PREFILL_TOK_S = 140.0
 
 
 def manifest() -> Manifest:
@@ -155,7 +159,8 @@ class Hy4FlashServing:
         st, c = self.st, self.cfg
         sec = sum(t.numel() * t.element_size() for t in self.state.sections().values())
         row = sum(t.numel() // t.shape[ax] * t.element_size() for _, t, ax in self.state.views())
-        return CostModel(section_bytes=sec, view_bytes_per_token=row, parts={"recurrent": sec, "conv": 0})
+        return CostModel(section_bytes=sec, view_bytes_per_token=row, parts={"recurrent": sec, "conv": 0},
+                         prefill_tok_s=PREFILL_TOK_S)
 
     def manifest(self) -> Manifest:
         return manifest()
