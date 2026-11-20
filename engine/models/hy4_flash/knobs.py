@@ -30,8 +30,8 @@ KNOBS: dict[str, tuple] = {
     # picks the row kernels' form wherever they run
     'HY4_PREFILL_EXPERTS': ('group', 'engine/models/hy4_flash/serving.py'),
     # SPD-323, SPD-325: the prompt pass on fixed-order kernels (1): attention on `mla_rows`, the hyper-connections, norms
-    # and small sums on the row kernels, the indexer on `mm` and the shared block select: its own bits, built so a row's
-    # bits depend on its chunk through the trunk's projections only. 0: the pass before. One knob for the flip, kept as
-    # the way back
+    # and small sums on the row kernels, the indexer on `mm` and the shared block select: its own bits. By construction a
+    # row's bits depend on its chunk only through the trunk's projections (tools/hy4_check.py --only v2-cuts checks it), and
+    # a one-row forward past row 0 is still a decode step. 0: the pass before. One knob for the flip, kept as the way back
     'HY4_PREFILL_V2': ('0', 'engine/models/hy4_flash/serving.py'),
 }

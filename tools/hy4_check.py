@@ -115,6 +115,16 @@ def quality(a, eng, cfg, say) -> None:
                 stp = torch.cat([eng.prefill(torch.tensor(ids[:P0_]), st2, head="all")] + [eng.step(ids[i], st2, graphs=gs).clone() for i in range(P0_, L)])
                 d = (stp[P0_:] - got[P0_:L]).abs()
                 both = _kl(got[P0_:L], stp[P0_:])
+                # the design's next-token rule (docs/kernels.md: Flash-Next's): the prompt pass agrees with the decode
+                # steps at least as well as the steps agree with the reference, less one point, and never disagrees
+                # where both are sure (top-1 margin above 5 on both)
+                steps_ref = float(_kl(ref_of(r)[P0_:L], stp[P0_:])["top1"].float().mean())
+                margin = lambda x: (lambda v: v[:, 0] - v[:, 1])(x.float().topk(2, -1).values)  # noqa: E731
+                sure = int(((got[P0_:L].argmax(-1) != stp[P0_:].argmax(-1)) & (margin(got[P0_:L]) > 5) & (margin(stp[P0_:]) > 5)).sum())
+                prompt_steps = float(both["top1"].float().mean())
+                say("quality_next_token_rule", set=name, row=r, positions=L - P0_, prompt_vs_steps=round(prompt_steps, 5),
+                    steps_vs_reference=round(steps_ref, 5), sure_disagreements=sure,
+                    passed=prompt_steps >= steps_ref - 0.01 and sure == 0, prefill_v2=bool(getattr(eng, "prefill_v2", False)))
                 say("quality_steps_vs_prompt_pass", set=name, row=r, positions=L - P0_, logits_mean_abs=round(float(d.mean()), 5),
                     logits_max_abs=round(float(d.max()), 4), logit_scale=round(float(got[P0_:L].abs().mean()), 3),
                     top1_equal=round(float(both["top1"].float().mean()), 5), kl_prompt_to_steps=round(float(both["kl"].mean()), 5),
@@ -767,7 +777,8 @@ def table_rows(a, eng, cfg, say) -> bool:
 
 
 #: SPD-323: `mla_rows` against its torch reference: max |diff| / max |ref| (the kernel's weights are rounded to bf16
-#: before the mix, the reference's are not: within two bf16 steps)
+#: before the mix, the reference's are not: within two bf16 steps). This builder's bound, not the design's: the design's
+#: lines for the flip are its quality ones (chat2048 KL, `quality_next_token_rule`)
 MLA_REL = 1e-2
 
 

@@ -26,7 +26,7 @@ from engine.models.hy4_flash import kernels as K  # noqa: E402
 
 DEV = "cuda"
 R, RP, N, T = 512, 64, 9000, 300
-MLA_REL = 1e-2
+MLA_REL = 1e-2      # this builder's bound (two bf16 steps of the weights), not the design's
 
 
 def _inputs(heads: int, seed: int) -> tuple:

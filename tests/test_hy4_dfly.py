@@ -245,6 +245,19 @@ def test_the_served_loop_drafts_and_writes_the_plain_text():
     return f"24 tokens twice, plain, chain and tree: the same text; {stats['chain']} / {stats['tree']}"
 
 
+def test_drafted_is_plain_after_the_v2_prompt_pass():
+    """SPD-323, SPD-325: after a prompt read on the prompt pass on fixed-order kernels (HY4_PREFILL_V2) drafted rounds
+    write the plain greedy text, token for token and logit for logit, in fp32 and bf16, and through the served loop."""
+    engs = [setup(d)[1] for d in (torch.float32, torch.bfloat16)]
+    for e in engs:
+        e.prefill_v2 = True
+    try:
+        return test_speculative_greedy_is_plain_greedy() + "; " + test_the_served_loop_drafts_and_writes_the_plain_text()
+    finally:
+        for e in engs:
+            e.prefill_v2 = False
+
+
 if __name__ == "__main__":
     fails = 0
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
