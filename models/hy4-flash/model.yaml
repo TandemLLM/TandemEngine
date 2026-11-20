@@ -106,13 +106,12 @@ profiles:
       0.0065, top-1 92.11 %, top 5 99.16 %. This engine on the same chat2048 rows: KL 0.1009, top-1 88.49 %. Two
       correct implementations differ by about KL 0.003 to 0.005 on such rows.'
   assets_required: []
-  note: 'Served speed, one prose chat request (3,565-token prompt rendered by the pack''s template, thinking off,
-    600 tokens, greedy, tok/s from token 50, two requests a server, one sequence): plain 24.45 and 24.74 tok/s with
-    --max-len 8,192 on an idle box; drafted (DFly2 + lookup + StairCut) 34.64 and 35.36 with --max-len 8,192 alone,
-    before a later fix of the draft cost past 4,096 rows; drafted 32.19 and 33.08 with --max-len 262,144 while
-    another GPU job ran beside it, under a 70 GiB ceiling that shed a cache. Not measured on the current build, at
-    the full window on an idle box, or in the table''s shape. First token after 24 to 28 s on that prompt. The
-    Hugging Face repository is private for now: a download needs a token with access.'
+  note: 'Served speed, one prose chat request (3,565-token prompt rendered by the pack''s template, thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence, --max-len 262,144, idle box, 2026-11-20, both packs in one run): plain 23.78 and 24.12 tok/s,
+    drafted (DFly2 + lookup + StairCut over the pack''s price file) 32.08 and 33.02, 237 rounds for 599 tokens; the
+    drafted text equals the plain text. First token after 23.6 to 29.6 s on that prompt. Load 86.8 to 93.4 s, 138 to
+    144 s from start to healthy. After the load 63.9 to 64.0 GiB allocated, 73.4 to 73.8 reserved; the start took
+    the pack''s limits, ceiling 77 GiB and peak 84. Not in the measured table''s shape. The Hugging Face repository
+    is private for now: a download needs a token with access.'
   hf_revision: main
   max_window: 262144
   table:
@@ -144,13 +143,12 @@ profiles:
       the pack. conv2048 (held-out ultrachat test_sft conversations, 16 x 2,048): KL 0.0729, median 0.0033, top-1
       93.75 %, top 5 99.42 %. Two correct implementations differ by about KL 0.003 to 0.005 on such rows.'
   assets_required: []
-  note: 'The default: the lower KL of the two packs on both row sets. Served speed, one prose chat request (3,565-token
-    prompt rendered by the pack''s template, thinking off, 600 tokens, greedy, tok/s from token 50, two requests a
-    server, one sequence, --max-len 262,144, idle box): plain 22.75 and 23.05 tok/s, drafted (DFly2 + lookup +
-    StairCut over the pack''s price file) 27.70 and 28.08; the drafted text equals the plain text. First token after
-    27 to 31 s on that prompt. Load 106 s. After the load 72.5 GiB allocated, 73.4 to 73.8 reserved; the start took
-    the pack''s limits, ceiling 85 GiB and peak 92. The Hugging Face repository is private for now: a download needs
-    a token with access.'
+  note: 'The default: the lower KL of the two packs on both row sets. Served speed, one prose chat request (3,565-token prompt rendered by the pack''s template, thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence, --max-len 262,144, idle box, 2026-11-20, both packs in one run):
+    plain 22.63 and 23.00 tok/s, drafted (DFly2 + lookup + StairCut over the pack''s price file) 27.81 and 28.37, 265
+    rounds for 599 tokens; the drafted text equals the plain text. First token after 27.0 to 31.5 s on that prompt.
+    Load 95.1 to 105.0 s, 147 to 165 s from start to healthy. After the load 72.5 to 72.7 GiB allocated, 73.4 to 73.8
+    reserved; the start took the pack''s limits, ceiling 85 GiB and peak 92. Not in the measured table''s shape. The
+    Hugging Face repository is private for now: a download needs a token with access.'
   hf_revision: main
   max_window: 262144
   table:
@@ -391,8 +389,9 @@ parallelism:
 methods:
 - id: reasoning_effort
   label: Thinking effort
-  what: Whether the model thinks before it answers, when a client does not say. The model has one thinking mode
-    (its template's high); every effort word from low to max uses it, and none or off turns thinking off.
+  what: Whether the model thinks before it answers, when a client does not say. On this build every effort word from
+    low to max uses one thinking mode (the template's high), and none or off turns thinking off; this family's effort
+    handling is moving onto the engine's shared effort policy.
   type: enum
   options:
   - value: medium

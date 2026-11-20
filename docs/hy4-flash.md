@@ -38,7 +38,7 @@ One chat at a time. This family builds no side slots yet, so the Setup Guide cap
 
 The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
 
-Reading a prompt is slow: about 140 tok/s through the server, so the first token of a 3,565-token prompt came after 24 to 31 s. A 262,144-token prompt took 1,735 s (151 tok/s) in the bare engine, on an older row path.
+Reading a prompt is slow: about 140 tok/s through the server, so the first token of a 3,565-token prompt came after 23.6 to 31.5 s. A 262,144-token prompt took 1,735 s (151 tok/s) in the bare engine, on an older row path.
 
 The caches restore exactly, but on a chat they save less than on other models. The state store, the disk tier and the session spill each give back the state a cold prefill writes, bit for bit. Four limits come with them:
 
@@ -47,14 +47,14 @@ The caches restore exactly, but on a chat they save less than on other models. T
 - Anchors sit every 4,096 tokens, so the engine reads a repeated prompt shorter than that again in full.
 - After a restore the first round drafts nothing, and drafting resumes on the next round.
 
-Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. The model has one thinking mode, the template's `high`, and the engine maps every request onto it or onto `no_think`:
+Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. For now the engine uses one thinking mode, the template's `high`, and maps every request onto it or onto `no_think`. This effort handling is being moved onto the engine's shared effort policy, so the table below describes this build only:
 
 | request | template mode |
 |-|-|
 | `enable_thinking: false`, or effort `none` or `off` | `no_think` |
 | any effort from `low` to `max`, or none given | `high` |
 
-The effort word still sets the server's reasoning cap: 1,024 tokens at `low`, 8,192 at `medium`, 16,384 at `high`, none at `xhigh` and `max`. At `high` a small question took 82 thinking tokens and the model stopped by itself. The template in these packs also takes a `max` mode, but that mode has no budget of its own: one chat turn in it thought for 7,759 tokens over 4 minutes. Tencent's later template drops `max`, and the engine never asks for it.
+The effort word still sets the server's reasoning cap: 1,024 tokens at `low`, 8,192 at `medium`, 16,384 at `high`, none at `xhigh` and `max`. At `high` a small question took 82 thinking tokens and the model stopped by itself. The template in these packs also takes a `max` mode, but that mode has no budget of its own: one chat turn in it thought for 7,759 tokens over 4 minutes. Tencent's later template drops `max`, and this build never asks for it.
 
 Tool calls use the model's own tags, which the tokenizer reads under the `argkey` form's names. One served call passed on `hy4-3.56`: the answer ended with `finish_reason` `tool_calls` and one well-formed call, and the model answered the follow-up turn that carried the tool's result. That is one call and one follow-up, so the model card says `tools: true`, and `parallel_tool_calls` and `structured` stay false: neither is tested. A forced `tool_choice` (required or named) is not checked with these tags.
 
@@ -64,15 +64,14 @@ Memory: after the load at the full window `hy4-3.56` holds 72.5 to 72.7 GiB allo
 
 ## Speed
 
-Every figure below is one prose chat request through the server: a 3,565-token prompt in the pack's template with thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence. This is not the measured table's shape, and the model card's table is empty until that run exists.
+Both packs ran in one session on 2026-11-20, on an idle box with the full 262,144-token window and each pack's own memory limits. Every figure is one prose chat request through the server: a 3,565-token prompt in the pack's template with thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence. This is not the measured table's shape, and the model card's table is empty until that run exists.
 
-| profile | setup | plain, tok/s | DFly2 + lookup + StairCut, tok/s |
-|-|-|-|-|
-| `hy4-3.56` | `--max-len 262144`, idle box | 22.75, 23.05 | 27.70, 28.08 |
-| `hy4-3.08` | `--max-len 8192`, idle box | 24.45, 24.74 | 34.64, 35.36 (before a later fix of the draft cost past 4,096 rows) |
-| `hy4-3.08` | `--max-len 262144`, another GPU job beside it, a 70 GiB ceiling | not measured | 32.19, 33.08 |
+| profile | plain, tok/s | DFly2 + lookup + StairCut, tok/s | tokens a drafted round | first token | load, start to healthy |
+|-|-|-|-|-|-|
+| `hy4-3.56` | 22.63, 23.00 | 27.81, 28.37 | 2.26 | 27.0 to 31.5 s | 95 to 105 s, 147 to 165 s |
+| `hy4-3.08` | 23.78, 24.12 | 32.08, 33.02 | 2.53 | 23.6 to 29.6 s | 87 to 93 s, 138 to 144 s |
 
-Both `hy4-3.08` rows ran under other conditions than the `hy4-3.56` row, so they do not say which pack is faster. In every run the drafted text equals the plain text. On this prompt a drafted round keeps about 2.3 to 2.5 tokens.
+In every run the drafted text equals the plain text. The two packs write different answers to the prompt, and why a round of `hy4-3.08` keeps more tokens on it was not isolated.
 
 ## License
 
