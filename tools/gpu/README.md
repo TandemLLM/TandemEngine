@@ -10,6 +10,7 @@ tools/gpu/
   base.py       GpuProfile: every question, answered for a GPU without an adapter and for the CPU
   gb10.py       sm_121a (DGX Spark): the reference GPU, every inline extension
   ada.py        sm_89: the base's answers until its kernels land; the place an Ada port fills in
+  apple.py      Apple silicon (Metal through MLX): no CUDA and no Triton; the models that have an MLX board
 ```
 
 ## How it works
@@ -31,6 +32,10 @@ The base builds no inline CUDA extension. A module whose only path is one raises
 its first build, and the error names the GPU. `profile_for(cap, name)` gives the same adapters
 without torch.
 
+A machine without CUDA has no capability to read. There `profile()` asks for the chip's name
+(`apple.chip_name`, a `sysctl` read once a process, on macOS only): an Apple silicon Mac gets `apple.py`
+for its current device, and the CPU or any other machine gets the base, as before.
+
 The CUDA sources keep their per-architecture code. The adapter picks the extension, its arch flags and
 its launch shape.
 
@@ -50,6 +55,7 @@ its launch shape.
 | `exl3_probe(device, kb)`, `exl3_rot_ok`, `exl3_decode_ok`, `exl3_gemv_ok` | the Triton EXL3 kernels' load probes and verdicts (`tools/exl3_ada.py`) | -- | none / raise unprobed |
 | `moe_probe(device)`, `moe_ok(device)` | the Triton MoE kernels' load probe and verdict (`tools/moe_ada.py`) | -- | none / False unprobed |
 | `device_key()` | per-device files (`engine/methods/device.py`, price tables) | `dgx-spark` | the GPU's name with dashes, `cpu` |
+| `backend()` | a family's server builder that has more than one engine (`engine/models/lfm2_moe/dispatch.py`) | `torch` | `torch` (`apple.py`: `mlx`) |
 | `unified_memory` | readers of the memory model | yes | no |
 
 `key_matches(key, name)` tells the setup page whether a preset measured under `key` belongs to a GPU of
@@ -88,6 +94,7 @@ Moved: each now asks the profile.
 | `tools/nvfp4_skinny.py` `use_skinny`, `tools/iq2_linear.py` `NVFP4Linear.matmul` | the NVFP4 register-fed kernel's rows |
 | `engine/decision/laya/model.py` | BF16 or FP16 autocast |
 | `engine/methods/device.py` `device_id` | the key of per-device files |
+| `engine/models/lfm2_moe/dispatch.py` `serve` | the array library the family's engine runs on (the MLX board on Apple silicon) |
 | `server/setup/device.py` `preset` | whether a measured preset belongs to this GPU |
 | `tools/gate/hw` (and `tools/release_report`, which reads it) | which sizing profile a box gets, and the torch probe |
 | `install.sh` | the skinny kernel's switch off the Spark, now the adapter's answer |
