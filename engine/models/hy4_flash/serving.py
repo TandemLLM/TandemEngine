@@ -16,6 +16,7 @@ recurrent state's. A verify block writes neither: its rows sit in scratch buffer
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import os
@@ -110,6 +111,15 @@ class Hy4FlashServing:
     # router's notes have no place in its prompt (`notes: False`, as Flint's): it asks for none (SRV-899)
     caps = Capabilities(caches=True, side_slots=False, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=False,
                         side_lane=False, joint_plain=False, conductor={"notes": False})
+
+    # the conversation cache on one lane (SRV-907): a chat's next turn is never a guest of its own rows, and
+    # the conductor's question is a guest at any size (engine/cache.py `ResidentPrefix`, `chat_first`); a
+    # prompt without a plan is marked where its first user turn starts, so a repeated head is read once
+    # (SRV-905, server/app.py `_head_mark`)
+    caps = dataclasses.replace(caps, chat_first=True, head_mark=True)
+    # INTERIM (SRV-907): a second chat the store remembers takes the one lane (`Capabilities.solo`); delete this
+    # line with the capability in the commit that builds this family's side slots
+    caps = dataclasses.replace(caps, solo=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)
@@ -402,6 +412,22 @@ def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print)
 
 #: the server's own default ceiling and peak, GiB (server/app.py --mem-ceiling-gib, --mem-peak-gib)
 SERVER_LIMITS = (70.0, 77.0)
+#: the server's own default `--store-entry-gb`, and this family's (SRV-907). A snapshot's estimate is twice the
+#: rings (17.7 MB) plus 1.25 times its rows at 16,896 bytes (engine/cache.py `_snapshot_estimate`): under 1 GiB one
+#: long chat's snapshot took a third of the 2 GiB store at every turn and pushed the short entries out (694 MiB at
+#: 32,797 rows, measured); at 0.25 GiB the store keeps prompts up to about 11,000 tokens, as the same cap means
+#: about 7,400 on the 27B's state
+SERVER_STORE_ENTRY_GB, STORE_ENTRY_GB = 1.0, 0.25
+
+
+def store_entry(a) -> bool:
+    """The state store's entry cap for this family: when the start names the server's default, this family's
+    (`STORE_ENTRY_GB`); a start that names its own keeps it. Whether it changed. The server keeps it as the
+    flag a request's refresh of the residency limits falls back to (server/app.py `BUILDER_LIMITS`)."""
+    if getattr(a, "store_entry_gb", None) == SERVER_STORE_ENTRY_GB:
+        a.store_entry_gb = STORE_ENTRY_GB
+        return True
+    return False
 
 
 def memory_limits(held_gib: float) -> tuple[float, float]:
@@ -438,6 +464,8 @@ def serve(a, ctx) -> dict:
         a.mem_ceiling_gib, a.mem_peak_gib = memory_limits(held)
         ctx.log(f"[server] Hy4-flash: memory ceiling {a.mem_ceiling_gib:g} GiB, peak {a.mem_peak_gib:g} GiB "
                 f"(the pack and a {a.max_len:,}-token window hold {held:.1f} GiB)")
+    if store_entry(a):
+        ctx.log(f"[server] Hy4-flash: state store entries up to {a.store_entry_gb:g} GiB (about 11,000 tokens)")
     drafter = None
     if a.drafter != "none" and _S.get("HY4_DFLY") == "1":
         if not info["dfly"]:

@@ -103,3 +103,20 @@ class Hy4Tokenizer:
         kw["reasoning_effort"] = effort_of(kw)
         kw.pop("enable_thinking", None)
         return self._tok.apply_chat_template(messages, *args, **kw)
+
+    def template_marks(self):
+        """SRV-905: the chat template's turn marks for the server's lookup (server/app.py `_marks_of`): the turn
+        opener's id, the ids of `user` and the turn end's id, by their names in the template (its lines 3-5:
+        `<｜hy_start:opensource｜>user<｜hy_middle:opensource｜>...<｜hy_end:opensource｜>`). None when the
+        wrapped tokenizer does not hold them. The ids only: the text renaming (`real`) knows none of these."""
+        try:
+            start = self._tok.convert_tokens_to_ids("<\uff5chy_start:opensource\uff5c>")
+            end = self._tok.convert_tokens_to_ids("<\uff5chy_end:opensource\uff5c>")
+            user = [int(t) for t in self._tok.encode("user", add_special_tokens=False)]
+        except Exception:                                          # noqa: BLE001
+            return None
+        unk = getattr(self._tok, "unk_token_id", None)
+        if not (isinstance(start, int) and isinstance(end, int) and start >= 0 and end >= 0 and user
+                and unk not in (start, end)):
+            return None
+        return start, user, end

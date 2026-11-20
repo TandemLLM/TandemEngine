@@ -372,6 +372,670 @@ def test_the_packs_limits_reach_the_cache_policy():
                 A.STATE[k] = v
 
 
+def test_the_store_entry_cap_is_the_familys_and_survives_a_refresh():
+    """SRV-907 (the design's 4.6): a start on the server's default `--store-entry-gb` (1 GiB) takes this family's
+    0.25 GiB, and a request's refresh of the residency limits keeps it: the builder's change becomes the flag
+    the refresh falls back to (server/app.py `BUILDER_LIMITS`). Called bare, the refresh takes it back to 1 GiB,
+    which is the fault the list prevents. A start that names its own cap keeps it."""
+    import types
+
+    from engine.models.hy4_flash.serving import STORE_ENTRY_GB, store_entry
+    from server import app as A
+    from server import ext as ext_mod
+    from server import memlimits
+    gib = 1 << 30
+    keys = ("serve_flags", "args", "state_store", "limits_version", "limits_applied")
+    keep = {k: A.STATE.get(k) for k in keys}
+    doc = ext_mod.document
+
+    def start(load, cap=1.0):
+        for k in keys:
+            A.STATE.pop(k, None)
+        a = types.SimpleNamespace(store_entry_gb=cap)
+        A.STATE["serve_flags"] = dict(vars(a))
+        load(a)
+        A.STATE["args"] = vars(a)
+        A.STATE["state_store"] = cache.StateStore(2 * gib, max_entry_bytes=int(a.store_entry_gb * gib))
+        memlimits.refresh(A.STATE)
+        return a, A.STATE["state_store"].max_entry
+
+    def build(a, ctx):
+        store_entry(a)
+        return {}
+    try:
+        ext_mod.document = lambda state, name: (7, {"version": 7})
+        assert start(lambda a: build(a, None))[1] == 1 * gib                      # the fault, on a bare call
+        a, cap = start(lambda a: A._build_with_limits(build, a, None))
+        assert a.store_entry_gb == STORE_ENTRY_GB == 0.25 and cap == int(0.25 * gib), cap
+        a, cap = start(lambda a: A._build_with_limits(build, a, None), cap=0.5)   # the start's own cap
+        assert a.store_entry_gb == 0.5 and cap == int(0.5 * gib), cap
+    finally:
+        ext_mod.document = doc
+        for k, v in keep.items():
+            if v is None:
+                A.STATE.pop(k, None)
+            else:
+                A.STATE[k] = v
+
+
+# ------------------------------------------------------------------ the conversation cache (SRV-907)
+# The tests below run the follow-up turns on the tiny model in fp32: "same tokens" compares the next greedy
+# tokens of a resumed turn with a cold read's, and bf16 random weights would leave near-ties between two
+# chunkings of the same rows (the gate a resume at an end or a prompt end is held to: tests/test_end_anchor.py).
+
+_E32 = []
+#: a family's capabilities -> the resident prefix's arguments, as server/app.py `_load_caches` passes them
+CAPS_ARGS = (("chat_first", "chat_first"), ("head_mark", "guest_store"), ("solo", "solo"))
+
+
+def serving32(max_len: int = 512) -> Hy4FlashServing:
+    if not _E32:
+        cfg = tiny_config()
+        W, tables = random_weights(cfg)
+        _E32.append(Hy4FlashEngine(cfg, W, tables, dtype=torch.float32, max_len=512))
+    return Hy4FlashServing(_E32[0], max_len)
+
+
+def _prefix(**kw) -> cache.ResidentPrefix:
+    """The resident prefix as the server builds it for this family: its capabilities' cache flags, the end
+    anchor on, a stash."""
+    for flag, arg in CAPS_ARGS:
+        if getattr(Hy4FlashServing.caps, flag, False):
+            kw.setdefault(arg, True)
+    kw.setdefault("stash_bytes", BIG)
+    return cache.ResidentPrefix(BIG, kw.pop("chunk", CH), end=True, **kw)
+
+
+class _prompt_end:
+    """The resident prefix keeps the last prompt's end (SPD-215, on by default; a test of another file may have
+    turned it off in this process)."""
+
+    def __enter__(self):
+        self.keep, cache.PROMPT_END = cache.PROMPT_END, True
+
+    def __exit__(self, *exc):
+        cache.PROMPT_END = self.keep
+        return False
+
+
+def _greedy(eng, lg, n0: int, k: int) -> list[int]:
+    """`k` greedy tokens after a prompt of `n0` rows, as the served loop leaves them (the last one decided and
+    not forwarded: `kv.length == n0 + k - 1`)."""
+    out, pos = [], n0
+    for i in range(k):
+        t = int(lg.reshape(-1, lg.shape[-1])[-1].argmax())
+        out.append(t)
+        if i == k - 1:
+            break
+        lg = eng.forward(torch.tensor([t]), start=pos)
+        pos += 1
+    return out
+
+
+def _remember(eng, res, ctx, n_prompt: int, session=None, own: bool = False, store=None) -> None:
+    """server/app.py `_remember_turn` after a turn on this engine and prefix."""
+    from server import app
+    keep = dict(app.STATE)
+    app.STATE.clear()
+    app.STATE.update(engine=eng, drafter=None, resident=res, state_store=store, session_cache=store is not None,
+                     last_ctx=list(ctx), last_prompt_n=n_prompt, hidden_spans=[], suffix_store=None, verbose=False)
+    try:
+        app._remember_turn(list(ctx[:n_prompt]), list(ctx[n_prompt:]), session, **({"own": True} if own else {}))
+    finally:
+        app.STATE.clear()
+        app.STATE.update(keep)
+
+
+def _turn(eng, res, ids, k: int, session=None, own: bool = False, store=None, chunk: int = CH, **kw):
+    """One request as the server runs it: the prefill through the caches, `k` greedy tokens, `_remember_turn`.
+    Returns (the context: prompt and tokens, what the prefill did)."""
+    info: dict = {}
+    if own:
+        kw["own"] = True
+    lg, reused, fwd = cache.prefill(eng, None, list(ids), "cpu", chunk=chunk, resident=res, conv_id=session,
+                                    store=store, checkpoint=store is not None, info=info, **kw)
+    did = {"kind": info.get("kind"), "reused": int(reused), "forwarded": int(fwd), "guest": res._stash is not None}
+    ctx = list(ids) + _greedy(eng, lg, len(ids), k)
+    _remember(eng, res, ctx, len(ids), session, own, store)
+    return ctx, did
+
+
+def _cold32(ids, chunk: int = CH, **kw):
+    eng = serving32()
+    lg, _, _ = cache.prefill(eng, None, list(ids), "cpu", chunk=chunk, **kw)
+    return eng, lg
+
+
+def _cold_greedy(ids, k: int, **kw) -> list[int]:
+    eng, lg = _cold32(ids, **kw)
+    return _greedy(eng, lg, len(ids), k)
+
+
+def _other(tok: int) -> int:
+    """A token that is not `tok`: where a copy parts from the rows."""
+    return 5 if tok != 5 else 6
+
+
+def _thinking_on(res, eng, session=None):
+    """The rehearsal's shape (thinking on, no tools): turn 1 thinks long, and turn 2's prompt holds turn 1's
+    prompt, then the answer without its reasoning and a new message, so it parts from the rows right after turn
+    1's prompt and is shorter than a quarter of them (77 rows beside 336). Returns turn 1's and turn 2's
+    (context, what the prefill did) and turn 2's prompt."""
+    p1 = tokens(37, 20)
+    c1, t1 = _turn(eng, res, p1, 300, session)
+    p2 = p1 + [_other(c1[37])] + tokens(39, 21)
+    c2, t2 = _turn(eng, res, p2, 12, session)
+    return (c1, t1), (c2, t2), p2
+
+
+def test_a_follow_up_with_thinking_on_resumes_at_the_prompt_end():
+    """5.1 test 1. Before: turn 2 ran as a guest of its own conversation (it took the prompt end but kept no end
+    and no prompt end), and turn 3 resumed at turn 1's prompt end again."""
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        (c1, _), (c2, t2), p2 = _thinking_on(res, eng)
+        assert len(c1) - 1 == 336 and len(p2) == 77 < 0.25 * 336
+        assert t2["kind"] == "pend" and t2["reused"] == 37 and not t2["guest"], t2
+        assert res.end is not None and res.end["at"] == len(c2) - 1 and res.pend["at"] == 77, (res.end, res.pend)
+        assert c2[77:] == _cold_greedy(p2, 12), "turn 2's greedy tokens are not a cold read's"
+        p3 = p2 + [_other(c2[77])] + tokens(29, 22)
+        c3, t3 = _turn(eng, res, p3, 12)
+        assert t3["kind"] == "pend" and t3["reused"] == 77 and not t3["guest"], t3
+        assert c3[len(p3):] == _cold_greedy(p3, 12), "turn 3's greedy tokens are not a cold read's"
+    return f"turn 2 resumed at 37 and forwarded {t2['forwarded']}, turn 3 at 77 and forwarded {t3['forwarded']}"
+
+
+def test_a_follow_up_without_a_session_takes_no_park_and_no_keeper():
+    """5.1 test 1a: the follow-up of test 1 without a session id is the same conversation. Each of the three ways
+    `begin` sets another session's rows aside stays unused: the park, a side slot's keeper (an NVMe write) and
+    the session spill (here a stand-in that records its calls). A request of another session would take each."""
+    import types
+    for way in ("park", "keeper", "spill"):
+        calls = []
+        with _prompt_end():
+            res, eng = _prefix(park_bytes=BIG if way == "park" else 0), serving32()
+            if way == "keeper":
+                res.keeper = lambda *a: calls.append("keeper")
+            if way == "spill":
+                res.spiller = types.SimpleNamespace(
+                    min_tokens=1, cfg={}, maybe_restore=lambda *a, **k: None,
+                    save_resident=lambda *a, **k: calls.append("spill") or {"eid": "stand-in"})
+            _, (_, t2), _ = _thinking_on(res, eng)
+            assert not t2["guest"] and t2["kind"] == "pend", (way, t2)
+            assert calls == [] and res.stats["parks"] == 0 and res.stats["spills"] == 0, (way, calls, res.stats["parks"])
+            _turn(eng, res, tokens(120, 23), 2, "another")          # another session: the same way is taken
+        assert res.stats["parks"] == 1 if way == "park" else calls == [way], (way, calls, res.stats["parks"])
+
+
+def test_the_conductors_question_is_a_guest_at_any_size():
+    """5.1 test 1b: the conductor's question longer than a quarter of the chat in place runs as a guest; the
+    chat's end anchor and prompt end are still there after it, and its next turn resumes at its end. Before:
+    the question replaced the chat."""
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        c1, _ = _turn(eng, res, tokens(37, 30), 30, "chat")
+        q = tokens(40, 31)
+        assert len(q) > 0.25 * res.valid
+        _, tq = _turn(eng, res, q, 3, "q", own=True)
+        assert tq["guest"], tq
+        assert res.end is not None and res.end["at"] == len(c1) - 1 and res.pend["at"] == 37, (res.end, res.pend)
+        p2 = c1 + tokens(5, 32)
+        want = _cold_greedy(p2, 8)
+        c2, t2 = _turn(eng, res, p2, 8, "chat")
+    assert t2["kind"] == "end" and t2["reused"] == len(c1) - 1, t2
+    assert c2[len(p2):] == want, "the chat's next turn after the question is not a cold read's"
+    return f"a {len(q)}-row question beside {len(c1) - 1} rows was a guest; the chat resumed at its end"
+
+
+def test_a_question_that_holds_every_row_leaves_the_chat_intact():
+    """The conductor's question whose prompt holds every row in place (the chat's whole context, then its own
+    text) runs as a guest too. As no guest it went on with the chat's rows and made them its own, and the rows
+    it then gave back were the chat's: its rows, anchors and end."""
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        c1, _ = _turn(eng, res, tokens(37, 110), 30, "chat")
+        e = res.end["at"]
+        q = c1 + tokens(40, 111)
+        assert res.common(q) == res.valid == e
+        _, tq = _turn(eng, res, q, 3, "q", own=True)
+        assert tq["guest"] and tq["kind"] == "end", tq
+        assert res.valid == e and res.end["at"] == e and res.pend["at"] == 37 and res.owner == "chat", res.report()
+        p2 = c1 + tokens(5, 112)
+        want = _cold_greedy(p2, 6)
+        c2, t2 = _turn(eng, res, p2, 6, "chat")
+    assert (t2["kind"], t2["reused"]) == ("end", e) and c2[len(p2):] == want, t2
+
+
+def test_a_question_whose_client_left_leaves_nothing_in_place():
+    """The conductor's first question after a start is no guest (nothing is in place); when its client leaves
+    (the conductor's timeout is 8 s, the first read of its head about 19 s on the device), `_remember_turn`
+    never runs. Its rows are given back at the next prefill, so the next short chat is no guest of them."""
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        cache.prefill(eng, None, tokens(300, 113), "cpu", chunk=CH, resident=res, own=True)   # no `_remember`
+        assert res.own_from == 0 and res.valid == 300, (res.own_from, res.valid)
+        p = tokens(37, 114)
+        assert len(p) < 0.25 * res.valid
+        c, t = _turn(eng, res, p, 10, "chat")
+    assert not t["guest"] and res.owner == "chat" and res.pend["at"] == 37 and res.end["at"] == len(c) - 1, t
+    assert c[37:] == _cold_greedy(p, 10)
+
+
+def test_a_question_at_the_chats_prompt_end_stores_nothing():
+    """A guest that resumed at the chat's prompt end wrote a session's rows: the store takes no snapshot of them
+    (the guard that lets a guest store its head keeps this case out)."""
+    store = cache.StateStore(BIG, chunk=CH)
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        p1 = tokens(37, 115)
+        c1, _ = _turn(eng, res, p1, 30, "chat", store=store)
+        puts = store.stats["puts"]
+        q = p1 + [_other(c1[37])] + tokens(60, 116)
+        _, tq = _turn(eng, res, q, 3, "q", own=True, store=store)
+    assert tq["guest"] and (tq["kind"], tq["reused"]) == ("pend", 37), tq
+    assert store.stats["puts"] == puts, "a question resumed at the chat's prompt end stored a snapshot"
+
+
+def test_the_chat_after_the_conductors_question_owns_the_rows():
+    """5.1 test 1c: the conductor's question first (nothing in place: it is no guest), then a chat. The question
+    keeps no session snapshot and gives its rows back; the chat owns the rows, its prompt end and its end are
+    kept. Before: the question stayed the resident prompt and the chat was its guest (`guest`, `not_resident`)."""
+    store = cache.StateStore(BIG, chunk=CH)
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        _, tq = _turn(eng, res, tokens(120, 33), 3, "q", own=True, store=store)
+        assert not tq["guest"] and res.valid == 0 and not res.anchors, (tq, res.valid)
+        assert "session" not in {e.kind for e in store._d.values()}, "the question's session snapshot was kept"
+        c, t = _turn(eng, res, tokens(37, 34), 10, "chat", store=store)
+    assert not t["guest"] and res.pend["at"] == 37 and res.end is not None and res.end["at"] == len(c) - 1, (t, res.end)
+    assert "session" in {e.kind for e in store._d.values()}
+
+
+def test_a_follow_up_on_a_side_slots_prefix_is_no_guest():
+    """5.1 test 2: the same follow-up on a prefix built as a side slot's (`guest_frac` 1: every prompt shorter
+    than the rows that does not hold them all is a guest there)."""
+    with _prompt_end():
+        res, eng = _prefix(guest_frac=1.0), serving32()
+        (c1, _), (c2, t2), _ = _thinking_on(res, eng, "chat")
+    assert t2["kind"] == "pend" and not t2["guest"] and res.end["at"] == len(c2) - 1, (t2, res.end)
+
+
+def test_the_last_prompt_comes_back_with_its_rows():
+    """The length of the last prompt (`last_n`) travels with the conversation's rows: into the park and back,
+    to the NVMe and back. After a park swap, a short request of another session that holds as many of the
+    returned chat's tokens as the other conversation's last prompt had is a guest, as by size. The pin brings
+    back a head below an anchor, never a whole last prompt: `last_n` is 0 there."""
+    with _prompt_end():
+        res, eng = _prefix(park_bytes=BIG), serving32()
+        a = tokens(60, 120)
+        _turn(eng, res, a, 200, "A")
+        _turn(eng, res, tokens(20, 121), 3, "B", stay=True)      # a worker's request: A goes to the park
+        assert res.owner == "B" and res.last_n == 20 and res.park_last_n == 60 and res.stats["parks"] == 1
+        assert res.unpark(eng, None) and res.owner == "A" and res.last_n == 60 and res.park_last_n == 20
+        q = a[:25] + [_other(a[25])] + tokens(5, 122)
+        assert len(q) < 0.25 * res.valid
+        _, tq = _turn(eng, res, q, 2, "C")
+        assert tq["guest"], tq
+        res, eng = _prefix(pin_bytes=BIG), serving32()
+        _turn(eng, res, tokens(100, 123), 2, "A")
+        _turn(eng, res, tokens(60, 124), 2, "B")                 # too long for a guest: A's head is pinned
+        assert res.pin_rows > 0 and res.last_n == 60, (res.pin_rows, res.last_n)
+        assert res.unpin(eng, None) and res.last_n == 0
+    d = tempfile.mkdtemp(prefix="hy4-last-n-")
+    try:
+        t = _tier(d)
+        sp = spill.SessionSpill(os.path.join(d, "sessions"), chunk=CH, fingerprint="hy4", tier=t,
+                                settings={"budget_gb": 1.0, "min_tokens": 64, "drain_min_tokens": CH, "codec": "off"},
+                                free_bytes=lambda p: 10 ** 15, floor_bytes=0).open()
+        res, eng = _prefix(), serving32()
+        _turn(eng, res, tokens(100, 125), 10, "A")
+        info = sp.save_resident(res, eng, None, "evict")
+        assert info is not None, sp.stats
+        res.clear()
+        assert res.last_n == 0
+        assert sp.restore(res, eng, None, sp.entries[info["eid"]]) is not None, sp.stats
+        assert res.last_n == 100 and res.owner == "A", (res.last_n, res.owner)
+        t.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_promoted_guests_next_turn_is_no_guest():
+    """5.1 test 3: a chat that ran as a guest on a side slot and became its conversation (`promote_guest`): its
+    next turn holds its whole prompt and is no guest, though it is shorter than the rows; the turn after it
+    resumes at that turn's prompt end."""
+    with _prompt_end():
+        res, eng = _prefix(guest_frac=1.0), serving32()
+        _turn(eng, res, tokens(60, 40), 10, "X")
+        y = tokens(30, 41)
+        lg, _, _ = cache.prefill(eng, None, y, "cpu", chunk=CH, resident=res, conv_id="Y")
+        assert res._stash is not None, "the second chat was no guest of the first"
+        cy = y + _greedy(eng, lg, 30, 120)
+        assert res.promote_guest(eng, None, cy, 30, "Y") and res.keep_end(eng, None, cy, 30, []) == "kept"
+        y2 = y + [_other(cy[30])] + tokens(20, 42)
+        assert len(y2) < res.valid
+        c2, t2 = _turn(eng, res, y2, 6, "Y")
+        assert not t2["guest"] and res.owner == "Y", t2
+        y3 = y2 + [_other(c2[len(y2)])] + tokens(10, 43)
+        _, t3 = _turn(eng, res, y3, 2, "Y")
+    assert t3["kind"] == "pend" and t3["reused"] == len(y2), t3
+
+
+def test_a_turn_that_does_not_hold_the_last_prompt_stays_a_guest_by_size():
+    """5.1 test 4: the conversation's own session id is not enough: a request that holds only part of the last
+    prompt is a guest by size, as before."""
+    res, eng = _prefix(), serving32()
+    p = tokens(60, 50)
+    _turn(eng, res, p, 200, "A")
+    q = p[:20] + [_other(p[20])] + tokens(20, 51)
+    assert len(q) < 0.25 * res.valid
+    _, t = _turn(eng, res, q, 2, "A")
+    assert t["guest"], t
+
+
+def test_the_end_anchor_and_the_session_snapshot_give_a_cold_reads_tokens():
+    """5.1 test 8 (passes before and after): a turn resumed at the end anchor and one resumed from a session
+    snapshot write the next 12 greedy tokens of a cold read."""
+    p1 = tokens(37, 60)
+    res, eng = _prefix(), serving32()
+    c1, _ = _turn(eng, res, p1, 20, "A")
+    p2 = c1 + tokens(6, 61)
+    want = _cold_greedy(p2, 12)
+    c2, t2 = _turn(eng, res, p2, 12, "A")
+    assert t2["kind"] == "end" and t2["reused"] == len(c1) - 1 and c2[len(p2):] == want, t2
+    store = cache.StateStore(BIG, chunk=CH)
+    res, eng = _prefix(), serving32()
+    _turn(eng, res, p1, 20, "A", store=store)
+    res.clear()                                   # the rows are gone: the store alone holds the turn
+    c2, t2 = _turn(eng, res, p2, 12, "A", store=store)
+    assert t2["kind"] == "session" and t2["reused"] == len(c1) - 1 and c2[len(p2):] == want, t2
+    return f"end and session resumes at {len(c1) - 1}: 12 greedy tokens equal a cold read's"
+
+
+def test_a_guest_that_wraps_the_rings_leaves_the_chats_anchor_exact():
+    """5.1 test 9 (passes before and after): a chat long enough to wrap the window layers' rings and to select
+    groups in the sparse layers, a guest whose rows wrap the rings too, then the chat's next turn from an anchor:
+    the whole state and the logits equal a cold read's, a selecting row included."""
+    res, eng = _prefix(), serving32()
+    p1 = tokens(100, 70)
+    _turn(eng, res, p1, 10, "A")
+    assert len(p1) > eng.cfg.index_topk and len(p1) > eng.cfg.sliding_window
+    _, tg = _turn(eng, res, tokens(20, 71), 10, "B")
+    assert tg["guest"], tg
+    p2 = p1[:90] + [_other(p1[90])] + tokens(19, 72)
+    info: dict = {}
+    lg, reused, _ = cache.prefill(eng, None, p2, "cpu", chunk=CH, resident=res, conv_id="A", info=info)
+    assert info["kind"] == "resident" and reused == 80, (info, reused)
+    ref, ref_lg = _cold32(p2)
+    _same(eng, ref, len(p2), lg, ref_lg)
+    return "resumed at 80 after a guest that wrapped the rings: equal to a cold read"
+
+
+def test_the_conductors_question_reaches_the_prefill_as_own():
+    """Through the handler: a request with the conductor's User-Agent reaches `cache.prefill` with `own` on a
+    resident prefix with `chat_first`, keeps no session snapshot and gives its rows back. On a prefix without
+    the flag (every other family) nothing of that changes: `own` is not passed and the snapshot is kept."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from engine.penalty import PenaltySpec
+    from engine.spec import Relax
+    from server import app
+    from test_app_loop import FakeTok, Req
+    saved = dict(app.STATE)
+    seen, real = [], cache.prefill
+
+    def spy(*a, **kw):
+        seen.append(bool(kw.get("own")))
+        return real(*a, **kw)
+    body = {"prompt": "the quick brown fox jumps over the lazy dog and runs", "max_tokens": 6, "stream": False,
+            "temperature": 0}
+    got = {}
+    cache.prefill = spy
+    try:
+        for label, res in (("chat_first", _prefix()),
+                           ("size rule", cache.ResidentPrefix(BIG, CH, stash_bytes=BIG, end=True))):
+            srv, store = serving32(256), cache.StateStore(BIG, chunk=CH)
+            app.STATE.clear()
+            app.STATE.update(engine=srv, drafter=None, k=4, tree=False, sampled_tree="det", relax=Relax(1.0, 1),
+                             verbose=False, state_store=store, prefix_cache=True, prefix_chunk=CH, session_cache=True,
+                             tok=FakeTok(), device="cpu", max_len=srv.max_len, default_max_tokens=64,
+                             pen_spec=PenaltySpec(), model="t", cfg_eos=None, think_budget=0, think_stall=False,
+                             reasoning_format="tags", request_timeout=0.0, max_queue=8, queue_timeout=5.0,
+                             pattern_stop=None, response_cache=None, suffix_store=None, resident=res)
+            del seen[:]
+            r = Req("/v1/completions", body)
+            r.headers["User-Agent"] = app.OWN_QUESTION_UA
+            head, raw = r.response()
+            assert head.startswith("HTTP/1.1 200"), (label, head, raw[:400])
+            got[label] = (list(seen), sorted({e.kind for e in store._d.values()}), int(res.valid))
+    finally:
+        cache.prefill = real
+        app.STATE.clear()
+        app.STATE.update(saved)
+    assert got["chat_first"] == ([True], ["prefix"], 0), got
+    assert got["size rule"][0] == [False] and "session" in got["size rule"][1] and got["size rule"][2] > 0, got
+    return f"{got}"
+
+
+# ------------------------------------------------------------------ the head mark (SRV-905)
+#: a grid wider than the prompts, as the family's 4,096-row grid is beside a 2,345-row question: no line
+#: below the head but its mark
+WIDE = 512
+#: the template's marks on the tiny vocabulary (64 ids; `tokens` draws 4..59): the turn opener, `user`, the end
+OPEN, USER, END, SYSTEM, ASSISTANT = 61, 62, 63, 60, 0
+
+
+class _MarksTok:
+    """A tokenizer that names its template's turn marks itself (`Hy4Tokenizer.template_marks`)."""
+
+    def template_marks(self):
+        return OPEN, [USER], END
+
+
+def _question(head_seed: int, user_seed: int, head: int = 300, user: int = 24) -> list[int]:
+    """The conductor's question in the template's turns: a system turn of `head` rows (its question and
+    options), then a user turn (the state) and the generation prompt."""
+    return ([OPEN, SYSTEM] + tokens(head, head_seed) + [END] + [OPEN, USER] + tokens(user, user_seed) + [END]
+            + [OPEN, ASSISTANT])
+
+
+class _marks:
+    """The server's view of this family for `_grid_mark`: its engine (the caps) and a tokenizer with marks."""
+
+    def __init__(self, eng, tok=None):
+        self.eng, self.tok = eng, tok if tok is not None else _MarksTok()
+
+    def __enter__(self):
+        from server import app
+        self.app, self.keep = app, dict(app.STATE)
+        app.STATE.update(engine=self.eng, tok=self.tok)
+        self.marks, app._CONV_MARKS = app._CONV_MARKS, None
+        return app
+
+    def __exit__(self, *exc):
+        self.app.STATE.clear()
+        self.app.STATE.update(self.keep)
+        self.app._CONV_MARKS = self.marks
+        return False
+
+
+def test_a_repeated_head_is_read_once():
+    """5.1 test 5: two prompts with the same system turn of at least 256 rows, through `_grid_mark` with the
+    family's marks: the second resumes at the mark, from the anchor in place and from the store, equal to a
+    cold read on the same grid. Before: no plan, no mark, and no line below the grid: `reused == 0`."""
+    a, b = _question(80, 81), _question(80, 82)
+    store = cache.StateStore(BIG, chunk=WIDE)
+    with _marks(serving32()) as app:
+        mark = app._grid_mark(None, torch.tensor(a), None)
+        assert mark == 303 == app._grid_mark(None, torch.tensor(b), None), mark
+        res, eng = _prefix(chunk=WIDE), serving32()
+        _turn(eng, res, a, 3, "a", store=store, chunk=WIDE, grid_mark=mark)
+        assert 303 in store.report()["boundaries"], store.report()
+        info: dict = {}
+        lg, reused, _ = cache.prefill(eng, None, b, "cpu", chunk=WIDE, resident=res, info=info, grid_mark=mark)
+        assert (info["kind"], reused) == ("resident", 303), (info, reused)
+        ref, ref_lg = _cold32(b, chunk=WIDE, grid_mark=mark)
+        _same(eng, ref, len(b), lg, ref_lg)
+        res, eng, info = _prefix(chunk=WIDE), serving32(), {}
+        lg, reused, _ = cache.prefill(eng, None, b, "cpu", chunk=WIDE, resident=res, store=store, info=info,
+                                      grid_mark=mark)
+        assert (info["kind"], reused) == ("prefix", 303), (info, reused)
+        _same(eng, ref, len(b), lg, ref_lg)
+    return f"the second prompt forwarded {len(b) - 303} of {len(b)} rows from the anchor and from the store"
+
+
+def test_the_conductors_question_beside_a_chat_stores_its_head_and_keeps_the_chats_end():
+    """5.1 test 6: a chat with a kept end is in place and shares 200 rows (more than one 128-row chunk) with the
+    head of the conductor's question, which runs twice as its guest. The first resumes at the chat's anchor and
+    stores its head although the chat is tainted (its kept end). The second resumes from that head in the store:
+    its stash starts at row 0, not at the chunk line below what it shares (128), so every row the restore writes
+    goes back, and the chat keeps its end. The chat's next turn resumes there and writes a cold read's greedy
+    tokens. Before: no head was stored, and once one was, the hit dropped the end."""
+    ch = 128
+    store = cache.StateStore(BIG, chunk=ch)
+    q1, q2 = _question(90, 91), _question(90, 92)
+    chat = q1[:200] + tokens(30, 93)
+    with _marks(serving32()) as app, _prompt_end():
+        mark = app._grid_mark(None, torch.tensor(q1), None)
+        assert mark == 303 and app._grid_mark(None, torch.tensor(chat), None) is None
+        res, eng = _prefix(chunk=ch), serving32()
+        c1, _ = _turn(eng, res, chat, 20, "chat", store=store, chunk=ch)
+        e = res.end["at"]
+        assert res.taint is not None and e == len(c1) - 1, (res.taint, res.end)
+        _, t1 = _turn(eng, res, q1, 3, "q", own=True, store=store, chunk=ch, grid_mark=mark)
+        assert t1["guest"] and (t1["kind"], t1["reused"]) == ("resident", ch), t1
+        assert mark in store.report()["boundaries"], store.report()["boundaries"]
+        _, t2 = _turn(eng, res, q2, 3, "q", own=True, store=store, chunk=ch, grid_mark=mark)
+        assert t2["guest"] and (t2["kind"], t2["reused"]) == ("prefix", mark), t2
+        assert res.common(q2) >= ch and res._stash["start"] == 0, (res.common(q2), res._stash["start"])
+        assert res.end is not None and res.end["at"] == e, res.end
+        p2 = c1 + tokens(5, 94)
+        want = _cold_greedy(p2, 6, chunk=ch)
+        c3, t3 = _turn(eng, res, p2, 6, "chat", store=store, chunk=ch)
+    assert (t3["kind"], t3["reused"]) == ("end", e) and c3[len(p2):] == want, t3
+    return f"the second question forwarded {t2['forwarded']} of {len(q2)} rows; the chat resumed at its end ({e})"
+
+
+def test_two_heads_that_share_256_rows_are_one_prompts():
+    """SPD-249's rule, which the head mark keeps as it is: a new head that shares at least 256 leading rows with
+    an older one marks the older stale (the same prompt, its notes changed), and a stale head loses its place at
+    the back of the store's eviction order. Two conductor questions with a common preamble of 256 tokens or more
+    would mark each other stale in turn. The default class and package questions share the classifier prompt up
+    to its class list (about 35 tokens with this template's turn marks), so each keeps its head."""
+    store = cache.StateStore(BIG, chunk=WIDE)
+    h = tokens(300, 140)
+
+    def ask(head, seed):
+        return [OPEN, SYSTEM] + head + [END, OPEN, USER] + tokens(10, seed) + [END, OPEN, ASSISTANT]
+    first, far, near = ask(h, 143), ask(h[:100] + tokens(200, 142), 144), ask(h[:280] + tokens(20, 141), 145)
+    with _marks(serving32()) as app:
+        for ids in (first, far, near):
+            mark = app._grid_mark(None, torch.tensor(ids), None)
+            assert mark == 303, mark
+            cache.prefill(serving32(), None, ids, "cpu", store=store, chunk=WIDE, checkpoint=True, grid_mark=mark)
+    heads = {tuple(e.tokens): store._head(k, e) for k, e in store._d.items() if e.mark is not None and k[0] == e.mark}
+    assert heads == {tuple(first[:303]): False, tuple(far[:303]): True, tuple(near[:303]): True}, heads
+
+
+def test_the_marks_and_the_mark_of_every_other_family_are_as_before():
+    """The marks lookup of a tokenizer without `template_marks` asks for Qwen's names, as before; `_grid_mark` on
+    an engine without `head_mark` gives a plan's mark or none, as before; with it, the plan's mark still wins."""
+    import types
+
+    from engine.models.adapter import Capabilities
+    from server import app
+
+    class Qwen:
+        unk_token_id = 0
+
+        def convert_tokens_to_ids(self, t):
+            return {"<|im_start|>": 10, "<|im_end|>": 11}.get(t, 0)
+
+        def encode(self, text, add_special_tokens=False):
+            return [12]
+
+    class Plain(Qwen):
+        def convert_tokens_to_ids(self, t):
+            return 0
+
+    assert app._marks_of(Qwen()) == (10, [12], 11) and app._marks_of(Plain()) is None
+    assert app._marks_of(_MarksTok()) == (OPEN, [USER], END)
+    a = torch.tensor(_question(95, 96))
+    plan = types.SimpleNamespace(head_end=40, head_ids=a[:40].tolist())
+    other = types.SimpleNamespace(head_end=40, head_ids=[1] * 40)
+    for caps, want in ((Capabilities(caches=True, side_slots=True), (None, 40, None, None)),
+                       (Hy4FlashServing.caps, (303, 40, 303, None))):
+        with _marks(types.SimpleNamespace(caps=caps)):
+            got = (app._grid_mark(None, a, None), app._grid_mark(plan, a, None), app._grid_mark(other, a, None),
+                   app._grid_mark(None, a, object()))
+        assert got == want, (caps, got, want)
+    short = torch.tensor([OPEN, SYSTEM] + tokens(100, 97) + [END, OPEN, USER, 9, END])
+    with _marks(types.SimpleNamespace(caps=Hy4FlashServing.caps)):
+        assert app._grid_mark(None, short, None) is None          # a head under 256 rows: no mark
+
+
+def test_interim_a_second_chat_the_store_remembers_takes_the_lane():
+    """INTERIM (SRV-907, `Capabilities.solo`; this test goes with the capability when the family builds side
+    slots). On one lane a second chat ran as a guest of the first: its first turn (short) kept a session snapshot,
+    and its next turn with thinking on holds only its last prompt, so it was a guest again and read itself
+    again every turn. Now a conversation the store remembers takes the lane: the first chat is parked with its
+    end, not cut, and comes back from the park at its end."""
+    store = cache.StateStore(BIG, chunk=CH)
+    with _prompt_end():
+        res, eng = _prefix(park_bytes=BIG), serving32()
+        ca1, _ = _turn(eng, res, tokens(60, 100), 150, "A", store=store)
+        b1 = tokens(30, 101)
+        cb1, tb1 = _turn(eng, res, b1, 4, "B", store=store)
+        assert tb1["guest"] and store.holds("B") and not store.holds("C"), tb1
+        b2 = b1 + [_other(cb1[30])] + tokens(8, 102)
+        assert len(b2) < 0.25 * res.valid
+        _, tb2 = _turn(eng, res, b2, 3, "B", store=store)
+        assert not tb2["guest"] and res.owner == "B" and res.stats["parks"] == 1, (tb2, res.stats["parks"])
+        _, ta2 = _turn(eng, res, ca1 + tokens(4, 103), 2, "A", store=store)
+    assert (ta2["kind"], ta2["reused"]) == ("end", len(ca1) - 1), ta2
+    return f"the second chat took the lane; the first came back from the park at its end ({len(ca1) - 1})"
+
+
+def test_interim_a_chat_too_short_for_the_park_keeps_the_lane():
+    """INTERIM (SRV-907, `solo`; goes with it). A chat under one chunk above what it shares with the second
+    chat is too short for the park (and the spill): the second chat would cut it, and two short chats taking
+    turns would both read themselves again every turn. The size rule stands there: the second chat is a guest."""
+    store = cache.StateStore(BIG, chunk=64)
+    with _prompt_end():
+        res, eng = _prefix(park_bytes=BIG, chunk=64), serving32()
+        ca1, _ = _turn(eng, res, tokens(40, 130), 10, "A", store=store, chunk=64)
+        e = res.end["at"]
+        assert e < res.chunk
+        b1 = tokens(8, 131)
+        cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store, chunk=64)
+        assert tb1["guest"] and store.holds("B"), tb1
+        b2 = b1 + [_other(cb1[8])] + tokens(2, 132)
+        assert len(b2) < 0.25 * res.valid
+        _, tb2 = _turn(eng, res, b2, 2, "B", store=store, chunk=64)
+        assert tb2["guest"] and res.owner == "A" and res.end["at"] == e and res.stats["parks"] == 0, tb2
+        p2 = ca1 + tokens(3, 133)
+        want = _cold_greedy(p2, 4, chunk=64)
+        c2, ta2 = _turn(eng, res, p2, 4, "A", store=store, chunk=64)
+    assert (ta2["kind"], ta2["reused"]) == ("end", e) and c2[len(p2):] == want, ta2
+
+
+def test_interim_a_session_hit_takes_the_lane_as_before():
+    """INTERIM (SRV-907, `solo`). A second chat whose prompt matches its session snapshot resumes from the store
+    whatever the rule: the conversation in place is written to the NVMe only from the spill's `min_tokens`, and
+    is dropped otherwise, as on every family. The rule changes nothing here (with and without it)."""
+    got = []
+    for solo in (True, False):
+        store = cache.StateStore(BIG, chunk=CH)
+        with _prompt_end():
+            res, eng = _prefix(park_bytes=BIG, solo=solo), serving32()
+            _turn(eng, res, tokens(60, 134), 100, "A", store=store)
+            b1 = tokens(20, 135)
+            cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store)
+            assert tb1["guest"], tb1
+            _, tb2 = _turn(eng, res, cb1 + tokens(3, 136), 2, "B", store=store)
+        got.append((tb2["kind"], tb2["reused"], res.owner, res.stats["parks"], res.park_rows, res.valid))
+    assert got[0] == got[1] and got[0][:4] == ("session", len(cb1) - 1, "B", 0), got
+
+
 if __name__ == "__main__":
     from scriptmode import run
     run(globals())
