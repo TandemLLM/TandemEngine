@@ -206,7 +206,8 @@ class Hy4Pack:
     # --------------------------------------------------------------------------- checks
     def k_of(self, base: str) -> float | None:
         t = self.tensors.get(base + ".trellis")
-        return None if t is None else t.shape[2] / 16 if t.shape[2] % 16 == 0 else (t.shape[2] - 8) / 16
+        # a tile is 16 K int16 wide; a half-integer rate's 16 K ends on 8 (3.5 bits: 56)
+        return None if t is None else t.shape[2] / 16
 
     def audit(self) -> list[str]:
         """Every tensor the engine reads is there with its shape; returns notes, raises on the first problem."""

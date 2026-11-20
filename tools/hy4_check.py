@@ -832,15 +832,20 @@ def main() -> int:
     if a.ref:
         from engine.models.hy4_flash.ref import Hy4FlashRef, Hy4State
         ref = Hy4FlashRef(cfg, W, tables, dtype=eng.dtype, device=a.device, cuts=cuts)
-        n = min(len(ids), 160)
-        want = ref.forward(torch.tensor(ids[:n]), Hy4State())
+        n = min(len(ids), 200)
+        rw = ref.forward(torch.tensor(ids[:n]), Hy4State())
         st = eng.new_state(n + 8)
-        cut = n - 16
-        got = torch.cat((eng.prefill(torch.tensor(ids[:cut]), st, head="all"), torch.cat([eng.step(t, st) for t in ids[cut:n]])))
-        d = (got - want).abs()
-        say("ref", rows=n, max_abs=round(d.max().item(), 4), mean_abs=round(d.mean().item(), 5), logit_scale=round(want.abs().mean().item(), 3),
-            agree_prompt=round((got[:cut].argmax(-1) == want[:cut].argmax(-1)).float().mean().item(), 4),
-            agree_steps=round((got[cut:].argmax(-1) == want[cut:].argmax(-1)).float().mean().item(), 4))
+        cut = n - 64
+        gs = {} if str(a.device).startswith("cuda") else None
+        got = torch.cat((eng.prefill(torch.tensor(ids[:cut]), st, head="all"), torch.cat([eng.step(t, st, graphs=gs).clone() for t in ids[cut:n]])))
+        d = (got - rw).abs()
+        kl = lambda x, y: float((torch.softmax(x, -1) * (torch.log_softmax(x, -1) - torch.log_softmax(y, -1))).sum(-1).mean())
+        say("ref", rows=n, steps=n - cut, max_abs=round(d.max().item(), 4), mean_abs=round(d.mean().item(), 5), logit_scale=round(rw.abs().mean().item(), 3),
+            mean_abs_prompt=round(d[:cut].mean().item(), 5), mean_abs_steps=round(d[cut:].mean().item(), 5),
+            kl_prompt=round(kl(rw[:cut], got[:cut]), 5), kl_steps=round(kl(rw[cut:], got[cut:]), 5),
+            agree_prompt=round((got[:cut].argmax(-1) == rw[:cut].argmax(-1)).float().mean().item(), 4),
+            agree_steps=round((got[cut:].argmax(-1) == rw[cut:].argmax(-1)).float().mean().item(), 4),
+            fused=bool(getattr(eng, "fused", False)), banks=len(getattr(eng, "banks", {})))
 
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
