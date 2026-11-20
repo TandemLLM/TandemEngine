@@ -1,0 +1,78 @@
+# Hy4-flash
+
+Tencent's Hy4-flash has about 220B parameters, and 64B of them are Engram n-gram tables. About 11B run for each token. The engine serves it from two of our EXL3 packs on one DGX Spark, one chat at a time, text only. This page lists what the engine does with it, the limits a user meets, and what is not measured yet.
+
+## The model
+
+| part | Hy4-flash |
+|-|-|
+| layers | 42 with latent attention: 30 on a sliding window, 12 sparse (an indexer picks the key groups a token reads) |
+| MLP | a dense first layer, then 512 experts a layer, 16 routed and 1 shared |
+| residual stream | hyper-connection streams |
+| Engram | n-gram tables at four layers, 38.11 GiB in the packs, read from the SSD a row at a time |
+| state a token | 16,896 bytes (the 12 sparse layers' latents and indexer keys); the window layers keep rings of 17.7 MB a sequence |
+| context | 1,048,576 tokens in the checkpoint; the engine serves 262,144 |
+| draft layers | five DFly2 layers in the checkpoint |
+| images | a vision tower in the pack, not served |
+
+*Hy4-flash as the engine runs it (`engine/models/hy4_flash`).*
+
+Its reference forward (`ref.py`) follows transformers operation for operation and matches it on tiny random models. The row path takes a block's rows together on the family's own kernels, and the load-time self-check proves on the device that a block's rows equal the decode steps bit for bit.
+
+## The packs
+
+| profile | repository | download | weights at load | chat2048 KL / top-1 | conv2048 KL / top-1 |
+|-|-|-|-|-|-|
+| `hy4-3.56` (default) | `0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5` | 112.38 GB | 67.17 GiB | 0.0653 / 90.54 % | 0.0729 / 93.75 % |
+| `hy4-3.08` | `0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0` | 103.1 GB | 58.52 GiB | 0.0989 / 88.52 % | 0.1113 / 92.11 % |
+
+Both packs keep attention, the shared experts, the head and the Engram tables at 5 bits. Routed experts are at 3 bits in `hy4-3.08` and 3.5 bits in `hy4-3.56`, which was also calibrated on templated chat. Both packs carry the same four table files, 40.92 GB of each download. With both packs under `~/models`, `ops/fetch_weights.py` links the tables from the first pack instead of fetching them twice.
+
+Both repositories are private for now, so a download needs a Hugging Face token with access. The Setup Guide and `ops/use-profile.sh hy4-3.56` read the weights from `~/models/hy4-flash-exl3-3.56` (and `-3.08`), and skip the download when the folder holds every file.
+
+Each KL column compares a pack with the unquantized BF16 checkpoint (revision `d88c9dfd`). Both sides ran through exllamav3's cache-less forward with our converter patch for this model. The reference is our forward of the BF16 weights, not Tencent's own stack, and the logits are stored in fp16. chat2048 is 16 rows of 2,048 tokens of wikitext-2 inside a templated turn with thinking off. conv2048 is 16 held-out conversations of 2,048 tokens from ultrachat. Two correct forwards of the same weights already differ by about KL 0.003 to 0.005 on such rows. On `hy4-3.08` this engine's own prompt pass scores KL 0.1009 and top-1 88.49 % on the chat2048 rows, so the engine adds nothing to the quantization there.
+
+## Limits
+
+One chat at a time. This family builds no side slots yet, so the Setup Guide caps the lanes at 1 and a second request waits in the queue. The state takes no KV pool pages, so the profiles run with the pool off.
+
+The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
+
+Reading a prompt is slow: about 140 tok/s through the server, so the first token of a 3,565-token prompt came after 24 to 31 s. A 262,144-token prompt took 1,735 s (151 tok/s) in the bare engine, on an older row path.
+
+Caches work, with three limits. The resident prefix, the state store, the disk tier and the session spill each give back the state a cold prefill writes, bit for bit. Anchors sit every 4,096 tokens, so the engine reads a repeated prompt shorter than that again in full. After a restore the first round drafts nothing, and drafting resumes on the next round.
+
+Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn, or with a think block that does not match the mode, perplexity on the unquantized model is about three times higher, and raw text without the template scores far worse. That template knows three modes: `no_think`, `high` (its default) and `max`. Here is how the engine maps a request onto them:
+
+| request | template mode |
+|-|-|
+| `enable_thinking: false` | `no_think` |
+| effort `xhigh` or `max` | `max` |
+| any other effort, `low` and `medium` included | `high` |
+
+Tool calls use the model's own tags, which the tokenizer reads under the `argkey` form's names. A served tool call is not tested yet, so the model card says `tools: false`. A forced `tool_choice` (required or named) is not checked with these tags.
+
+Vision is not served. Each pack holds the tower at 5 bits, and the engine reads text only.
+
+Memory: after the load at the full window `hy4-3.56` holds 72.5 GiB allocated and 73.4 to 73.8 GiB reserved. A start with serve.env's default limits takes the pack's own: a ceiling 12 GiB over what the load holds and a peak 7 GiB above that, 85 and 92 GiB on `hy4-3.56`. The profiles ask for 97 GiB (`hy4-3.08`) and 101 GiB (`hy4-3.56`) of free memory before a start. Those two figures are the measured load plus the server's 7.3 GiB prefill estimate plus the 15 GiB floor, not a measured start.
+
+## Speed
+
+Every figure below is one prose chat request through the server: a 3,565-token prompt in the pack's template with thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence. This is not the measured table's shape, and the model card's table is empty until that run exists.
+
+| profile | setup | plain, tok/s | DFly2 + lookup + StairCut, tok/s |
+|-|-|-|-|
+| `hy4-3.56` | `--max-len 262144`, idle box | 22.75, 23.05 | 27.70, 28.08 |
+| `hy4-3.08` | `--max-len 8192`, idle box | 24.45, 24.74 | 34.64, 35.36 (before a later fix of the draft cost past 4,096 rows) |
+| `hy4-3.08` | `--max-len 262144`, another GPU job beside it, a 70 GiB ceiling | not measured | 32.19, 33.08 |
+
+Both `hy4-3.08` rows ran under other conditions than the `hy4-3.56` row, so they do not say which pack is faster. In every run the drafted text equals the plain text. On this prompt a drafted round keeps about 2.3 to 2.5 tokens.
+
+## What is not measured
+
+- The measured table's runs (`tools/parallel_card.py`, raw `/v1/completions`) on either pack.
+- `hy4-3.08` at the full window on an idle box, on the current build.
+- Thinking on: speed and how many drafted tokens a round keeps.
+- A served tool call, structured output, parallel tool calls.
+- Quality past 2,048 tokens, task-level checks, and any comparison with Tencent's own stack or its FP8 release.
+- The free memory a start needs: the profiles' figures come from arithmetic.

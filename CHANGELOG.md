@@ -4,6 +4,10 @@ Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; 
 
 ## Unreleased
 
+### Models
+
+- Hy4-flash, Tencent's mixture-of-experts model with Engram n-gram tables, runs from two of our EXL3 packs: `hy4-3.56` (the default, routed experts at 3.5 bits, 112.38 GB) and `hy4-3.08` (3 bits, 103.1 GB). Its own DFly2 layers draft with the lookup, cut by StairCut over each pack's price file, and the drafted text equals the plain text. It serves one chat at a time, text only, up to 262,144 tokens; the Engram tables stay on the SSD behind a 2 GiB row cache. Against the unquantized checkpoint on 16 templated chat rows of 2,048 tokens, `hy4-3.56` scores KL 0.0653 and top-1 90.54 %, `hy4-3.08` KL 0.0989 and 88.52 %. One prose chat request on `hy4-3.56` at the full window decodes 22.75 to 23.05 tok/s plain and 27.70 to 28.08 drafted. Both Hugging Face repositories are private for now. [docs/hy4-flash.md](docs/hy4-flash.md) lists the limits.
+
 ### Fixes
 
 - The 27B no longer stops answering after a short chat follows a long one (SRV-885). The end of a request could lower the draft window's floor and leave the rows between the new floor and the old one unmapped. The next save of that conversation to the disk read them, the GPU faulted (an illegal memory access) and every request after it was a 503 `engine_failed` until a restart. A lowered floor now leaves those rows on the window's shared page until they are mapped again, and a trim drops only what lies past the rows it keeps.

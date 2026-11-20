@@ -31,7 +31,7 @@ def test_a_dry_run_prints_the_plan_and_runs_nothing():
         live = os.path.join(d, "releases", "abc", "src")
         rc, out = _run(["--dry-run", "--dir", os.path.join(d, "pack"), "--out", os.path.join(d, "out")], {"HY4_LIVE": live})
         assert rc == 0 and not os.path.exists(os.path.join(d, "out")) and not os.path.exists(os.path.join(d, "pack")), out
-        assert "0xBakeer/TandemLLM-Hy4-flash-EXL3@3.08bpw_h5_ng5" in out and "600 s with no running or waiting request" in out
+        assert "0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0@main" in out and "600 s with no running or waiting request" in out
         assert f"bash {live}/ops/hold.sh 150 --" in out and "flock" in out and "--fit 262144" in out and "--dfly" in out
     return "the repository, the idle rule and the hold line"
 

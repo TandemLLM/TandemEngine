@@ -41,7 +41,7 @@ Start with [docs/setup.md](docs/setup.md), section "A new box from the command l
 
 ## Models
 
-Every file below is public on Hugging Face. The Setup Guide, or `ops/use-profile.sh <profile>` from a shell, downloads what a profile needs, checks each weight file against the hub's sha256, and starts the engine on port 8000.
+Every file below is public on Hugging Face, except the Hy4-flash packs for now. The Setup Guide, or `ops/use-profile.sh <profile>` from a shell, downloads what a profile needs, checks each weight file against the hub's sha256, and starts the engine on port 8000.
 
 Qwen3.8-27B comes as NVFP4 or as one of six EXL3 sizes. The six EXL3 sizes and their drafters are one collection: [TandemLLM Qwen3.8-27B EXL3](https://huggingface.co/collections/0xBakeer/tandemllm-qwen38-27b-exl3-6acdd787008264fa4f35eab4). Each EXL3 card has its KL against BF16 and a speed table; the KL column below comes from those cards.
 
@@ -129,6 +129,15 @@ Flint, Recursive's mixture-of-experts model for coding agents, runs from our EXL
 ![Decode speed of Flint EXL3 4.0 on one DGX Spark, plain and with the lookup](docs/media/flint-decode-speed.png)
 
 Speed is greedy with thinking off, and a fresh install thinks at effort `medium` ([docs/setup.md](docs/setup.md#reasoning-effort)). Every drafted text is the plain decode's. 4.0 decodes at 39.5 tok/s at a 128k context, and the lookup ran a copy ask at 79.5 and an edit ask at 129.7 behind a 124,000-token prompt. Flint's router is sensitive to rounding: two BF16 forwards of the same weights already differ by KL 0.034. [docs/flint.md](docs/flint.md) has the checks, the long-context numbers and what is not measured.
+
+Hy4-flash, Tencent's large mixture-of-experts model, runs from our EXL3 packs at 3.08 and 3.56 bits a weight, converted from the BF16 checkpoint. It has about 220B parameters, and 64B of them are Engram n-gram tables that the engine reads from the SSD a row at a time; about 11B run a token. Its own DFly2 layers draft with the lookup, and every drafted text is the plain decode's. It serves one chat at a time, text only, up to 262,144 tokens. Its two repositories, [0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5](https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5) and [-3.0](https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0), are private for now, so a download needs a Hugging Face token with access. KL and top-1 compare each pack with the unquantized checkpoint on 16 templated chat rows of 2,048 tokens. Speed is one prose chat request through the server: a 3,565-token prompt, 600 greedy tokens, thinking off.
+
+| profile | download | KL vs BF16 | top-1 vs BF16 | plain, tok/s | DFly2 + lookup, tok/s |
+|-|-|-|-|-|-|
+| `hy4-3.56` (default for Hy4-flash; routed experts 3.5 bits) | 112.38 GB | 0.065 | 90.5 % | 22.75 to 23.05 | 27.70 to 28.08 |
+| `hy4-3.08` (routed experts 3 bits) | 103.1 GB | 0.099 | 88.5 % | 24.45 to 24.74 at an 8,192 window | 34.64 to 35.36 at an 8,192 window, an older build |
+
+The 3.56 row ran at the full window on an idle box; the 3.08 row did not, so the two rows do not say which pack is faster. A first token takes 24 to 31 s on that prompt: the engine reads a prompt at about 140 tok/s. [docs/hy4-flash.md](docs/hy4-flash.md) has the limits, the chat template's reasoning modes and what is not measured.
 
 ### Community weights
 

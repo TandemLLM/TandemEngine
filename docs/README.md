@@ -48,6 +48,7 @@ TandemEngine is an inference engine, and we measure its speed on raw `/v1/comple
 | [nemotron-h.md](nemotron-h.md) | NVIDIA's NemotronH (Nemotron 3.5 Bolt, Super VL, Lightning): the models, the EXL3, GGUF and NVFP4 profiles, LiLiCorr, how the engine runs them |
 | [ornith.md](ornith.md) | Ornith-1.5-122B: the model, its pack, drafting, serving, the e4m3 KV cache, what is not measured |
 | [flint.md](flint.md) | Recursive's Flint: the model, its EXL3 and BF16 profiles, reasoning and tools, the lookup at long context, how the engine runs it |
+| [hy4-flash.md](hy4-flash.md) | Tencent's Hy4-flash: the model, its two EXL3 packs, the limits (one chat at a time, the window, prompt speed, the caches, the chat template), speed, what is not measured |
 
 ## Reference
 

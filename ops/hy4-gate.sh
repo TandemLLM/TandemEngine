@@ -4,8 +4,9 @@
 #   ops/hy4-gate.sh --uploaded [--repo ORG/NAME] [--revision BRANCH] [--dir PACK_DIR] [--out DIR]
 #                   [--minutes 150] [--idle 600] [--deadline 7200] [--fit 262144] [--skip-download] [--dry-run]
 #
-# 1. download  the pack from its private repository into PACK_DIR (the live engine stays up). The token is the
-#              library's own (~/.cache/huggingface/token); it is never read, printed or passed here.
+# 1. download  the pack from its Hugging Face repository into PACK_DIR (the live engine stays up). A private
+#              repository takes the library's own token (~/.cache/huggingface/token); it is never read, printed or
+#              passed here.
 # 2. audit     every file's size and sha256 against the repository's records, then the header audit
 #              (engine/models/hy4_flash/pack.py: a missing tensor, a wrong shape, a truncated shard stop it by name).
 #              Still beside the live engine, at nice 19.
@@ -23,7 +24,8 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TREE="$(cd "$HERE/.." && pwd)"
-REPO="0xBakeer/TandemLLM-Hy4-flash-EXL3"; REV="3.08bpw_h5_ng5"
+# the 3.08 pack (ops/profiles/hy4-3.08.env); --repo, --revision and --dir name another
+REPO="0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0"; REV="main"
 DIR="$HOME/models/hy4-flash-exl3-3.08"; OUT=""
 MIN=150; IDLE=600; DEADLINE=7200; FIT=262144; SKIP=0; DRY=0; OK=0
 LOCK="${HY4_BOX_LOCK:-$HOME/.qwen38-box.flock}"; HEALTH="${HY4_HEALTH:-http://127.0.0.1:8000/health}"
