@@ -864,7 +864,7 @@ def v2_micro(a, eng, cfg, say) -> bool:
             sparse = cfg.layer_types[li] == SPARSE
             line, kill = (80.0, 150.0) if sparse else (25.0, 50.0)
             ok = ok and rel < MLA_REL and alone and ms <= kill
-            say("v2_micro_mla", context=ctx, layer=li, kind="sparse" if sparse else "window", rows=int(qa.shape[0]),
+            say("v2_micro_mla", context=ctx, layer=li, layer_kind="sparse" if sparse else "window", rows=int(qa.shape[0]),
                 keys_mean=round(float(ctl[:, 1].float().mean()), 1), ms=round(ms, 2), pass_ms=line, kill_ms=kill,
                 passed=ms <= line, killed=ms > kill, rel_vs_reference=rel, within=rel < MLA_REL, row_alone_equal=alone,
                 launch={"HB": K_.MLA_HB, "BN": K_.MLA_BN, "warps": K_.MLA_WARPS, "stages": K_.MLA_STAGES})
