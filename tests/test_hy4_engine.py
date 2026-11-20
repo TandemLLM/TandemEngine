@@ -375,12 +375,13 @@ def test_the_prefill_checks_assert_their_counts():
     class Eng:
         banks = {3: "b", 5: "b"}
     z = torch.zeros(4096, 2)
-    full = [(c, li, z, None, None) for c in (1, 2) for li in (3, 5)]
+    ix = torch.zeros(4096, 2, dtype=torch.int64)
+    full = [(c, li, z, ix, ix.float()) for c in (1, 2) for li in (3, 5)]
     lines, real = [], (HC.moe_inputs, HC._expert_paths)
     same = {"pair": (torch.zeros(1), torch.zeros(1)), "grouped": (torch.zeros(1), torch.zeros(1))}
     try:
         HC._expert_paths = lambda *a, **k: dict(same)
-        for caps, want in ((full, True), (full[:-1], False), ([(c, li, z[:300], None, None) for c, li, *_ in full], False)):
+        for caps, want in ((full, True), (full[:-1], False), ([(c, li, z[:300], x[:300], w[:300]) for c, li, _, x, w in full], False)):
             HC.moe_inputs = lambda a, eng, _c=caps: _c
             got = HC.experts_equal(None, Eng(), type("C", (), {"num_experts_per_tok": 2})(), lambda *a, **k: lines.append(k))
             assert got is want, (len(caps), lines[-1])
