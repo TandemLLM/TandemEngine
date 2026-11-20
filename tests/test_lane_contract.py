@@ -29,6 +29,18 @@ The shared code (engine/methods/side_slot.py) answers every pin as each family's
      plain, frozen and with a back-off; LFM2.5 with no head)
                                            test_lane_drafter_equals_the_familys_own
 
+The lane contract, through one interface for every family whose host model this file can build (`LANES`:
+Flash-Next on its host fake today; Hy4-flash joins with its side slots, the other lane families when their
+tiny builders leave their own test files, whose tests stand meanwhile):
+
+  8  a side slot is the family's serving over the same engine (`fn`) with a state of its own and its window;
+     a paged side slot takes no bytes a token, and its constant holds at least the sections
+                                           test_contract_a_side_slot_shares_the_engine_and_owns_its_state
+  9  a family that declares a joint pass has one (`forward_tree_multi`)
+                                           test_contract_a_joint_family_has_its_pass
+  10 a round of two lanes -- one joint pass, or each lane's own verify in turn -- leaves each lane the logits,
+     picks and hidden rows of its lone verify   test_contract_a_round_of_two_lanes_is_each_lanes_lone_verify
+
 Run: python tests/test_lane_contract.py
 """
 
@@ -359,6 +371,106 @@ def test_lane_drafter_equals_the_familys_own():
         d4 = lane_drafter(FlashNextServing(s0.fn, 32), NoHead(), d0, make_cut=make_cut)
     assert seen == [(True, False)] and d4.cut.siblings is True
     return ", ".join(out) + "; a family's own cut"
+
+
+# ------------------------------------------------------------------ the lane contract
+
+class _FnLanes:
+    """Flash-Next on the host fake of tests/test_fn_serving.py (its checks at test_fn_serving.py 613 and 649,
+    through this file's interface), with an engine pass whose rows depend on the block and the state, never on the
+    lane's place in the pass."""
+
+    name = "flashnext"
+
+    def __init__(self):
+        from test_fn_serving import _FN
+        self.fn = _FN()
+
+        def verify_multi(jobs):
+            out = []
+            for t, p, st in jobs:
+                L = st.length
+                out.append((torch.tensor([[float(x + L + j) for j in range(4)] for x in t]),
+                            torch.tensor(t) + L, torch.zeros(len(t), 3) + L))
+            return out
+        self.fn.verify_multi = verify_multi
+
+    def slot0(self, max_len=64):
+        from engine.models.flashnext.serving import FlashNextServing
+        return FlashNextServing(self.fn, max_len)
+
+    def at(self, s, n):
+        s.st.length = n
+
+    def joint(self, items):
+        real = torch.cuda.current_stream
+        torch.cuda.current_stream = lambda: NS(synchronize=lambda: None)
+        try:
+            return type(items[0][0]).forward_tree_multi(items)
+        finally:
+            torch.cuda.current_stream = real
+
+
+#: the families whose lanes this file builds
+LANES = {"flashnext": _FnLanes}
+
+
+def test_contract_a_side_slot_shares_the_engine_and_owns_its_state():
+    for name, F in LANES.items():
+        fam = F()
+        s0 = fam.slot0()
+        assert s0.caps.side_slots, name
+        s1, d1 = s0.side_slot(32, None)
+        assert type(s1) is type(s0) and s1.fn is s0.fn and s1.st is not s0.st and s1.max_len == 32 and d1 is None, name
+        per, const = s0.side_slot_bytes(32, True)
+        assert per == 0 and const >= s0.cost().section_bytes, (name, per, const)
+        per, _ = s0.side_slot_bytes(32, False)
+        assert per >= s0.cost().view_bytes_per_token > 0, (name, per)
+    return f"{sorted(LANES)}"
+
+
+def test_contract_a_joint_family_has_its_pass():
+    for name, F in LANES.items():
+        s0 = F().slot0()
+        if s0.caps.joint_verify:
+            assert callable(getattr(type(s0), "forward_tree_multi", None)), f"{name} declares a joint pass and has none"
+    return f"{sorted(LANES)}"
+
+
+def _rows_of(s, lg):
+    return lg.clone(), s.picks.clone(), s.hidden_post_norm.clone()
+
+
+def test_contract_a_round_of_two_lanes_is_each_lanes_lone_verify():
+    out = []
+    for name, F in LANES.items():
+        fam = F()
+        blocks = [(torch.tensor([7, 8]), [-1, 0], 5), (torch.tensor([1, 2, 3]), [-1, 0, 0], 9)]
+
+        def pair():
+            s0 = fam.slot0()
+            s1, _ = s0.side_slot(32, None)
+            for s, (_, _, n) in zip((s0, s1), blocks):
+                fam.at(s, n)
+            return s0, s1
+        lanes = pair()
+        items = [(s, b, p, n) for s, (b, p, n) in zip(lanes, blocks)]
+        if lanes[0].caps.joint_verify:
+            together = [_rows_of(s, lg) for s, lg in zip(lanes, fam.joint(items))]
+            how = "one joint pass"
+        else:
+            together = [_rows_of(s, s.forward_tree(b, p, start=n)) for s, b, p, n in items]
+            how = "turns"
+        for k, (b, p, n) in enumerate(blocks):
+            lone = pair()[k]
+            if lone.caps.joint_verify:
+                ref = _rows_of(lone, fam.joint([(lone, b, p, n)])[0])
+            else:
+                ref = _rows_of(lone, lone.forward_tree(b, p, start=n))
+            for a, r, what in zip(together[k], ref, ("logits", "picks", "hidden")):
+                assert torch.equal(a, r), (name, k, what)
+        out.append(f"{name}: {how}")
+    return "; ".join(out)
 
 
 if __name__ == "__main__":
