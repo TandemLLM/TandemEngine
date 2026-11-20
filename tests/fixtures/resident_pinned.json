@@ -1,0 +1,979 @@
+{
+ "aarch64-linux-torch2.13.0": {
+  "27b": [
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64,
+     80
+    ],
+    "calls": [],
+    "end_at": 86,
+    "forwarded": 83,
+    "kind": null,
+    "out": "f2f1a035224913d386dda2e8b1cc58206bda95c21c5bca6e97c1939d16a7509b",
+    "owner": "g",
+    "res": "40e6ea668b3abfc65efba49bc1df82dad4cfbc71ad8aded6019d660ccf3e9df7",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "6ed934550283d5a5642418e80d4e8bef41e18766bcd5aa10b830c118e7d1ee27",
+    "step": "first conversation, cold",
+    "store": "ded7b5a2da3c877ac9148d187ca23774b9da964dc163ae57e7bd76e17b4bb269",
+    "taint": 83,
+    "valid": 86
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64,
+     80,
+     96
+    ],
+    "calls": [],
+    "end_at": 132,
+    "forwarded": 101,
+    "kind": null,
+    "out": "21a324baff96615802a8e2e707fc30641bdd8034d269f47c08a27e309830b741",
+    "owner": "A",
+    "res": "25a5c0c311fc12350c199c1acb328a5914dfad9bb7bb0a06048faad44db77c09",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "e2a5e70ddf11da8e244a9df46a3076899c38bd4521d1c68e1693b2c97b4e2ae9",
+    "step": "chat turn 1 replaces it",
+    "store": "23774aa1a4c635f5df1d37063f748cce92e3ba02a99939459b7e686f89c557b5",
+    "taint": 101,
+    "valid": 132
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64,
+     80,
+     96
+    ],
+    "calls": [],
+    "end_at": 147,
+    "forwarded": 10,
+    "kind": "end",
+    "out": "2672b678f37af28a227f2e2b7af7dc18df5a0290a1ded64872429c879c68c711",
+    "owner": "A",
+    "res": "ff3d151cde050f5d5c3bafdaeee8597fdd05c398c0a1c9cac788e692edc46a0a",
+    "reused": 132,
+    "stash_pending": false,
+    "state": "6aab83c932e47410d126a993dae67acf84b9d3ce691d489dc68c44c71224b01e",
+    "step": "chat turn 2 at its end",
+    "store": "9d31cc751958c8337c09d8e9a2576c16392344fc2268736a537bd3f780491410",
+    "taint": 101,
+    "valid": 147
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64,
+     80,
+     96,
+     144
+    ],
+    "calls": [],
+    "end_at": 154,
+    "forwarded": 9,
+    "kind": "pend",
+    "out": "47e75f7cba80a7e7f3afcfbeb49b1c81cb7e098b15c103a31eaf1ad6e6285c88",
+    "owner": "A",
+    "res": "6ad27ab10fba56226f4e4f58c3b70d9cef01fa9b6fbafbb733ee383c466b9d38",
+    "reused": 142,
+    "stash_pending": false,
+    "state": "b2dc939a212e32f24f09b7f2d5cc250019cc6069b380555274aa446c446169e9",
+    "step": "chat turn 3 at its prompt end",
+    "store": "4e4feb0f68778512a82203d1540f86f6d26b1eb657ee1246e58a836be56a832e",
+    "taint": 101,
+    "valid": 154
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64,
+     80,
+     96,
+     144
+    ],
+    "calls": [],
+    "end_at": 154,
+    "forwarded": 18,
+    "kind": null,
+    "out": "8faa693913c980a887fd16339f45cd2d4f798f63f82964b0abda28c64157d0a5",
+    "owner": "A",
+    "res": "d517f7ccf41b81050a9e51fe1197a4354f012adb335262a23e73a47e818fcf10",
+    "reused": 0,
+    "stash_pending": true,
+    "state": "11ce63f96238f8958a52c587fe19ce2ea08503db726ed30456cb83f35f4aa7bc",
+    "step": "a short guest (the server's own question)",
+    "store": "9f2759312d92c7f5c9be0dc03af9c5ed31d47a0067e10c33c1245136470070ae",
+    "taint": 101,
+    "valid": 154
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64,
+     80,
+     96,
+     144
+    ],
+    "calls": [],
+    "end_at": 160,
+    "forwarded": 4,
+    "kind": "end",
+    "out": "4b87e34a78ce1e69e7a3683a984206e1e6d0163f98a5feef87f55a4c200b67e7",
+    "owner": "A",
+    "res": "93e841b9ccf04095e56c82109daa7f8727ec487ab3cd8789d8dd995a1e9d19a2",
+    "reused": 154,
+    "stash_pending": false,
+    "state": "98156848ad43614df59ec9614681afa9f48cf6d613d01933cf219c3570ce977f",
+    "step": "chat turn 4 after the guest",
+    "store": "d8b91851f961176e820a47f3eca9d772ce129a476c67edbb6f265a9f3a1f5507",
+    "taint": 101,
+    "valid": 160
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64
+    ],
+    "calls": [],
+    "end_at": 67,
+    "forwarded": 65,
+    "kind": null,
+    "out": "2b3143360f5014b934f78ce78c904d56cf97a18029f4e1be9c926b6602d90141",
+    "owner": "B",
+    "res": "a4fd68be279564dc35d63d4a5e0218ff11322b44e9c7ca267bad5627bc86a233",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "5baecb10d3537d52d259863d0edee261c0f3677b7f34965d4dae57bd64d08b94",
+    "step": "another session, too long for a guest",
+    "store": "4da9898015a21241db142e2a2d831e88b088578f0fb77e8fccbfd765b38155ae",
+    "taint": 65,
+    "valid": 67
+   },
+   {
+    "anchors": [
+     80,
+     96,
+     144
+    ],
+    "calls": [],
+    "end_at": 165,
+    "forwarded": 4,
+    "kind": "end",
+    "out": "044f100f75565928c0134e8dc9b34bf55b962cf9ecf1ac87df94f54033ac074e",
+    "owner": "A",
+    "res": "5ed98ea21a1a1bf12077444a86de73b76872b8a078f06641147a3c2dc307633e",
+    "reused": 160,
+    "stash_pending": false,
+    "state": "44d4d8ff608b22f4d8c17a5252e6f363fd66f0b3d7b2b8271570105e2ba60a89",
+    "step": "the chat back from the park",
+    "store": "445334c50f7d1701c488ca8c42d3cf0d1ae1cfdf4f4cf1dd67e8bdee80b16fa8",
+    "taint": 101,
+    "valid": 165
+   },
+   {
+    "anchors": [
+     80,
+     96,
+     144
+    ],
+    "calls": [],
+    "end_at": null,
+    "forwarded": 4,
+    "kind": "prefix",
+    "out": "41a0fa6a990842539ddb2ec3a74425231fec8e1e00f5bed48374eb376ef07cd7",
+    "owner": "A",
+    "res": "a4b2ff14636cf90a90c7104d0dd25b49cfdc066cfcb0e9dd0113daeb5fbf0ced",
+    "reused": 16,
+    "stash_pending": true,
+    "state": "175726406c6311d77d6986c04f22418f3f3ec9d83cd7a4bd5ec474d0d579c40c",
+    "step": "a prefix hit by a guest",
+    "store": "63921e6560e46a55f5ce86da3edf63ebcc81cdf972f43622ef25a156a20720d1",
+    "taint": 101,
+    "valid": 165
+   },
+   {
+    "anchors": [],
+    "calls": [],
+    "end_at": 91,
+    "forwarded": 4,
+    "kind": "session",
+    "out": "d5b24ca1b9000b2bc8cfe6de9b6989093d19c2d4f666e1413eb2aedc33a11c02",
+    "owner": "g",
+    "res": "cdd85fa8c58cc27e8a1065def84d5028047dceda5e1fa490827efc4e634fd324",
+    "reused": 86,
+    "stash_pending": false,
+    "state": "12c72b4a0f093a0fe5ce4397de31d723b44db37698ef4c1743535595f809343d",
+    "step": "a session hit",
+    "store": "d16b611b5630777f20f1eac07988c6b6b435d3d286ff18e6f94761db10f460df",
+    "taint": 0,
+    "valid": 91
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     53
+    ],
+    "calls": [],
+    "end_at": 59,
+    "forwarded": 57,
+    "kind": null,
+    "out": "03910546a1e949de0f4b5bfcb7a2e7273de15cd7fa203717f4f6bf1bd1824c66",
+    "owner": "m",
+    "res": "eca25dc71753424706413ff93b521bd16a44aefb3eb4293be00f92ecc834fb6d",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "e616945c64ceb6e67cfeb5414561245b8a2dd29d61ca7595e17af73b273608e8",
+    "step": "a prompt with a grid mark",
+    "store": "f884a6e542dc1f4b273b3f1f1e943f934266137d666a93f7ae13b97c57a2e694",
+    "taint": 57,
+    "valid": 59
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     53
+    ],
+    "calls": [],
+    "end_at": 61,
+    "forwarded": 6,
+    "kind": "resident",
+    "out": "c11be40f6af425f4afd19d1cc1d55d5ab82c9d051938c7b06c71385b46c7907b",
+    "owner": "n",
+    "res": "d180bbf32f14d9353dbcc54a2566bd84596141bf1df8f3811ebdf8c23f15c5d5",
+    "reused": 53,
+    "stash_pending": false,
+    "state": "274db814e237fc700779a5bccbb60c9c51b560b758197afb12f7f66106360635",
+    "step": "the same head again",
+    "store": "061f28efcb1efaef510e247223ce49a2d70691b9327fd2d420d3bb7678e7f0b3",
+    "taint": 59,
+    "valid": 61
+   },
+   {
+    "anchors": [
+     16
+    ],
+    "calls": [],
+    "end_at": 20,
+    "forwarded": 19,
+    "kind": null,
+    "out": "4fead4ba71d617f838b3773901affdc97ff543d829dbb09303444e65f535d74b",
+    "owner": "w",
+    "res": "9bccb9fb7c00d5b54aede619157e054b8a43642d3ba531f23dc2d3fc74d4ecff",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "6dfbbd951ec07894489268eae25d099cac292d92ae4879b030a3f5131aeb313c",
+    "step": "a worker's request (stay)",
+    "store": "c620dfc91ef84825049c58130f7ad7841a82e2520680ffd58511159d8ba38a11",
+    "taint": 19,
+    "valid": 20
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64,
+     80
+    ],
+    "calls": [],
+    "end_at": 97,
+    "forwarded": 82,
+    "kind": null,
+    "out": "26542a55b60bc9c71b51d1f6304c13c292cacb2532ee640f807d615f05744cb9",
+    "owner": "X",
+    "res": "9c8f1cef053cfed52b5378ad541a3cf52099c9f4d7b605fc060582ab494c636c",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "5caa98010a1b157277bbf3c6aaa4645cde4049e8c3de4f305c3b331e74f29490",
+    "step": "side: a conversation",
+    "store": null,
+    "taint": 82,
+    "valid": 97
+   },
+   {
+    "anchors": [],
+    "calls": [],
+    "end_at": 82,
+    "forwarded": 35,
+    "keep_end": "kept",
+    "kind": null,
+    "out": "8abeb79ed523fca46229029621fa52498b575b6891ddf08ace6df1d5e511b179",
+    "owner": "Y",
+    "promoted": true,
+    "res": "21b9cf9d103b9db5e60f1859ad0e08a5963b470c8605b1fff183dc4f76c560ef",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "24668fb737a60015b42f06f2d133887f6e7f7b8890f147013163660bcf9628e9",
+    "step": "side: a chat's guest promoted",
+    "store": null,
+    "taint": 0,
+    "valid": 82
+   },
+   {
+    "anchors": [],
+    "calls": [],
+    "end_at": 87,
+    "forwarded": 4,
+    "kind": "end",
+    "out": "584f8718fafcba20138567747b13d8510605cfc88a48cab144bc74104fc7cd85",
+    "owner": "Y",
+    "res": "181b5a351e00b38ef82a56ea7ba58c5e68a8ca0b6b9a781511bfa24efd36a207",
+    "reused": 82,
+    "stash_pending": false,
+    "state": "5c5b51f0897788b922f52a5e9db462eb1fe3636a69d0694a2eefe8c85e1b1400",
+    "step": "side: the promoted chat's next turn",
+    "store": null,
+    "taint": 0,
+    "valid": 87
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64,
+     80,
+     96
+    ],
+    "calls": [
+     [
+      "keeper",
+      87,
+      false
+     ]
+    ],
+    "end_at": 102,
+    "forwarded": 101,
+    "kind": null,
+    "out": "8379b036d680dbdc132adb3f6b4125d45aca3bbadabcfb164cfcb4a332d4b874",
+    "owner": "X",
+    "res": "09e81494da1efb9e8c7f6076c8faf72cef86e968808acac3872e171d79da9a41",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "877c182b3b3c5b24701ac609a1cf2a2ca4440ed4e3f8d2b27beb58b579b95cd7",
+    "step": "side: the old conversation's next turn",
+    "store": null,
+    "taint": 101,
+    "valid": 102
+   },
+   {
+    "anchors": [
+     16
+    ],
+    "calls": [
+     [
+      "keeper",
+      87,
+      false
+     ],
+     [
+      "keeper",
+      102,
+      true
+     ]
+    ],
+    "end_at": 18,
+    "forwarded": 17,
+    "kind": null,
+    "out": "b72daa16366b402a762575a6bb81fbd4fff207d2ff9c6f5777cd18707f36e4df",
+    "owner": "w",
+    "res": "e3a18b880bbfc35e1e11577ce604714a8cfbfd0cc7e0da24b064e729bb010d24",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "4d1ad736f457d6f34582c93cdc62916e08c8b86cbc6727ca6b9f989dbe375443",
+    "step": "side: a worker's request (stay), the keeper",
+    "store": null,
+    "taint": 17,
+    "valid": 18
+   },
+   {
+    "anchors": [
+     16,
+     32,
+     48,
+     64
+    ],
+    "calls": [],
+    "end_at": 83,
+    "forwarded": 80,
+    "kind": null,
+    "out": "4358d1f21d0901f826d978960fc856818f1f811ce92049c1c622f1cdb3a6fae2",
+    "owner": "S",
+    "res": "ce605452424a6345ce7fc6b0e74fb768bccab3853865141fe6426af26e81be47",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "ce44105dc9f24d3b8ef2164d5322a1d75c1049d16e310c537d55cb10143607cc",
+    "step": "spill: a long conversation",
+    "store": null,
+    "taint": 80,
+    "valid": 83
+   },
+   {
+    "anchors": [
+     16,
+     32
+    ],
+    "calls": [
+     [
+      "spill",
+      "evict",
+      83
+     ]
+    ],
+    "end_at": 50,
+    "forwarded": 48,
+    "kind": null,
+    "out": "dffc4e85e045f1e93b4a07f825edf46c846636d1bbd57c0c3154815d952a8fe4",
+    "owner": "T",
+    "res": "78a002aa36333b084eef9cc961e2177fda66903fcfa998c5f3ba87a9ad9b02be",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "b7a942037833e02f287278c8017fdf4552db3804b2840c93f72c8b96e7867979",
+    "step": "spill: another one sends it to the spill",
+    "store": null,
+    "taint": 48,
+    "valid": 50
+   },
+   {
+    "anchors": [
+     16
+    ],
+    "calls": [
+     [
+      "spill",
+      "evict",
+      83
+     ]
+    ],
+    "end_at": 33,
+    "forwarded": 32,
+    "kind": null,
+    "out": "697f13e47701f91f49190f62d2604c0208d086fc1d64e9a3ef9bf982c0c8b02c",
+    "owner": "U",
+    "res": "d176d96108269511425864651a02ba52c844f31fc27ac42a9d7249253726cd10",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "77af504e93227ddd48e03c4d8d122ed073a460f890fb59dd755e4b5961c05bc9",
+    "step": "spill: a short one is cut, not spilled",
+    "store": null,
+    "taint": 32,
+    "valid": 33
+   }
+  ],
+  "flashnext": [
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32,
+     40
+    ],
+    "calls": [],
+    "end_at": 46,
+    "forwarded": 43,
+    "kind": null,
+    "out": "8bd73057eec84921df644354c70b15a95f63b0971e00454d1e151c6ee643213a",
+    "owner": "g",
+    "res": "db7a0d4874cae6f78ce521a0e2027e5cffad4ac4cb43c6f670cd833673a87735",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "14a15fa7184177463b46c2cfc5f99a4082e58547acd3162d406ddab098ab9df7",
+    "step": "first conversation, cold",
+    "store": "f860fb25e2850b868caa1b9a11c14d6ae0d3843a13b801bb5a80412738a35f2b",
+    "taint": 43,
+    "valid": 46
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32,
+     40,
+     48
+    ],
+    "calls": [],
+    "end_at": 68,
+    "forwarded": 53,
+    "kind": null,
+    "out": "a2edb51a12892d8b0007cab7fe6de68739a0751f41477c44d1b6966a817575a8",
+    "owner": "A",
+    "res": "6fd2710bee21a69ded9912f0421b156b03ae48a98cc41d3d083bd85b18519039",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "e537e8de2e124280def1119e179a2c7777470941c6b8b9e257a4f5e7157ade1b",
+    "step": "chat turn 1 replaces it",
+    "store": "733877f818e0e6241ba0231ff841630d9bfb0fc1ed0cd397d282c389b4f331cb",
+    "taint": 53,
+    "valid": 68
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32,
+     40,
+     48,
+     72
+    ],
+    "calls": [],
+    "end_at": 79,
+    "forwarded": 6,
+    "kind": "end",
+    "out": "33a86aab552ded487542481ecc8fc5e967570f9d728fc526b205e641237b13a2",
+    "owner": "A",
+    "res": "3cf931ff213e4c6d5b8c2638bb59bfa5464bea2eef7b37dfaa7fa8ccf0a47140",
+    "reused": 68,
+    "stash_pending": false,
+    "state": "3b1bfcec664bd85f8997423b9a17d0153ffee3cddbfb93335cfd6996b956ff9f",
+    "step": "chat turn 2 at its end",
+    "store": "6b5d0c1b787363cbce4562bb59f13bb646b81808f700d515eeea7c8e0a6a0d35",
+    "taint": 53,
+    "valid": 79
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32,
+     40,
+     48,
+     72,
+     80
+    ],
+    "calls": [],
+    "end_at": 86,
+    "forwarded": 9,
+    "kind": "pend",
+    "out": "09161d1d3f90c9f78f186ee5d37b21179a0617403faee008a50b7ef8a7242b9b",
+    "owner": "A",
+    "res": "aab50407ef578476a0bfd09e12ec984693777d9c18d1e9803befdd50e501dca6",
+    "reused": 74,
+    "stash_pending": false,
+    "state": "9ad744b5410fca6786721cfeb326bec7babea9796e97e3c9b311c317afb42c59",
+    "step": "chat turn 3 at its prompt end",
+    "store": "96a494d7d6e9dd71a8999d4cee02c38b105936054f620356ca93dfb83fabe9a9",
+    "taint": 53,
+    "valid": 86
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32,
+     40,
+     48,
+     72,
+     80
+    ],
+    "calls": [],
+    "end_at": 86,
+    "forwarded": 10,
+    "kind": null,
+    "out": "6328bab5c351c553c6395f6444da1bdd407b9ae11f55733a80691b04ede7ba76",
+    "owner": "A",
+    "res": "8d553dadcf1a4de0aef395ae57a8aebfb124a7ae7ecf8fe65082b78ed27a5bcd",
+    "reused": 0,
+    "stash_pending": true,
+    "state": "80b9dfcef8735aa42004efd58dee2337175406ffd5628474e5e328c9c082e310",
+    "step": "a short guest (the server's own question)",
+    "store": "24b852546326998e660a22b633272a5d5606fb66dd90b2ef22e7e9ad5166f260",
+    "taint": 53,
+    "valid": 86
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32,
+     40,
+     48,
+     72,
+     80,
+     88
+    ],
+    "calls": [],
+    "end_at": 92,
+    "forwarded": 4,
+    "kind": "end",
+    "out": "e324e8b58f377b00d08c2398f60eca95781a230a45a259e5913effe784ff4313",
+    "owner": "A",
+    "res": "05ac1ea5eb269a249fb050346bdc2a067060bf5842c36e45f7d81c5254967e51",
+    "reused": 86,
+    "stash_pending": false,
+    "state": "24ce03a274d8bdf50ef59d36310fb2f279e307cedee09641e32084159b24588d",
+    "step": "chat turn 4 after the guest",
+    "store": "e9e9c303740b2e241a32c1aabcb7e96b79b5c33233a1d4950e93b3b3089a2233",
+    "taint": 53,
+    "valid": 92
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32
+    ],
+    "calls": [],
+    "end_at": 35,
+    "forwarded": 33,
+    "kind": null,
+    "out": "027dea5392181e568a3c3b947fee82269505f3a469025d107bad5144f8eec2bb",
+    "owner": "B",
+    "res": "9357ef4fba7e0562f2bb1b0a76b3cd2ad16e8fc3acadb199d6c7425f7757af8d",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "b4e5753e00975ec3ddd69766ecb577761b90c4c738464047d3cb48cdd5bb7a57",
+    "step": "another session, too long for a guest",
+    "store": "e1eff9c57bc232ccbe2853ed713e7a79c28a4635afa1a2eba4acad9c664775f8",
+    "taint": 33,
+    "valid": 35
+   },
+   {
+    "anchors": [
+     72,
+     80,
+     88
+    ],
+    "calls": [],
+    "end_at": 97,
+    "forwarded": 4,
+    "kind": "end",
+    "out": "1ce10cfba20c367b800b42b49a6db358925e72ee0b127570ceaef6ea7f0ca681",
+    "owner": "A",
+    "res": "18e85ebfa7d77f9ac99143d430c9bf881437405caf0de062f80ccf733406a960",
+    "reused": 92,
+    "stash_pending": false,
+    "state": "4dfc346a9ddc84c07c987c3b5a6960e39a8da4a94fe212bc24dea6b15b267f38",
+    "step": "the chat back from the park",
+    "store": "922fc9be74e22174998d8b9149f3bf44c1b98d21d01d9b60a3a632906cca2e97",
+    "taint": 53,
+    "valid": 97
+   },
+   {
+    "anchors": [
+     72,
+     80,
+     88
+    ],
+    "calls": [],
+    "end_at": null,
+    "forwarded": 4,
+    "kind": "prefix",
+    "out": "a875aac4b50995ba7cf3791c0662847db564d6f9a829e1b0cdb87651681914d0",
+    "owner": "A",
+    "res": "f6146ddb57de9023e390fb78b6ca1af1c87099955a090569d424123220f05802",
+    "reused": 8,
+    "stash_pending": true,
+    "state": "4880c0db34af3797a5161e6462d2a48891ea1d028427307a4a40a4ed365edbcd",
+    "step": "a prefix hit by a guest",
+    "store": "b2c1a791c94fc89da89b9e711bcd32620898acf77019a7f86a0418a867b4c3ff",
+    "taint": 53,
+    "valid": 97
+   },
+   {
+    "anchors": [
+     48
+    ],
+    "calls": [],
+    "end_at": 51,
+    "forwarded": 4,
+    "kind": "session",
+    "out": "65a9d636ea8de22e468e1455c36956cebe0f9d982388e3e9f20f82a6e1c75bcf",
+    "owner": "g",
+    "res": "3a464b60faabbc0fca9d84b50e526a265d1986b97732ad63bcee03b52fcbd386",
+    "reused": 46,
+    "stash_pending": false,
+    "state": "f3e36977eb8c3c0d5a22365ac3108dbcdc98db943814c72e3cb3448326fe85e5",
+    "step": "a session hit",
+    "store": "e910f24cf2719034019651cd710956aef1bedc8321f35348ad1f6c8b12c672b8",
+    "taint": 0,
+    "valid": 51
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     29
+    ],
+    "calls": [],
+    "end_at": 35,
+    "forwarded": 33,
+    "kind": null,
+    "out": "c3c5b47be53167101f33d68aa95849b92a1f08389ac752c8f3763888442c64dc",
+    "owner": "m",
+    "res": "e2699e244f2d86effc093c8a0554f6e72799cc26a4d7a580163f3ce5821f3e98",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "93807b8c3f251f6cb8c86ea4468b5b7b0edbd238b222501c40b080415ecd6a5b",
+    "step": "a prompt with a grid mark",
+    "store": "c5199e4bfe7ae96d617df0c14098275144b86072a451466974fa8528e875b464",
+    "taint": 33,
+    "valid": 35
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     29
+    ],
+    "calls": [],
+    "end_at": 37,
+    "forwarded": 6,
+    "kind": "resident",
+    "out": "810886439af22ae5f3a435ae0f122b3c80d11a77e19cf69c41b53e3aa2d71989",
+    "owner": "n",
+    "res": "41933ed710a5b0eec5de84f120c71dbe35d22a7e005b448c17b8ace808a5f815",
+    "reused": 29,
+    "stash_pending": false,
+    "state": "7722749a52cddf8fab2c2860259e4f6c6af565adbbc41c82c11ba5d44de015b5",
+    "step": "the same head again",
+    "store": "4db614aaf6ff98f8a432ff2010c47a6295a3c8dea945eef6bb89fbd3ae9e9c1a",
+    "taint": 35,
+    "valid": 37
+   },
+   {
+    "anchors": [
+     8
+    ],
+    "calls": [],
+    "end_at": 12,
+    "forwarded": 11,
+    "kind": null,
+    "out": "12b9555eb1b8cfd128e40ae7a760c039af4d4b569f2546b50dba28f70cc58a9a",
+    "owner": "w",
+    "res": "d5b8d251e95e1e9939bf7029a9c63ae10505176e33b4b2f5631284b7098d7345",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "8f0a1ab3df66c66cde64d55be5bc5aaf73a1d0529be1d9fbd0a3ae54c2dfbcea",
+    "step": "a worker's request (stay)",
+    "store": "f3d7293b725423794ec426f9be511f5c29cbf7d43a0d38f3d7ea9e50a4d8ae38",
+    "taint": 11,
+    "valid": 12
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32,
+     40
+    ],
+    "calls": [],
+    "end_at": 49,
+    "forwarded": 42,
+    "kind": null,
+    "out": "edd385972d6db559028ae96089fde88d62bd2d646bf329cee0193d2c2be36df8",
+    "owner": "X",
+    "res": "8029817c62c1a794c80e0375ddd1322b2dddfd1089ab0783d0954e7a49020a3a",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "3b48c1bab8d4c0577cf347b6af261cefee9078421769daa18ce76fc0e9c31614",
+    "step": "side: a conversation",
+    "store": null,
+    "taint": 42,
+    "valid": 49
+   },
+   {
+    "anchors": [],
+    "calls": [],
+    "end_at": 42,
+    "forwarded": 19,
+    "keep_end": "kept",
+    "kind": null,
+    "out": "f2db24dfacf96e61821426041ed3fadee896aba1062628d5d86a6215bbb5339d",
+    "owner": "Y",
+    "promoted": true,
+    "res": "fffb38eac08778bd14efb23be354ef835c6d04c2a85bec810a3e7794f193fdae",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "ea3d605e17063eeb8bc3c9fdf68b61d2fd0a7473a117168cdccc24b5a3201774",
+    "step": "side: a chat's guest promoted",
+    "store": null,
+    "taint": 0,
+    "valid": 42
+   },
+   {
+    "anchors": [],
+    "calls": [],
+    "end_at": 47,
+    "forwarded": 4,
+    "kind": "end",
+    "out": "4f80de162d64d5525aae5927a62b721f8484842bc8758f42a28797355a4a164d",
+    "owner": "Y",
+    "res": "b1982263a87f32382d00423412094503a938ec4db6b240dbe9ded18b6ee139b1",
+    "reused": 42,
+    "stash_pending": false,
+    "state": "8a25fdc1d9a606c2c6547be2379e5585fa02f02e232746da993b5125b52e54e6",
+    "step": "side: the promoted chat's next turn",
+    "store": null,
+    "taint": 0,
+    "valid": 47
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32,
+     40,
+     48
+    ],
+    "calls": [
+     [
+      "keeper",
+      47,
+      false
+     ]
+    ],
+    "end_at": 54,
+    "forwarded": 53,
+    "kind": null,
+    "out": "aa8dddc11174bcfc0af9dd927c8957bc62ef83bce86c0af6b383acf5aa26413c",
+    "owner": "X",
+    "res": "a4b61ccfd508f7f6e95c4a4aa6c7eeb1a6176b70039315325d455e6169465241",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "0a8e4ce9ff13358f6041acd0f91dcc1bf50cd1ad52b1f2b22d0e2c993e5d7008",
+    "step": "side: the old conversation's next turn",
+    "store": null,
+    "taint": 53,
+    "valid": 54
+   },
+   {
+    "anchors": [
+     8
+    ],
+    "calls": [
+     [
+      "keeper",
+      47,
+      false
+     ],
+     [
+      "keeper",
+      54,
+      true
+     ]
+    ],
+    "end_at": 10,
+    "forwarded": 9,
+    "kind": null,
+    "out": "55c37cb94d3a8a784bffa2b4e08f53fe74913919f47262ceddcb7b8e32804493",
+    "owner": "w",
+    "res": "1226a1ecf28628daca24f11766aea01fa16788ff8418d64d077655a71abf8b23",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "5f6a10f046445ed36e0a2c09620cb53202bf1fa415f58e6701970612506eab52",
+    "step": "side: a worker's request (stay), the keeper",
+    "store": null,
+    "taint": 9,
+    "valid": 10
+   },
+   {
+    "anchors": [
+     8,
+     16,
+     24,
+     32
+    ],
+    "calls": [],
+    "end_at": 43,
+    "forwarded": 40,
+    "kind": null,
+    "out": "5765fcd76420c55eede6f4274fe0e707da69407cf65fb4a52d414b50fb8ff301",
+    "owner": "S",
+    "res": "f9f1c69058fc0f4a49bbc500d81ccbb0e35025ee7916d87debbcdb03502a05b4",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "58d7af93720da234d5607a4dd86cd9985946781bf81b40b238720f753955ba41",
+    "step": "spill: a long conversation",
+    "store": null,
+    "taint": 40,
+    "valid": 43
+   },
+   {
+    "anchors": [
+     8,
+     16
+    ],
+    "calls": [
+     [
+      "spill",
+      "evict",
+      43
+     ]
+    ],
+    "end_at": 26,
+    "forwarded": 24,
+    "kind": null,
+    "out": "3fa81553d999cf5d607eee2508e9366edbfd59ba2619bbb60ec53f5849ad4e0e",
+    "owner": "T",
+    "res": "81065bbb1bcae484887636f4372780659c13e853b508010e8842c04e5c45c7cf",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "551526c30f878143743c34ff00fe46c49048275ee7210a0a00f68de2b7c3786f",
+    "step": "spill: another one sends it to the spill",
+    "store": null,
+    "taint": 24,
+    "valid": 26
+   },
+   {
+    "anchors": [
+     8
+    ],
+    "calls": [
+     [
+      "spill",
+      "evict",
+      43
+     ]
+    ],
+    "end_at": 17,
+    "forwarded": 16,
+    "kind": null,
+    "out": "8c2fbc94499477a361eab0821a0b891d2c90a5257beebc363ba72153c41357ac",
+    "owner": "U",
+    "res": "2b203ff01eeae802ce4dcf7d8275bacfd14b51eb142f6f3630a621e9d172938c",
+    "reused": 0,
+    "stash_pending": false,
+    "state": "78475c823da3bce9023db2809f840503757b3cefcb93e8fc0a69a1cb11974110",
+    "step": "spill: a short one is cut, not spilled",
+    "store": null,
+    "taint": 16,
+    "valid": 17
+   }
+  ]
+ }
+}
