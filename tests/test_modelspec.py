@@ -125,22 +125,31 @@ def test_thinking_off_renders_by_the_spec():
     return repr(own_off[-40:])
 
 
-def _one(spec, extra: dict, default="xhigh", think_budget=0, limit=32768):
+def _ask(spec, extra: dict, default="xhigh", think_budget=0, limit=32768):
     """One request through the handler with the fake engine and `spec` in force (tests/test_effort_table.py's
-    harness): the template's `reasoning_effort` argument, the budget the loop got, the log."""
+    harness, which puts the server back after it): the template call's arguments, the budget the loop got, the log.
+    `extra` goes over the body last (`stream`, `max_tokens`)."""
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
     import test_effort_table as table
-    seen = table._start(spec, default)
-    app.STATE["think_budget"] = think_budget
-    tok = app.STATE["tok"]
-    body = dict(extra, messages=[{"role": "user", "content": "Say hi."}], max_tokens=limit, stream=False)
-    out = io.StringIO()
-    req = table._Req(body)
-    with contextlib.redirect_stdout(out):
-        req.do_POST()
-    kw = tok.calls[0]["kwargs"] if tok.calls else {}
-    return kw.get("reasoning_effort"), (seen[0]["budget"] if seen else None), out.getvalue()
+    with table._served(spec, default) as seen:
+        app.STATE["think_budget"] = think_budget
+        tok = app.STATE["tok"]
+        body = dict({"max_tokens": limit, "stream": False}, messages=[{"role": "user", "content": "Say hi."}], **extra)
+        out = io.StringIO()
+        req = table._Req(body)
+        with contextlib.redirect_stdout(out):
+            req.do_POST()
+        _ask.closer = len(tok(app.ThinkBudget.PHRASE, add_special_tokens=False).input_ids)
+        kw = tok.calls[0]["kwargs"] if tok.calls else {}
+    return kw, (seen[0]["budget"] if seen else None), out.getvalue()
+
+
+def _one(spec, extra: dict, default="xhigh", think_budget=0, limit=32768):
+    """`_ask`'s template word only."""
+    kw, budget, log = _ask(spec, extra, default=default, think_budget=think_budget, limit=limit)
+    _one.closer = _ask.closer
+    return kw.get("reasoning_effort"), budget, log
 
 
 def test_a_family_default_renders_its_word_and_caps_what_nobody_decided():
@@ -148,14 +157,13 @@ def test_a_family_default_renders_its_word_and_caps_what_nobody_decided():
     none, in place of --reasoning-effort's, and caps the request at the level's cap with the answer reserve. An
     explicit word, a number, thinking off and --think-budget each leave the default cap out (the plan that decides
     the effort: tests/test_client_budgets.py)."""
-    from engine.spec import ThinkBudget
     words = (("low", "w-low"), ("medium", "w-medium"), ("high", "w-high"), ("xhigh", "w-xhigh"))
     spec = ServeSpec(reasoning=ReasoningSpec(effort=EffortSpec(words=words, default="medium")))
     th = app.thinking_mod
     word, budget, log = _one(spec, {})
     assert word == "w-medium" and budget == 8192, (word, budget)
     assert "server default medium: cap 8192" in log and "server default: answer reserve" in log, log
-    closer = len(app.STATE["tok"](ThinkBudget.PHRASE, add_special_tokens=False).input_ids)
+    closer = _one.closer
     word, budget, log = _one(spec, {}, limit=4000)
     assert budget == th.with_reserve(8192, 4000, th.AUTO, closer)[0] < 8192, budget
     # an explicit word: its own word and its own cap (xhigh: none, then the client's reserve)
@@ -177,6 +185,74 @@ def test_a_family_default_renders_its_word_and_caps_what_nobody_decided():
     # the default spec: no default of its own, the server's word, no cap
     word, budget, log = _one(None, {})
     assert word == "xhigh" and not budget and "server default" not in log, (word, budget)
+
+
+HY4 = REGISTRY["hy_v4_flash"].spec if "hy_v4_flash" in REGISTRY else None
+
+
+def test_hy4_a_clients_xhigh_or_max_reaches_max():
+    """SRV-899 on Hy4-flash's own spec: a client's own xhigh or max, top level or in chat_template_kwargs, gives the
+    template's `max` with no cap but the client's answer reserve; a client's high gives its normal mode `high`."""
+    th = app.thinking_mod
+    for extra in ({"reasoning_effort": "xhigh"}, {"reasoning_effort": "max"},
+                  {"chat_template_kwargs": {"reasoning_effort": "xhigh"}},
+                  {"chat_template_kwargs": {"reasoning_effort": "max"}}):
+        kw, budget, log = _ask(HY4, extra)
+        assert kw.get("reasoning_effort") == "max", (extra, kw)
+        assert budget == th.with_reserve(0, 32768, th.AUTO, _ask.closer)[0], (extra, budget)
+        assert "server default" not in log and "client budget 0" in log, log
+    kw, budget, _ = _ask(HY4, {"reasoning_effort": "high"})
+    assert kw.get("reasoning_effort") == "high" and budget == 16384, (kw, budget)
+    return "xhigh and max, top level and in kwargs: max"
+
+
+def test_hy4_server_default_off_turns_thinking_off():
+    """SRV-899: `--reasoning-effort off` on Hy4-flash: a request that says nothing is thinking off (the tokenizer
+    renders `no_think`), with no cap and no default line; one that asks for thinking keeps it."""
+    kw, budget, log = _ask(HY4, {}, default="off")
+    assert kw.get("enable_thinking") is False and not budget and "server default" not in log, (kw, budget)
+    kw, budget, log = _ask(HY4, {"reasoning_effort": "low"}, default="off")
+    assert kw.get("enable_thinking") is True and kw.get("reasoning_effort") == "high" and budget == 1024, (kw, budget)
+    return "off: no_think; a request's own low: high with 1,024"
+
+
+def test_hy4_default_cap_streamed():
+    """SRV-899 on Hy4-flash's spec: with no effort asked and nothing else deciding, a streamed request gets the
+    family's default (the mode `high`, the medium cap, the reserve), as a non-streamed one does."""
+    th = app.thinking_mod
+    for stream in (False, True):
+        for limit in (32768, 2048):
+            kw, budget, log = _ask(HY4, {"stream": stream}, limit=limit)
+            assert kw.get("reasoning_effort") == "high", (stream, kw)
+            assert budget == th.with_reserve(8192, limit, th.AUTO, _ask.closer)[0], (stream, limit, budget)
+            assert "server default medium: cap 8192" in log and "server default: answer reserve" in log, log
+    return "streamed and not, 32,768 and 2,048: the medium cap with the reserve"
+
+
+def test_the_start_note_names_a_word_a_family_does_not_render():
+    """SRV-899: a family with its own default says once at start that --reasoning-effort's word is not used (xhigh,
+    low), and says nothing for its own level (medium), for off (no word left) and unset; a family without a default
+    says nothing."""
+    saved = dict(app.STATE)
+    try:
+        for spec, word, says in ((HY4, "xhigh", True), (HY4, "low", True), (HY4, "medium", False),
+                                 (HY4, "off", False), (HY4, None, False), (None, "xhigh", False),
+                                 (REGISTRY["lfm2_moe"].spec, "low", False), (REGISTRY["flint"].spec, "xhigh", False)):
+            a = app.parser().parse_args(["--fake-engine"] + (["--reasoning-effort", word] if word else []))
+            app._thinking_default(a)
+            app.STATE.clear()
+            app.STATE["spec"] = spec
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                app._effort_default_note(a)
+            text = out.getvalue()
+            assert ("is not used" in text) is says, (word, spec is HY4, text)
+            if says:
+                assert f"--reasoning-effort {word} is not used: this model's default is medium (cap 8192)" in text, text
+    finally:
+        app.STATE.clear()
+        app.STATE.update(saved)
+    return "xhigh, low: the note; medium, off, unset, other families: none"
 
 
 def test_thinking_off_adds_the_spec_line_before_the_conversation():

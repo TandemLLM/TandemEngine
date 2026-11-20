@@ -749,11 +749,12 @@ PLAN_DEFAULTS = (None, "xhigh", "off")
 PLAN_LIMIT = 160
 
 
-def _table_handler(spec, body: dict, cond, default):
-    """One request under `cond`'s plan with `spec` in force and `default` as the server's effort (off: thinking
-    off for a request that says nothing): the template calls, the loop's calls, the log, the status line."""
+def _table_handler(spec, body: dict, cond, default, max_len: int = 256):
+    """One request under `cond`'s plan (None: no conductor) with `spec` in force and `default` as the server's effort
+    (off: thinking off for a request that says nothing): the template calls, the loop's calls, the log, the status
+    line."""
     import test_effort_table as table
-    serve(None)
+    serve(None, max_len=max_len)
     tok = table.Recorder(frame.MonTok())
     app.STATE.update(tok=tok, think_budget=0, spec=spec, conductor=cond, monitor=frame.monitor("on"),
                      reasoning_effort=None if default == "off" else default,
@@ -815,6 +816,51 @@ def test_a_family_default_cap_yields_to_a_plan():
     _, loop, log, _ = _table_handler(spec, dict(body), _Conductor(None, decides=False), None)
     assert "server default medium: cap 8192" in log, log
     assert loop[0]["budget"] == thinking.with_reserve(8192, 160, thinking.AUTO, P)[0], loop[0]["budget"]
+
+
+def _hy4():
+    from engine.models import REGISTRY
+    return REGISTRY["hy_v4_flash"].spec
+
+
+def test_hy4_a_category_xhigh_with_server_xhigh_is_the_normal_mode_with_no_cap():
+    """The owner's fault (2026-11-20, 25,806 thinking tokens in 853.8 s): a plan that decides the effort at xhigh, the
+    server's default word xhigh, no effort in the request. On Hy4-flash's spec that is the template's normal mode
+    `high` with no cap below the monitor's backstop, never `max`."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False}
+    calls, loop, log, head = _table_handler(_hy4(), dict(body), _Conductor(None, decides=True), "xhigh")
+    assert head.startswith("HTTP/1.1 200"), head
+    words = [c["kwargs"].get("reasoning_effort") for c in calls]
+    assert words and all(w == "high" for w in words), words
+    assert loop[0]["budget"] == 0 and getattr(loop[0]["sup"], "think_budget", None) in (None, 0), loop[0]["budget"]
+    assert "server default" not in log and "client budget" not in log, log
+
+
+def test_hy4_the_default_cap_under_a_plan_that_does_not_decide_at_2048():
+    """SRV-899: under a plan that does not decide the effort, Hy4-flash's default (medium) caps a request with no
+    effort; at an output limit of 2,048 the answer reserve lowers the cap to the limit less the reserve and phrase."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 2048, "stream": False}
+    _, loop, log, head = _table_handler(_hy4(), dict(body), _Conductor(None, decides=False), None, max_len=4096)
+    assert head.startswith("HTTP/1.1 200"), head
+    want = thinking.with_reserve(8192, 2048, thinking.AUTO, P)[0]
+    assert loop[0]["budget"] == want, (loop[0]["budget"], want)
+    assert "server default medium: cap 8192" in log and "server default: answer reserve 512 of 2048" in log, log
+
+
+def test_hy4_the_default_cap_with_a_json_answer():
+    """SRV-899: a JSON answer (`response_format`) with no effort, on Hy4-flash's spec and no conductor: the family's
+    default cap stands and the JSON answer's own reserve applies to it, once (not the default's second reserve)."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False,
+            "response_format": {"type": "json_object"}}
+    _, loop, log, head = _table_handler(_hy4(), dict(body), None, None)
+    assert head.startswith("HTTP/1.1 200"), (head, log[-400:])
+    assert "server default medium: cap 8192" in log and "json answer: reserve" in log, log
+    assert "server default: answer reserve" not in log, log
+    # the reserve lowered the cap, so with the monitor on it closes hidden (the monitor holds the cap) as a JSON
+    # answer's reserve does on every model
+    cap = thinking.with_reserve(8192, 160, thinking.AUTO, P)[0]
+    got = loop[0]["budget"] or getattr(loop[0]["sup"], "think_budget", None)
+    assert got == cap, (loop[0]["budget"], getattr(loop[0]["sup"], "think_budget", None), cap)
 
 
 def test_the_table_under_a_plan():

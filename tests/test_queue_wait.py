@@ -297,6 +297,11 @@ def test_5_the_waiting_line_names_tandemllm_s_own_work():
         app.HOLDER["who"] = client
         app.STATE["spec"] = ServeSpec(side_slots=False)
         assert app._wait_reason(me) == ("another request is thinking", 1)
+        # a fixed string while the holder thinks: the waiting line (`queued`) sends a line when the reason or the place
+        # changes, so a thinking holder adds no line however long it thinks; it changes once, when the answer starts
+        seen = {app._wait_reason(me) for _ in range(5)}
+        assert seen == {("another request is thinking", 1)}, seen
+        assert not any(ch.isdigit() for ch in next(iter(seen))[0])
         state["now"] = "writing"
         assert app._wait_reason(me) == ("another request is running", 1)
         state["now"] = "thinking"
