@@ -4,6 +4,14 @@ Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; 
 
 ## Unreleased
 
+### Apple silicon
+
+- LFM2.5-24B-A2B runs on a Mac's GPU through MLX, in BF16, one request at a time, with the lookup drafter and StairCut (`engine/models/lfm2_moe/mlx_board.py`, `mlx_serving.py`, `tools/gpu/apple.py`). On an M5 Max: 94 tok/s plain through the server, 315 on an edit ask and 320 on a copy ask with the lookup (medians of 3 runs), every lookup text equal to the plain one. The prefix, session and disk caches, the KV pool, side slots and joint passes are off there. Numbers and checks: `docs/lfm2.5-24b-a2b.md`, "Apple silicon".
+- A verify row has the decode step's bits on the Mac too. MLX's own matmul and attention round by the number of rows, so the board runs its own Metal kernels, which compute every row in an order fixed by the weight's shape (`engine/models/lfm2_moe/csrc/mlx_kernels/`). The self-check at load compares 101 rows byte for byte (chains of 2 to 32 rows, a tree, a 300-token prompt) and one differing byte turns speculation off; `tools/mlx_lfm_exact.py` checks the real checkpoint's verify rows against sequential decode (36 rows bit for bit).
+- Dense projections of 3 rows and more run on the 8x8 matrix units and those of 1 or 2 rows on a scalar kernel that writes the same bits. The weights are repacked at load into the order the kernels read.
+- `ops/prices/lfm2.5-24b-a2b/lfm25-bf16.apple-m5-max.json`: StairCut's prices for the M5 Max (`tools/mlx_lfm_prices.py`).
+- Apple silicon is a `tools/gpu` adapter (`apple.py`), and `GpuProfile.backend()` says which array library a device's models run on; the LFM2 family's server builder picks its engine by it. Every family's cache fingerprint moves with the adapter's files, with no change to a CUDA row: a CUDA box rebuilds its disk caches once.
+
 ### Fixes
 
 - The 27B no longer stops answering after a short chat follows a long one (SRV-885). The end of a request could lower the draft window's floor and leave the rows between the new floor and the old one unmapped. The next save of that conversation to the disk read them, the GPU faulted (an illegal memory access) and every request after it was a 503 `engine_failed` until a restart. A lowered floor now leaves those rows on the window's shared page until they are mapped again, and a trim drops only what lies past the rows it keeps.

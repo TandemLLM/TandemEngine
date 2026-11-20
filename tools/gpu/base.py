@@ -17,6 +17,7 @@ first build, naming the GPU, instead of building for an architecture the GPU can
     fp8_rows(N, K, bn)      (N tile, K tile, warps, stages) of the FP8 row kernel
     fp8_row_tile(M)         rows one program of the FP8 row kernel covers
     device_key()            the key of the per-device files measured on this GPU (price tables)
+    backend()               the array library the models run on here: "torch" (CUDA or the CPU) or "mlx"
     unified_memory          the GPU shares the host's memory
 """
 
@@ -69,6 +70,11 @@ class GpuProfile:
         if not self.name:
             return "cpu"
         return re.sub(r"[^a-z0-9]+", "-", self.name.lower()).strip("-")
+
+    def backend(self) -> str:
+        """The array library a model's engine runs on with this device: "torch" (CUDA, the CPU), or
+        "mlx" (Apple silicon, tools/gpu/apple.py). A family's server builder picks its engine by it."""
+        return "torch"
 
     # -- builds -----------------------------------------------------------------------------
     def arch_flags(self, kind: str) -> list[str]:

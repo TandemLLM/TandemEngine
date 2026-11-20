@@ -159,6 +159,50 @@ Then run `~/TandemLLM/bin/tandem restart`. Check that it took: `curl -s localhos
 
 Quality and speed against the exact cache: not measured.
 
+## Apple silicon (M5 Max, MLX)
+
+BF16 only, one request at a time. Measured on an M5 Max with 128 GB, MLX 0.32.4, 2026-11-20; peak memory 51.3 GB in the bench run.
+
+- Board: `engine/models/lfm2_moe/mlx_board.py` computes in MLX; the server's loop stays in PyTorch on the CPU (`mlx_serving.py`). `tools/gpu/apple.py` is the device's adapter: it names the chip, keys the price file by it, and answers `backend()` with "mlx", which the family's server builder (`dispatch.py`) picks the engine by.
+- Row kernels: MLX's own matmul and attention choose their kernel by the number of rows, so a verify row and the decode step's row of the same token round differently (an fp32 matmul of 2 rows or more runs at about TF32 precision). The board's Metal kernels (`engine/models/lfm2_moe/csrc/mlx_kernels/`, wrapped by `mlx_kernels.py`) compute every row in an order fixed by the weight's shape, never by the row count. A verify row has the decode step's bits.
+- Dense projections: up to 2 rows run a scalar kernel (`rowchain_swiz.metal`), more run the 8x8 matrix units (`rowmma_swiz.metal`). On this GPU `simdgroup_multiply_accumulate` on 8x8 float matrices equals a sequential `fma` chain over k = 0..7 bit for bit (2.4 million elements, 0 differences), so the two kernels write the same bits for the same split of K. This is measured on one chip, not guaranteed by Metal: the self-check at load is the gate.
+- Weight layout: at load the projection and expert weights are repacked into the tile order the kernels read (`swizzle_dense`, `swizzle_moe_w13`, `swizzle_moe_w2`; the same values in another order). A shape the layout cannot take (a width that is not a multiple of 64) runs on the plain-layout kernels with the same row contract.
+- Self-check at load: 101 verify rows compared with the decode step byte for byte: a 24-row greedy chain, then chains of 2, 3, 4, 5, 9, 16 and 32 rows and a 6-row tree after a 300-token prompt (each size is a kernel variant of its own; the long prompt takes the attention's chunk-then-reduce path). One differing byte turns speculation off.
+- Off: the prefix, session and disk caches, the KV pool, side slots and joint passes.
+
+Start: `python server/app.py --model <LiquidAI/LFM2.5-24B-A2B checkpoint> --drafter mtp` (`--drafter none` for plain decode). The price file is found by the chip's name.
+
+One greedy request a cell through the server, 512 tokens, thinking off, plain / lookup, tok/s (`tools/fn_lookup_ab.py`, the server's own `timings`): the median of 3 runs, plain and lookup servers started in turn (plain, lookup, plain, lookup, ...), with the range of the runs. Every lookup text equals every plain text in all runs.
+
+| `lfm25-bf16`, M5 Max | prose | chat | code | edit | copy |
+|-|-|-|-|-|-|
+| plain | 94.4 (92.5 to 95.0) | 94.7 (91.7 to 94.8) | 94.6 (93.1 to 94.9) | 94.1 (90.4 to 94.7) | 94.5 (92.0 to 94.6) |
+| lookup | 93.2 (91.6 to 93.5) | 93.1 (90.6 to 93.2) | 96.3 (96.0 to 98.3) | 315.2 (305.1 to 316.8) | 320.1 (319.9 to 321.0) |
+
+The same servers through `python -m tools.measure run --rows decode.c1.short,decode.c1.1k` (256 tokens out, the client's clock: `(completion_tokens - 1) / (end to end - time to first token)`): 85.5 tok/s plain (83.3 to 86.6 over 30 rounds), 85.0 with the lookup (83.4 to 85.8). The tool marks these rows INVALID: it asks `/health` for the slots decoding at once, which the server reports from its slot pool, and this serving has one slot and no pool. The gate's measurement suites therefore do not run against the Mac yet.
+
+The decode loop alone, without the server: 99.1 tok/s; a 512-token prompt prefills at 3,444 tok/s (`tools/mlx_lfm_bench.py`).
+
+Verify staircase, chain blocks, median of 7, ms (`tools/mlx_lfm_prices.py`, the price file `ops/prices/lfm2.5-24b-a2b/lfm25-bf16.apple-m5-max.json`):
+
+| rows | plain step | 1 | 2 | 4 | 8 | 12 | 16 |
+|-|-|-|-|-|-|-|-|
+| 512 tokens of context | 10.26 | 10.20 | 13.81 | 17.47 | 25.12 | 31.10 | 34.63 |
+| 16,384 tokens of context | 10.97 | 10.94 | 14.59 | 18.17 | 26.62 | 33.54 | 36.95 |
+
+| check | where | result |
+|-|-|-|
+| verify rows against sequential decode, real checkpoint: a 12-row tree, chains of 16, 5 and 3 rows | `tools/mlx_lfm_exact.py` | 36 rows bit for bit |
+| verify rows against decode steps | load-time self-check | 101 rows byte for byte |
+| kernels against fp32 references; every row kernel's block against its rows alone at every size from 1 to 33; the served attention shape through the board up to 64 rows; the self-check refusing one unit in one row; the serving's state after an in-place ask; the dispatch by the adapter's `backend()` | `tests/test_lfm2_moe_mlx.py` | 26 pass |
+| lookup against plain through the server, 5 asks x 512 tokens, 3 runs each | `tools/fn_lookup_ab.py --compare` | every text equal |
+| last-row logits against mlx-lm's `lfm2_moe` in BF16, the bench's chat prompt | `tools/mlx_lfm_bench.py --check` | top token equal, top 5 equal, largest difference 0.94 on logits up to 24.8 |
+| logits against mlx-lm over 85 positions of 3 prompts (21, 600 and 1,500 tokens), token by token | one-off script, not in the tree | top token equal at 74 of 85; mean difference 0.20 to 0.22 |
+
+mlx-lm in BF16 rounds in its own order, so it is a noisy reference. On an earlier build three attention kernels (the softmax weights in BF16, in fp32, and an all-fp32 kernel) sat at the same distance from it (mean 0.15 to 0.25) and from each other (0.16 to 0.19): that distance is the BF16 noise floor, not an error of one kernel. A comparison against an fp32 copy of the model is not done.
+
+Greedy text from this build can differ from an earlier build's at a near tie: a kernel that sums in another order moves the logits by that noise floor. Within one build the lookup's text is the plain text.
+
 ## Not supported yet
 
 - A draft head (none published for this model).

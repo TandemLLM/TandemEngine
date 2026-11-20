@@ -760,7 +760,7 @@ def _slot_disk():
 def _lane_run(job) -> None:
     """One side-lane job on the engine (server/preempt.py `decode`), with the engine held: an open
     disk-tier write that has not copied the rows the guest writes stops first."""
-    from engine.model import h2d
+    from engine.methods.hostcopy import h2d
     disk = STATE.get("disk_cache")
     if disk is not None:
         try:
@@ -2314,7 +2314,7 @@ def _run_round(meet) -> None:
     at most `max_rows` rows through `forward_tree_multi`, the others (and a pass of one) through
     the lone `forward_tree` with its graphs."""
     from engine.model import forward_tree_multi
-    from engine.model import h2d
+    from engine.methods.hostcopy import h2d
     with meet.cv:
         groups = meet.batches()
         meet.pending.clear()
@@ -2973,7 +2973,7 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
     (`_par_prefilled`, by the record `on_prefill` carries: `Handler._prefill_watch`), and the record gets the
     rows it forwarded for its `[req]` line (`rec.fwd`).
     """
-    from engine.model import h2d           # not at import: the fake engine's server has no triton
+    from engine.methods.hostcopy import h2d           # not at import: the fake engine's server has no triton
     eng = STATE["engine"]
     eng.mm = mm
     eng.pos_delta = mm.delta if mm is not None else int(pos_delta)
@@ -3732,7 +3732,7 @@ def _ask_in_place(eng, pos: int, device, ids: list[int], letters: list[int]) -> 
     where it was: the recurrent state copied back, the KV's length reset (the rows above it are
     written over by the next forward). The drafter, `ctx` and the client never see it. Under the
     engine lock, as the request is."""
-    from engine.model import h2d
+    from engine.methods.hostcopy import h2d
     if pos + len(ids) >= eng.max_len:
         raise ext_mod.NoRoom("no_room")
     eng.settle()                      # as `cache.capture`: a walked state that is not in yet
@@ -3769,7 +3769,7 @@ def _force_close(eng, drafter, think, ctx, pos, device, pen=None, pstop=None, sa
     # it. The forced pass has to carry it, or the closing phrase would be written over its position.
     # After a dropped end token the KV already holds all of `ctx` (`pos == len(ctx)`) and the
     # forced pass is the action's tokens alone: `ctx[pos:]` is what the KV does not hold yet.
-    from engine.model import h2d
+    from engine.methods.hostcopy import h2d
     _release_held(sup)                     # SP2's line, after the block's tokens before the end
     while True:
         if act is not None and act.detail.get("ask"):
@@ -14270,7 +14270,9 @@ def _warm_prefill(gen, tok, res=None) -> None:
         words = tok("warm up the kernels ", add_special_tokens=False).input_ids
         ids = (words * (n // max(1, len(words)) + 1))[:n]
         t0 = time.time()
-        list(gen(torch.tensor(ids, dtype=torch.long).cuda(), 2, set()))
+        # the served model's device (`_serving_state`): "cuda" on a CUDA box, "cpu" for the MLX engine on a Mac,
+        # whose own arrays live on the GPU (a hard `.cuda()` skipped the warm-up there)
+        list(gen(torch.tensor(ids, dtype=torch.long, device=STATE.get("device") or "cuda"), 2, set()))
         if res is not None:
             res.clear()                      # the warm-up's rows are nobody's conversation
         print(f"[server] warm-up prefill of {n} tokens in {time.time() - t0:.1f}s", flush=True)

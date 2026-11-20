@@ -13,6 +13,7 @@ Importing this package does not import torch; `profile` and `capability` do when
 from __future__ import annotations
 
 from tools.gpu.ada import Ada
+from tools.gpu.apple import AppleSilicon, chip_name
 from tools.gpu.base import INLINE, GpuProfile, NoInlineBuild
 from tools.gpu.gb10 import GB10
 
@@ -20,7 +21,7 @@ __all__ = ["ADAPTERS", "INLINE", "GpuProfile", "NoInlineBuild", "PROBE", "adapte
            "by_name", "capability", "key_matches", "parse_cc", "profile", "profile_for"]
 
 #: adapters in the order they are asked; the base answers for any GPU none claims, and for the CPU
-ADAPTERS: tuple[type[GpuProfile], ...] = (GB10, Ada)
+ADAPTERS: tuple[type[GpuProfile], ...] = (GB10, Ada, AppleSilicon)
 
 #: what a box's GPU is, printed as JSON by the engine's interpreter (tools/gate/hw `detect`)
 PROBE = (
@@ -96,14 +97,18 @@ def capability(device=None) -> tuple | None:
 
 
 def profile(device=None) -> GpuProfile:
-    """The adapter for `device`, picked once and kept (the current device's when None)."""
+    """The adapter for `device`, picked once and kept (the current device's when None). Without a CUDA device:
+    Apple silicon's for the current device or an index on a Mac (by the chip's name), the base for the CPU and
+    everywhere else."""
     try:
         return _BY_DEV[device]
     except (KeyError, TypeError):
         pass
     idx = _index(device)
     if idx is None:
-        got = profile_for(None, None)
+        # no CUDA device: asked for the current device or a device index, the Mac's GPU where there is
+        # one (tools/gpu/apple.py); asked for the CPU, or no Mac, the base
+        got = profile_for(None, chip_name() if device is None or isinstance(device, int) else None)
     else:
         import torch
         got = profile_for(capability(idx), torch.cuda.get_device_name(idx))

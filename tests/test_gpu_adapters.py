@@ -51,7 +51,7 @@ def test_each_adapter_is_picked_by_its_capability():
     for cap, name in OTHERS:
         assert gpu.profile_for(cap, name).id == "base", (cap, name)
     assert gpu.profile_for(*GB10) is gpu.profile_for(*GB10), "one profile a (capability, name)"
-    assert [a.id for a in gpu.ADAPTERS] == ["gb10", "ada"]
+    assert [a.id for a in gpu.ADAPTERS] == ["gb10", "ada", "apple"]
     assert gpu.parse_cc("12.1") == (12, 1) and gpu.parse_cc(None) is None and gpu.parse_cc("x") is None
     return "sm_121 -> gb10, sm_89 -> ada, sm_90 / sm_120 / sm_75 / the CPU -> base"
 
@@ -134,6 +134,36 @@ def test_an_unknown_gpu_and_the_cpu_get_the_base():
     assert gpu.profile_for(None, None).device_key() == "cpu"
     assert gpu.by_name("NVIDIA RTX PRO 6000 Blackwell").device_key() == "nvidia-rtx-pro-6000-blackwell"
     return "no inline build, no skinny rows, no PDL; bf16 from sm_80; the name as the device key"
+
+
+def test_apple_silicon_is_picked_by_name_and_builds_nothing():
+    p = gpu.by_name("Apple M5 Max")
+    assert p.id == "apple" and p.unified_memory and p.bf16() and p.backend() == "mlx"
+    assert gpu.profile_for(None, None).backend() == "torch"
+    assert p.device_key() == "apple-m5-max"
+    assert gpu.profile_for((12, 1), "Apple M5 Max").id == "gb10", "a CUDA capability is never Apple's"
+    for kind in INLINE:
+        assert not p.inline(kind), kind
+    return "by name only; key from the chip; no inline build"
+
+
+def test_the_mac_is_the_current_device_where_there_is_no_cuda_and_the_cpu_stays_the_base():
+    """`profile()` without a CUDA device: the Mac's adapter by the chip's name for the current device or an
+    index, the base for the CPU and for a machine that is not a Mac."""
+    import tools.gpu as g
+    kept, name = dict(g._BY_DEV), g.chip_name
+    try:
+        for chip, want in (("Apple M5 Max", "apple"), (None, "base")):
+            g._BY_DEV.clear()
+            g.chip_name = lambda chip=chip: chip
+            if g._index(None) is None:                        # this machine has no CUDA device
+                assert g.profile().id == want and g.profile(0).id == want, chip
+            assert g.profile("cpu").id == "base", chip
+    finally:
+        g.chip_name = name
+        g._BY_DEV.clear()
+        g._BY_DEV.update(kept)
+    return "the current device and an index: Apple on a Mac, the base elsewhere; the CPU: the base"
 
 
 def test_ada_answers_like_the_base_on_main():
