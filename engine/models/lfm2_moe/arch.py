@@ -10,7 +10,7 @@ ARCH = register(Arch(
     config="engine.models.lfm2_moe.config:load_lfm2_moe_config",
     engine="engine.models.lfm2_moe.engine:Lfm2MoeEngine",
     package="models/lfm2_moe",
-    serve="engine.models.lfm2_moe.serving:serve",
+    serve="engine.models.lfm2_moe.dispatch:serve",
     manifest="engine.models.lfm2_moe.serving:manifest",
     rank=3,
     spec=ServeSpec(tool_format="pythonic"),      # LFM2's Pythonic call lists
