@@ -17,6 +17,10 @@
   experts-crossover  (--only) the three paths' ms at 16 to 1,024 rows and the EXPERTS_MIN they give (SPD-321)
   table-rows   (--only) the last chunk's table rows: the sliced reader against the threads it replaces, the prompt
                pass's reader job against `engram_rows`, its reads a second (SPD-319)
+  v2-micro     (--only) the prompt pass on fixed-order kernels: `mla_rows` on a window and a sparse layer's real inputs
+               at --micro-ctx (ms, against its reference, a row alone), one hyper-connection of 4,096 rows (SPD-323/325)
+  v2-cuts      (--only) the same pass with the trunk pinned row-invariant: one chunk, a cut, chunks of 257 and a
+               one-row tail give equal bits (SPD-323/325; --prefill-v2 turns the pass on for every other check)
 
 The prompt is synthetic unless --text names a file the pack's tokenizer reads. For a tiny rehearsal pack whose
 config names no draft targets, --dfly-layers and --mask-id give them.
@@ -856,6 +860,50 @@ def v2_micro(a, eng, cfg, say) -> bool:
     return ok
 
 
+def v2_cuts(a, eng, cfg, say) -> bool:
+    """SPD-323, SPD-325 (F1 to F3): a row's bits on the prompt pass on fixed-order kernels depend on its chunk only
+    through the trunk's projections. With those pinned to a row-invariant form (the row kernels, 32 rows at a time;
+    a plain weight on `linr`), the first 3,000 token ids of --digest-text as one chunk, as two chunks cut at 1,000, in
+    chunks of 257, and as 2,999 rows then one: every head input, the last row's logits and the state equal. (Without
+    the pin the trunk takes the library GEMM above 128 rows, whose bits follow the row count: the design's F4.)"""
+    from tokenizers import Tokenizer
+    from tools.hy4_prefill_profile import set_arm
+    if not a.digest_text:
+        raise SystemExit("v2-cuts: --digest-text")
+    tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+    ids = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids[:3000]
+    rr = cfg.index_kpool
+
+    def pinned(x, w):
+        x2 = x.reshape(-1, x.shape[-1])
+        if hasattr(w, "bf16_cached") and x2.dtype == torch.bfloat16:
+            y = torch.cat([eng.lin1(x2[i:i + 32], w) for i in range(0, x2.shape[0], 32)])
+        else:
+            y = eng.linr(x2, w if torch.is_tensor(w) else w.bf16_cached()).to(x.dtype)
+        return y.view(*x.shape[:-1], -1)
+    set_arm(eng, "v2")
+    eng.lin = pinned
+    runs = {}
+    try:
+        for name, cuts in (("one", [3000]), ("cut_1000", [1000, 2000]), ("chunks_257", [257] * 11 + [173]), ("tail_1", [2999, 1])):
+            st, hid, i = eng.new_state(3064), [], 0
+            for n in cuts:
+                hid.append(eng.forward_chunk(torch.tensor(ids[i:i + n]), st).clone())
+                i += n
+            sync(a.device)
+            L = st.length
+            runs[name] = {"head_inputs": _sha(torch.cat(hid)), "logits_last": _sha(eng.head(hid[-1][-1:])),
+                          "lat_all": _sha(st.lat_all[:, :L]), "ik_all": _sha(st.ik_all[:, :L]), "win_all": _sha(st.win_all),
+                          "hist": _sha(st.hist), "gk_all": _sha(st.gk_all[:, :L // rr])}
+    finally:
+        del eng.lin
+    base = runs["one"]
+    diff = {k: sorted(x for x in v if v[x] != base[x]) for k, v in runs.items() if k != "one"}
+    ok = not any(diff.values())
+    say("v2_cuts", rows=len(ids), equal=ok, differing=diff, trunk="row kernels, 32 rows a call (pinned)")
+    return ok
+
+
 def profile(a, eng, cfg, ids, say) -> None:
     """One decode step and one 6-row block taken apart: exclusive wall time a part, launched one by one with a
     device sync around every part (so the parts add up; a graph's replay of the same pass is given beside them)."""
@@ -1015,7 +1063,7 @@ def main() -> int:
     ap.add_argument("--answer", type=int, default=600)
     ap.add_argument("--profile", action="store_true", help="one decode step and one drafted round taken apart by part")
     ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit,"
-                                   "prefill-digest,experts-equal,experts-crossover,table-rows,v2-micro)")
+                                   "prefill-digest,experts-equal,experts-crossover,table-rows,v2-micro,v2-cuts)")
     ap.add_argument("--prefill-v2", action="store_true", help="the prompt pass on fixed-order kernels (HY4_PREFILL_V2=1)")
     ap.add_argument("--micro-ctx", default="8192,32768", help="v2-micro: the contexts (rows of --digest-text) to time at")
     ap.add_argument("--digest-text", help="prefill-digest: a text file, its first --digest-rows token ids raw")
@@ -1215,6 +1263,8 @@ def main() -> int:
         res["ok"] = table_rows(a, eng, cfg, say) and res["ok"]
     if banks and only is not None and "v2-micro" in only:
         res["ok"] = v2_micro(a, eng, cfg, say) and res["ok"]
+    if only is not None and "v2-cuts" in only:
+        res["ok"] = v2_cuts(a, eng, cfg, say) and res["ok"]
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
     if a.prices_at and want("prices"):

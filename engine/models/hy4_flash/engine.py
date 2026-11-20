@@ -79,6 +79,24 @@ def moe_warps(device) -> int | None:
         return None
 
 
+def pick_positions(z: torch.Tensor, qg: torch.Tensor, groups: int, rr: int) -> torch.Tensor:
+    """SPD-323 (F3): a tile's group scores z fp32 [t, W] (column g: group g; each row's own group qg < W) -> the positions
+    each row reads, int32 [t, groups rr], ascending: its `groups - 1` best groups below its own (ties to the lower
+    group) and its own, last (the decode step's `_select`). The columns past a row's own group take -inf and its own
+    +inf; then the shared block select (tools/fn_seq_kernels.qsa_select: the best TOPK by a stable sort, ascending, 4
+    positions each) where the shapes are its own (groups of 4, TOPK of them), else the same selection in torch."""
+    from tools import fn_seq_kernels as SK
+    t, W = z.shape
+    g = torch.arange(W, device=z.device)
+    z = z.masked_fill(g[None, :] > qg[:, None], float("-inf")).masked_fill(g[None, :] == qg[:, None], float("inf"))
+    if rr == 4 and groups == SK.TOPK:
+        sel = torch.empty(t, 4 * groups + 3, dtype=torch.int32, device=z.device)
+        SK.qsa_select(z.contiguous(), torch.zeros(t, 3, dtype=torch.int32, device=z.device), sel)
+        return sel[:, :4 * groups]
+    top = topk_stable(z, groups)[1].sort(dim=-1).values
+    return (top.unsqueeze(-1) * rr + torch.arange(rr, device=z.device)).flatten(1).to(torch.int32)
+
+
 #: what torch's rms_norm adds under the root when no eps is given (the reference's Engram norms), for every float type
 ENGRAM_NORM_EPS = float(torch.finfo(torch.float32).eps)
 
@@ -1120,25 +1138,61 @@ class Hy4FlashEngine(Hy4FlashRef):
         """A sparse layer's read lists of a chunk's rows as `mla_rows` takes them: ctl int32 [T, 3] (base 0, the keys a
         row reads, whether it reads its list) and sel int32 [T, index_topk] (the positions, ascending; the keys past a
         row are the list's tail). The rule is each row's own: a row whose group is below `group_topk` reads every row
-        up to itself. The lists from the indexer as the pass before computes them (`_sparse_positions_chunk`)."""
+        up to itself. SPD-323 (F3): the indexer on `mm` and `wsum_relu` (`_select`'s products) in tiles of up to 256
+        rows, over the groups closed before the tile's last row, then `pick_positions` (the shared block select)."""
         cfg, dev = self.cfg, self.device
-        NS, rr, T = cfg.index_topk, cfg.index_kpool, slots.shape[0]
+        NS, rr, gt, T = cfg.index_topk, cfg.index_kpool, cfg.group_topk, slots.shape[0]
         ctl = torch.zeros(T, 3, dtype=torch.int32, device=dev)
         ctl[:, 1] = (slots + 1).to(torch.int32)
         sel = torch.zeros(T, NS, dtype=torch.int32, device=dev)
-        if int(slots[-1]) // rr < cfg.group_topk:
+        qg = slots // rr
+        if int(qg[-1]) < gt:
             return ctl, sel
         p_ = f"layers.{li}.self_attn.compressed_indexer."
+        nh, D, rd = cfg.index_n_heads, cfg.index_head_dim, cfg.sparse_attn.rope
         iq = self.lin(qres, self.w(p_ + "query_projection.weight"))
-        hw = self.lin(x, self.w(p_ + "head_weight_projection.weight"))
-        for i in range(0, T, SUB_LIST):
-            sl = slots[i:i + SUB_LIST]
-            pq, valid = self._sparse_positions_chunk(li, st, sl, iq[i:i + SUB_LIST], hw[i:i + SUB_LIST], cos[i:i + SUB_LIST],
-                                                     sin[i:i + SUB_LIST])
-            sel[i:i + SUB_LIST] = pq.to(torch.int32)
-            ctl[i:i + SUB_LIST, 1] = valid.sum(dim=1).to(torch.int32)
-            ctl[i:i + SUB_LIST, 2] = (sl // rr >= cfg.group_topk).to(torch.int32)
+        hw = self._rows_mm(x, self.w(p_ + "head_weight_projection.weight")).to(self.dtype)
+        qi = iq.view(T, nh, D)
+        qi = torch.cat((qi[..., :D - rd], rotate(qi[..., D - rd:], cos[:, None], sin[:, None])), dim=-1)
+        wsc = (hw.float() * (nh ** -0.5 * D ** -0.5)).contiguous()
+        # a tile's scores are [rows, heads, groups] fp32: at most 512 MiB of them (an element's bits do not depend on the
+        # tile: `mm` and `wsum_relu` compute every element alone)
+        tile = max(1, min(256, (1 << 29) // (nh * (int(qg[-1]) + 1) * 4)))
+        for i in range(0, T, tile):
+            qt = qg[i:i + tile]
+            G = int(qt[-1])
+            if G < gt:
+                continue
+            sc = self.mm(qi[i:i + tile], st.gk[li][:G].t().unsqueeze(0), 64)                    # [t, heads, G]
+            if self.fused and nh & (nh - 1) == 0:
+                logit = K_.wsum_relu(sc, wsc[i:i + tile])
+            else:
+                logit = self.mm(wsc[i:i + tile].unsqueeze(1), F.relu(sc)).view(-1, G)
+            pos = pick_positions(torch.cat((logit, torch.zeros_like(logit[:, :1])), dim=1), qt, gt, rr)
+            lst = qt >= gt
+            sel[i:i + tile] = torch.where(lst[:, None], pos, sel[i:i + tile])
+            ctl[i:i + tile, 1] = torch.where(lst, NS - (rr - 1) + slots[i:i + tile] % rr, slots[i:i + tile] + 1).to(torch.int32)
+            ctl[i:i + tile, 2] = lst.to(torch.int32)
         return ctl, sel
+
+    def _index_chunk_v2(self, x: torch.Tensor, qres: torch.Tensor, li: int, st: Hy4EngState, slots: torch.Tensor) -> None:
+        """SPD-323 (F3): `_index_chunk` on the row kernels: the chunk's token keys by `mm` (rows on its tile axis) and the
+        row kernel's norm, the pooled key of every group the chunk closes by the row pass's `group_keys_r`, turned at
+        the group's first row."""
+        cfg, ip = self.cfg, f"layers.{li}.self_attn.compressed_indexer."
+        rr, D, rd = cfg.index_kpool, cfg.index_head_dim, cfg.sparse_attn.rope
+        tk = self._rows_mm(x, self.w(ip + "token_key_projection.weight")).to(self.dtype)
+        st.ik[li][slots] = self._norm_v2(tk, self.w(ip + "token_key_norm.weight"))
+        L0, L = int(slots[0]), int(slots[-1]) + 1
+        g0, g1 = L0 // rr, L // rr
+        if g1 <= g0:
+            return
+        gk = self.group_keys_r(st.ik[li][g0 * rr:g1 * rr].reshape(g1 - g0, rr, D), li)
+        first = torch.arange(g0, g1) * rr
+        cos, sin = self.rope(self.pos3(first + st.delta), SPARSE)
+        keys = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], cos, sin)), dim=-1)
+        st.ik[li][first.to(self.device) + rr - 1] = keys
+        st.gk[li][g0:g1] = keys
 
     def _attention_chunk_v2(self, x: torch.Tensor, li: int, st: Hy4EngState, slots: torch.Tensor) -> torch.Tensor:
         """SPD-323 (F1): a chunk's attention, both kinds on `mla_rows`. The projections as the pass before (`lin`), the
@@ -1159,7 +1213,7 @@ class Hy4FlashEngine(Hy4FlashRef):
         qa = self._heads_mm(q[..., :a.nope], self.wk[li]).to(self.dtype)
         if kind == SPARSE:
             st.lat[li][slots] = lat
-            self._index_chunk(x, qres, li, st, slots)
+            self._index_chunk_v2(x, qres, li, st, slots)
             ctl, sel = self._sparse_reads(x, qres, li, st, slots, cos, sin)
             mix = self._mla(qa, qr, st.lat[li], ctl, sel, li)
             if li in self.pick_layers:

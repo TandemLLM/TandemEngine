@@ -555,6 +555,27 @@ def test_every_prompt_rows_head_input_is_kept():
     return "; ".join(out)
 
 
+def test_the_block_select_gives_the_stable_sorts_groups():
+    """SPD-323 (F3): at the packs' shapes (groups of 4, 512 read) the shared block select with a row's own group at +inf
+    and the groups past it at -inf (`pick_positions`, its torch form on the CPU, `qsa_select_torch`) reads the 511
+    best closed groups by the stable sort (`topk_stable`, ties to the lower group), ascending, then the row's own:
+    the decode step's list, ties included."""
+    from engine.models.flashnext.ref import topk_stable
+    g = torch.Generator().manual_seed(41)
+    n = 0
+    for G in (600, 2000):
+        logit = torch.randint(0, 40, (6, G + 1), generator=g).float() / 7          # many ties
+        qg = torch.tensor([G, G - 1, G - 5, 511, 512, (G + 512) // 2])
+        got = E.pick_positions(logit, qg, 512, 4)
+        for r in range(6):
+            q = int(qg[r])
+            top = topk_stable(logit[r, :q], 511)[1].sort().values
+            want = (torch.cat((top, torch.tensor([q]))).unsqueeze(-1) * 4 + torch.arange(4)).flatten()
+            assert torch.equal(got[r].long(), want), (G, r)
+            n += 1
+    return f"{n} rows over 600 and 2,000 groups with tied scores: the stable sort's 511 groups and the own group"
+
+
 def test_capacity_is_checked():
     cfg, ref, eng = tiny()
     st = eng.new_state(12)

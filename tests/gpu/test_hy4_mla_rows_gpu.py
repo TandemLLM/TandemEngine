@@ -78,6 +78,26 @@ def test_a_rows_bits_are_its_own():
     return "5 rows alone equal the same rows among 300"
 
 
+def test_the_block_select_takes_the_own_group():
+    """F3: the shared block select's kernels (a bitonic sort up to 8,192 blocks, a radix select past it) on scores with
+    a row's own group at +inf and the groups past it at -inf (Flash-Next never feeds them +inf) equal its torch form."""
+    from tools import fn_seq_kernels as SK
+    out = []
+    for G in (600, 9000):
+        g = torch.Generator().manual_seed(G)
+        t = 64
+        z = torch.randint(0, 40, (t, G + 1), generator=g).float() / 7
+        qg = torch.randint(511, G + 1, (t,), generator=g)
+        col = torch.arange(G + 1)
+        z = z.masked_fill(col[None, :] > qg[:, None], float("-inf")).masked_fill(col[None, :] == qg[:, None], float("inf"))
+        z, tail = z.to(DEV).contiguous(), torch.zeros(t, 3, dtype=torch.int32, device=DEV)
+        a = SK.qsa_select(z, tail, torch.empty(t, 4 * SK.TOPK + 3, dtype=torch.int32, device=DEV))
+        b = SK.qsa_select_torch(z, tail, torch.empty(t, 4 * SK.TOPK + 3, dtype=torch.int32, device=DEV))
+        assert torch.equal(a[:, :4 * SK.TOPK], b[:, :4 * SK.TOPK]), G
+        out.append(f"{G} groups")
+    return ", ".join(out) + ": kernel equals torch with +inf own groups"
+
+
 def test_the_flip_digests():
     got = {}
     for heads in (32, 64):
