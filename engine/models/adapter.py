@@ -78,6 +78,23 @@ class EngineHooks:
 
 
 @dataclass(frozen=True)
+class EffortSpec:
+    """How a family's chat template takes a thinking effort level (SRV-899). The default is the shared template
+    words of server/api/thinking.py `TEMPLATE_WORDS`, each its own word, and no default of the family's own."""
+
+    # (level, the word the template's `reasoning_effort` argument gets). A level left out passes no word of its
+    # own: the server's default word stands, else the template's own default
+    words: tuple = (("low", "low"), ("medium", "medium"), ("xhigh", "xhigh"))
+    # the family's own server default: a level. Its word is the default word, in place of --reasoning-effort's,
+    # and its cap with the answer reserve applies where no client, no plan and no --think-budget decided.
+    # None: --reasoning-effort's word and no cap
+    default: str | None = None
+
+    def word(self, level: str | None) -> str | None:
+        return dict(self.words).get(level or "")
+
+
+@dataclass(frozen=True)
 class ReasoningSpec:
     """How a family's model reasons (ENG-406), for the server's reasoning split, budget and thinking-off
     render. The default is a template that opens the reasoning block in the prompt and closes it for
@@ -91,6 +108,8 @@ class ReasoningSpec:
     # nothing added
     off_note: str | None = None
     off_role: str = "developer"
+    # SRV-899: how its template takes an effort level, and its own server default
+    effort: EffortSpec = field(default_factory=EffortSpec)
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from engine.models import REGISTRY, default_arch  # noqa: E402
-from engine.models.adapter import ReasoningSpec, ServeSpec  # noqa: E402
+from engine.models.adapter import EffortSpec, ReasoningSpec, ServeSpec  # noqa: E402
 from server import app, fake_engine  # noqa: E402
 from server.stream import CLOSE_THINK, OPEN_THINK  # noqa: E402
 
@@ -46,6 +46,21 @@ def test_every_family_has_a_spec():
     assert own == {"flint": ("argkey", True, False, True), "lfm2_moe": ("pythonic", False, True, True),
                    "hy_v4_flash": ("argkey", False, True, False)}, own
     return f"{len(REGISTRY)} families, {len(own)} with their own spec"
+
+
+def test_the_default_effort_spec_is_the_shared_words():
+    """SRV-899: the default EffortSpec is the shared template words, each its own word, and no default of its own;
+    every family but Hy4-flash keeps it."""
+    d = EffortSpec()
+    assert tuple(dict(d.words)) == tuple(app.thinking_mod.TEMPLATE_WORDS), d.words
+    assert all(lv == w for lv, w in d.words) and d.default is None
+    assert ReasoningSpec().effort == d and ServeSpec().reasoning.effort == d
+    for word in ("off", "low", "medium", "high", "xhigh", None, "odd"):
+        want = word if word in app.thinking_mod.TEMPLATE_WORDS else None
+        assert d.word(word) == want, word
+    own = sorted(n for n, a in REGISTRY.items() if a.spec.reasoning.effort != d)
+    assert own in ([], ["hy_v4_flash"]), own
+    return f"{len(REGISTRY) - len(own)} families on the shared words, own: {own or 'none'}"
 
 
 def test_the_spec_says_what_the_engine_builds():
