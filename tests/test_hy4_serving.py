@@ -476,15 +476,25 @@ def test_a_follow_up_with_thinking_on_resumes_at_the_prompt_end():
 
 
 def test_a_follow_up_without_a_session_takes_no_park_and_no_keeper():
-    """5.1 test 1a: the follow-up of test 1 without a session id, on a prefix with a keeper and a park budget,
-    is the same conversation: nothing is parked and the keeper (a side slot's NVMe write) is never called."""
-    calls = []
-    with _prompt_end():
-        res, eng = _prefix(park_bytes=BIG), serving32()
-        res.keeper = lambda *a: calls.append(a)
-        _, (_, t2), _ = _thinking_on(res, eng)
-    assert not t2["guest"] and t2["kind"] == "pend", t2
-    assert calls == [] and res.stats["parks"] == 0 and res.stats["pins"] == 0, (len(calls), res.stats["parks"])
+    """5.1 test 1a: the follow-up of test 1 without a session id is the same conversation. Each of the three ways
+    `begin` sets another session's rows aside stays unused: the park, a side slot's keeper (an NVMe write) and
+    the session spill (here a stand-in that records its calls). A request of another session would take each."""
+    import types
+    for way in ("park", "keeper", "spill"):
+        calls = []
+        with _prompt_end():
+            res, eng = _prefix(park_bytes=BIG if way == "park" else 0), serving32()
+            if way == "keeper":
+                res.keeper = lambda *a: calls.append("keeper")
+            if way == "spill":
+                res.spiller = types.SimpleNamespace(
+                    min_tokens=1, cfg={}, maybe_restore=lambda *a, **k: None,
+                    save_resident=lambda *a, **k: calls.append("spill") or {"eid": "stand-in"})
+            _, (_, t2), _ = _thinking_on(res, eng)
+            assert not t2["guest"] and t2["kind"] == "pend", (way, t2)
+            assert calls == [] and res.stats["parks"] == 0 and res.stats["spills"] == 0, (way, calls, res.stats["parks"])
+            _turn(eng, res, tokens(120, 23), 2, "another")          # another session: the same way is taken
+        assert res.stats["parks"] == 1 if way == "park" else calls == [way], (way, calls, res.stats["parks"])
 
 
 def test_the_conductors_question_is_a_guest_at_any_size():
@@ -804,26 +814,56 @@ def test_a_repeated_head_is_read_once():
 
 
 def test_the_conductors_question_beside_a_chat_stores_its_head_and_keeps_the_chats_end():
-    """5.1 test 6: a chat with a kept end is in place; the conductor's question with a head runs twice as its
-    guest. The first stores its head although the chat is tainted (its kept end); the second resumes from it and
-    leaves the end anchor (its stash holds every row the restore writes). The chat's next turn resumes at its
-    end. Before: no head was stored, and once one was, the hit dropped the end."""
-    store = cache.StateStore(BIG, chunk=WIDE)
+    """5.1 test 6: a chat with a kept end is in place and shares 200 rows (more than one 128-row chunk) with the
+    head of the conductor's question, which runs twice as its guest. The first resumes at the chat's anchor and
+    stores its head although the chat is tainted (its kept end). The second resumes from that head in the store:
+    its stash starts at row 0, not at the chunk line below what it shares (128), so every row the restore writes
+    goes back, and the chat keeps its end. The chat's next turn resumes there and writes a cold read's greedy
+    tokens. Before: no head was stored, and once one was, the hit dropped the end."""
+    ch = 128
+    store = cache.StateStore(BIG, chunk=ch)
     q1, q2 = _question(90, 91), _question(90, 92)
+    chat = q1[:200] + tokens(30, 93)
     with _marks(serving32()) as app, _prompt_end():
         mark = app._grid_mark(None, torch.tensor(q1), None)
-        res, eng = _prefix(chunk=WIDE), serving32()
-        c1, _ = _turn(eng, res, tokens(40, 93), 20, "chat", store=store, chunk=WIDE)
+        assert mark == 303 and app._grid_mark(None, torch.tensor(chat), None) is None
+        res, eng = _prefix(chunk=ch), serving32()
+        c1, _ = _turn(eng, res, chat, 20, "chat", store=store, chunk=ch)
         e = res.end["at"]
         assert res.taint is not None and e == len(c1) - 1, (res.taint, res.end)
-        _, t1 = _turn(eng, res, q1, 3, "q", own=True, store=store, chunk=WIDE, grid_mark=mark)
-        assert t1["guest"] and mark in store.report()["boundaries"], (t1, store.report()["boundaries"])
-        _, t2 = _turn(eng, res, q2, 3, "q", own=True, store=store, chunk=WIDE, grid_mark=mark)
+        _, t1 = _turn(eng, res, q1, 3, "q", own=True, store=store, chunk=ch, grid_mark=mark)
+        assert t1["guest"] and (t1["kind"], t1["reused"]) == ("resident", ch), t1
+        assert mark in store.report()["boundaries"], store.report()["boundaries"]
+        _, t2 = _turn(eng, res, q2, 3, "q", own=True, store=store, chunk=ch, grid_mark=mark)
         assert t2["guest"] and (t2["kind"], t2["reused"]) == ("prefix", mark), t2
+        assert res.common(q2) >= ch and res._stash["start"] == 0, (res.common(q2), res._stash["start"])
         assert res.end is not None and res.end["at"] == e, res.end
-        _, t3 = _turn(eng, res, c1 + tokens(5, 94), 4, "chat", store=store, chunk=WIDE)
-    assert (t3["kind"], t3["reused"]) == ("end", e), t3
+        p2 = c1 + tokens(5, 94)
+        want = _cold_greedy(p2, 6, chunk=ch)
+        c3, t3 = _turn(eng, res, p2, 6, "chat", store=store, chunk=ch)
+    assert (t3["kind"], t3["reused"]) == ("end", e) and c3[len(p2):] == want, t3
     return f"the second question forwarded {t2['forwarded']} of {len(q2)} rows; the chat resumed at its end ({e})"
+
+
+def test_two_heads_that_share_256_rows_are_one_prompts():
+    """SPD-249's rule, which the head mark keeps as it is: a new head that shares at least 256 leading rows with
+    an older one marks the older stale (the same prompt, its notes changed), and a stale head loses its place at
+    the back of the store's eviction order. Two conductor questions with a common preamble of 256 tokens or more
+    would mark each other stale in turn. The default class and package questions share the classifier prompt up
+    to its class list (about 35 tokens with this template's turn marks), so each keeps its head."""
+    store = cache.StateStore(BIG, chunk=WIDE)
+    h = tokens(300, 140)
+
+    def ask(head, seed):
+        return [OPEN, SYSTEM] + head + [END, OPEN, USER] + tokens(10, seed) + [END, OPEN, ASSISTANT]
+    first, far, near = ask(h, 143), ask(h[:100] + tokens(200, 142), 144), ask(h[:280] + tokens(20, 141), 145)
+    with _marks(serving32()) as app:
+        for ids in (first, far, near):
+            mark = app._grid_mark(None, torch.tensor(ids), None)
+            assert mark == 303, mark
+            cache.prefill(serving32(), None, ids, "cpu", store=store, chunk=WIDE, checkpoint=True, grid_mark=mark)
+    heads = {tuple(e.tokens): store._head(k, e) for k, e in store._d.items() if e.mark is not None and k[0] == e.mark}
+    assert heads == {tuple(first[:303]): False, tuple(far[:303]): True, tuple(near[:303]): True}, heads
 
 
 def test_the_marks_and_the_mark_of_every_other_family_are_as_before():
