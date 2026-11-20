@@ -13734,7 +13734,8 @@ def _limits_at_start(a) -> None:
 
 
 #: the memory limits a family's builder may set for its own pack (Hy4-flash: serving.memory_limits)
-BUILDER_LIMITS = ("mem_ceiling_gib", "mem_peak_gib")
+#: SRV-907: and the state store's entry cap (Hy4-flash's builder sets its own when the start names the default)
+BUILDER_LIMITS = ("mem_ceiling_gib", "mem_peak_gib", "store_entry_gb")
 
 
 def _build_with_limits(build, a, ctx) -> dict:

@@ -348,6 +348,52 @@ def test_the_packs_limits_reach_the_cache_policy():
                 A.STATE[k] = v
 
 
+def test_the_store_entry_cap_is_the_familys_and_survives_a_refresh():
+    """SRV-907 (the design's 4.6): a start on the server's default `--store-entry-gb` (1 GiB) takes this family's
+    0.25 GiB, and a request's refresh of the residency limits keeps it: the builder's change becomes the flag
+    the refresh falls back to (server/app.py `BUILDER_LIMITS`). Called bare, the refresh takes it back to 1 GiB,
+    which is the fault the list prevents. A start that names its own cap keeps it."""
+    import types
+
+    from engine.models.hy4_flash.serving import STORE_ENTRY_GB, store_entry
+    from server import app as A
+    from server import ext as ext_mod
+    from server import memlimits
+    gib = 1 << 30
+    keys = ("serve_flags", "args", "state_store", "limits_version", "limits_applied")
+    keep = {k: A.STATE.get(k) for k in keys}
+    doc = ext_mod.document
+
+    def start(load, cap=1.0):
+        for k in keys:
+            A.STATE.pop(k, None)
+        a = types.SimpleNamespace(store_entry_gb=cap)
+        A.STATE["serve_flags"] = dict(vars(a))
+        load(a)
+        A.STATE["args"] = vars(a)
+        A.STATE["state_store"] = cache.StateStore(2 * gib, max_entry_bytes=int(a.store_entry_gb * gib))
+        memlimits.refresh(A.STATE)
+        return a, A.STATE["state_store"].max_entry
+
+    def build(a, ctx):
+        store_entry(a)
+        return {}
+    try:
+        ext_mod.document = lambda state, name: (7, {"version": 7})
+        assert start(lambda a: build(a, None))[1] == 1 * gib                      # the fault, on a bare call
+        a, cap = start(lambda a: A._build_with_limits(build, a, None))
+        assert a.store_entry_gb == STORE_ENTRY_GB == 0.25 and cap == int(0.25 * gib), cap
+        a, cap = start(lambda a: A._build_with_limits(build, a, None), cap=0.5)   # the start's own cap
+        assert a.store_entry_gb == 0.5 and cap == int(0.5 * gib), cap
+    finally:
+        ext_mod.document = doc
+        for k, v in keep.items():
+            if v is None:
+                A.STATE.pop(k, None)
+            else:
+                A.STATE[k] = v
+
+
 # ------------------------------------------------------------------ the conversation cache (SRV-907)
 # The tests below run the follow-up turns on the tiny model in fp32: "same tokens" compares the next greedy
 # tokens of a resumed turn with a cold read's, and bf16 random weights would leave near-ties between two
