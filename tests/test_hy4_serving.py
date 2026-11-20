@@ -289,6 +289,22 @@ def test_the_fingerprint_covers_the_kernels_the_family_compiles():
     return f"{len(rels)} files; a line more in the shared kernels, the EXL3 source or the family's kernel moves the fingerprint"
 
 
+def test_the_prompt_pass_takes_the_grouped_kernels_by_default():
+    """SPD-311: a prompt's routed experts run on the grouped kernels unless QWEN38_HY4_PREFILL_GROUPED=0 says the pair
+    kernels; build() hands the setting to the engine. The two give the same bits: the kernels are the device's (the
+    expert banks), so tests/gpu/test_hy4_prefill_grouped_gpu.py compares them there, and a CPU prompt pass reads
+    neither."""
+    import inspect
+
+    from engine.models.hy4_flash import serving as S
+    from engine.models.hy4_flash.knobs import KNOBS
+    from engine.settings import SETTINGS
+    assert KNOBS["HY4_PREFILL_GROUPED"][0] == "1"
+    if "QWEN38_HY4_PREFILL_GROUPED" not in os.environ:
+        assert SETTINGS.get("HY4_PREFILL_GROUPED") == "1"
+    assert 'eng.prefill_grouped = _S.get("HY4_PREFILL_GROUPED") == "1"' in inspect.getsource(S.build)
+
+
 def test_the_caps_carry_the_conductor_fit():
     """SRV-899: the router's notes have no place in Hy4-flash's prompt (every route row said
     `no_insertion_point`): its caps say `notes: False`, the key Flint declares for the same reason."""

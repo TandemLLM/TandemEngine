@@ -10,9 +10,10 @@ KNOBS: dict[str, tuple] = {
     # the row pass and the draft as captured CUDA graphs (1: the plain pass's operations replayed, the same bits) or
     # launched one by one (0)
     'HY4_GRAPHS': ('1', 'engine/models/hy4_flash/serving.py'),
-    # a prompt's routed experts on the kernels that decode an expert's tiles once for up to 8 of its pairs (1); the
-    # same bits a pair as the pair kernels (0), not yet timed at the real shapes
-    'HY4_PREFILL_GROUPED': ('0', 'engine/models/hy4_flash/serving.py'),
+    # a prompt's routed experts on the kernels that decode an expert's tiles once for up to 8 of its pairs (1, the
+    # default: the same bits a pair as the pair kernels, and on the 3.56 pack the first token of a 3,565-token chat
+    # came after 19.1 to 24.2 s against 27.0 to 29.5 s), or on the pair kernels (0)
+    'HY4_PREFILL_GROUPED': ('1', 'engine/models/hy4_flash/serving.py'),
     # debugging: the row pass's sums in plain torch, one item a call, instead of the family's kernel (other bits;
     # the kernel is the one served path)
     'HY4_ROW_TORCH': ('0', 'engine/models/hy4_flash/serving.py'),
