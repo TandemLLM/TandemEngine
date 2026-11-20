@@ -42,7 +42,7 @@ Reading a prompt is slow: about 140 tok/s through the server, so the first token
 
 Caches work, with three limits. The resident prefix, the state store, the disk tier and the session spill each give back the state a cold prefill writes, bit for bit. Anchors sit every 4,096 tokens, so the engine reads a repeated prompt shorter than that again in full. After a restore the first round drafts nothing, and drafting resumes on the next round.
 
-Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn, or with a think block that does not match the mode, perplexity on the unquantized model is about three times higher, and raw text without the template scores far worse. That template knows three modes: `no_think`, `high` (its default) and `max`. Here is how the engine maps a request onto them:
+Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. That template knows three modes: `no_think`, `high` (its default) and `max`. Here is how the engine maps a request onto them:
 
 | request | template mode |
 |-|-|
@@ -54,7 +54,7 @@ Tool calls use the model's own tags, which the tokenizer reads under the `argkey
 
 Vision is not served. Each pack holds the tower at 5 bits, and the engine reads text only.
 
-Memory: after the load at the full window `hy4-3.56` holds 72.5 GiB allocated and 73.4 to 73.8 GiB reserved. A start with serve.env's default limits takes the pack's own: a ceiling 12 GiB over what the load holds and a peak 7 GiB above that, 85 and 92 GiB on `hy4-3.56`. The profiles ask for 97 GiB (`hy4-3.08`) and 101 GiB (`hy4-3.56`) of free memory before a start. Those two figures are the measured load plus the server's 7.3 GiB prefill estimate plus the 15 GiB floor, not a measured start.
+Memory: after the load at the full window `hy4-3.56` holds 72.5 to 72.7 GiB allocated and 73.4 to 73.8 GiB reserved. A start with serve.env's default limits takes the pack's own: a ceiling 12 GiB over what the load holds and a peak 7 GiB above that, 85 and 92 GiB on `hy4-3.56`. The profiles ask for 97 GiB (`hy4-3.08`) and 101 GiB (`hy4-3.56`) of free memory before a start. Those two figures are the measured load plus the server's 7.3 GiB prefill estimate plus the 15 GiB floor, not a measured start.
 
 ## Speed
 
@@ -67,6 +67,10 @@ Every figure below is one prose chat request through the server: a 3,565-token p
 | `hy4-3.08` | `--max-len 262144`, another GPU job beside it, a 70 GiB ceiling | not measured | 32.19, 33.08 |
 
 Both `hy4-3.08` rows ran under other conditions than the `hy4-3.56` row, so they do not say which pack is faster. In every run the drafted text equals the plain text. On this prompt a drafted round keeps about 2.3 to 2.5 tokens.
+
+## License
+
+The weights are Tencent's, under the Tencent Hy License, Version 1.0, which each pack carries as `LICENSE`. It is derived from Apache 2.0, and it counts quantized versions as derivative works, so the packs carry its terms. Its Section 10 adds terms for large Model-as-a-Service businesses: above US$50 million in revenue or 100 million monthly active users, a separate license from Tencent is needed. These terms apply to every recipient of the packs. TandemEngine itself is AGPL-3.0 or commercial.
 
 ## What is not measured
 

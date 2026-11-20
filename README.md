@@ -135,9 +135,9 @@ Hy4-flash, Tencent's large mixture-of-experts model, runs from our EXL3 packs at
 | profile | download | KL vs BF16 | top-1 vs BF16 | plain, tok/s | DFly2 + lookup, tok/s |
 |-|-|-|-|-|-|
 | `hy4-3.56` (default for Hy4-flash; routed experts 3.5 bits) | 112.38 GB | 0.065 | 90.5 % | 22.75 to 23.05 | 27.70 to 28.08 |
-| `hy4-3.08` (routed experts 3 bits) | 103.1 GB | 0.099 | 88.5 % | 24.45 to 24.74 at an 8,192 window | 34.64 to 35.36 at an 8,192 window, an older build |
+| `hy4-3.08` (routed experts 3 bits) | 103.1 GB | 0.099 | 88.5 % | not measured at this shape | not measured at this shape |
 
-The 3.56 row ran at the full window on an idle box; the 3.08 row did not, so the two rows do not say which pack is faster. A first token takes 24 to 31 s on that prompt: the engine reads a prompt at about 140 tok/s. [docs/hy4-flash.md](docs/hy4-flash.md) has the limits, the chat template's reasoning modes and what is not measured.
+The 3.56 figures ran at the full window on an idle box. The 3.08 pack has figures only at other windows and builds, so [docs/hy4-flash.md](docs/hy4-flash.md#speed) lists them with their setup and they say nothing about which pack is faster. A first token takes 24 to 31 s on that prompt: the engine reads a prompt at about 140 tok/s. [docs/hy4-flash.md](docs/hy4-flash.md) has the limits, the chat template's reasoning modes and what is not measured.
 
 ### Community weights
 
