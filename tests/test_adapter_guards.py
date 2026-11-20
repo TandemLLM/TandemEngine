@@ -192,6 +192,11 @@ GOLDEN_FP4 = {
     # SPD-150: the e4m3 KV cache, off unless a family's knob asks (FN_KV_FP8, Q35M_KV_FP8, LFM2_KV_FP8, NH_KV_FP8; the
     # kernels' FP8 branch a constexpr off by default, the same rows): qwen4_exp, qwen3_5_moe, lfm2_moe, nemotron_h and
     # flint (it shares lfm2_moe's kernels and reference)
+    # SPD-321: tools/fn_prefill_kernels.py's optional clamp (no kernel source, the rows of every caller without it the
+    # same; a SAME_ROWS entry adopts their files): qwen4_exp, nemotron_h, lfm2_moe, qwen3_5_moe, flint; and Hy4-flash's
+    # prompt experts on that kernel: hy_v4_flash
+    # SPD-319: Hy4-flash's prompt pass reads its table rows on a reader thread, a long read in one-submit slices (the same
+    # rows; engine/models/hy4_flash/engine.py, table.py): hy_v4_flash
     "qwen4_exp": "8814f8aef5064f448a48d8de2cce1261fcced597b24b0239e1ee6890885fc2e4",
     "nemotron_h": "748cf77d5397146906bf7eb352e09154a0019e7fb5789e7fc98a425b09fdf3b6",
     "lfm2_moe": "6445f5bda811ddef922e55466e9da85afb34d9b78daf4bcf0c313b3a13d5f747",
@@ -204,8 +209,9 @@ GOLDEN_FP4 = {
 #: table and its kernels take the generic launch option
 MAY_MOVE = {"flint"}
 #: sha256 of SAME_ROWS' entries at v0.14.0 (sorted [path, now, replaced] triples, JSON); SRV-795 adds Flash-Next's
-#: engine.py on purpose (its reason in engine/methods/manifest.py)
-SAME_ROWS_SHA256 = "4d7ac63adfdf6dc4dbc2cb026fe6752505d68dfefb96a1300fd274edff18fd5b"   # 31 entries
+#: engine.py on purpose (its reason in engine/methods/manifest.py); SPD-321 adds tools/fn_prefill_kernels.py's optional
+#: clamp on purpose (its reason there)
+SAME_ROWS_SHA256 = "bf3ad379dc8528e39a88bce09681096b68e30716b348d1e3cb4657ab3492d9f3"   # 32 entries
 
 
 def _manifest(name: str):
@@ -533,6 +539,32 @@ def test_family_knobs_live_in_their_package():
             if a.package and os.path.isfile(own):
                 assert os.path.relpath(own, ROOT) in a.manifest_of().modules, f"{name}: knobs.py not in its manifest"
     return f"{len(LEGACY_FAMILY_KNOBS)} legacy family knobs in the shared table, none new; {len(lib)} library knobs"
+
+
+#: SRV-905, SRV-907: the conversation cache's capabilities (engine/models/adapter.py `Capabilities`) and the
+#: family packages that set them. The shared caching code (engine/cache.py, server/app.py) takes their branches
+#: only for these; every other family's caching is pinned byte for byte (tests/test_resident_pinned.py)
+CACHE_CAPS = {"chat_first": {"hy4_flash"}, "head_mark": {"hy4_flash"},
+              "solo": {"hy4_flash"}}            # INTERIM (SRV-907): solo goes when the family has side slots
+
+
+def test_the_cache_capabilities_are_their_families():
+    import ast
+    from engine.models.adapter import Capabilities
+    seen = {k: set() for k in CACHE_CAPS}
+    for path in sorted(glob.glob(os.path.join(ROOT, "engine", "models", "*", "*.py"))):
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg in CACHE_CAPS and not (isinstance(kw.value, ast.Constant) and kw.value.value is False):
+                    seen[kw.arg].add(os.path.basename(os.path.dirname(path)))
+    assert seen == CACHE_CAPS, f"the cache capabilities are set by {seen}, the table says {CACHE_CAPS}"
+    off = Capabilities(caches=True, side_slots=True)
+    assert not any(getattr(off, k) for k in CACHE_CAPS), "a cache capability is on by default"
+    return f"{sorted(CACHE_CAPS)}: set by {sorted(set().union(*CACHE_CAPS.values()))} alone, off by default"
 
 
 if __name__ == "__main__":

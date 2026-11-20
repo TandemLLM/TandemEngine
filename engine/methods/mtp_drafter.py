@@ -173,7 +173,16 @@ class MTPTreeDrafter:
                 f"draft_ms={c.draft_ms if c.draft_ms is None else round(c.draft_ms, 2)} delta={round(delta, 2)} "
                 f"V={ {r: round(v, 1) for r, v in sorted(V.items())} } "
                 f"spine_cal={[round(c.cal.q('spine', (b + 0.5) / 10), 2) for b in range(10)]}"
-                + (f" look_skips={self.stats.get('look_skips', 0)}" if self.mtp_look_backoff else ""))
+                + (f" look_skips={self.stats.get('look_skips', 0)}" if self.mtp_look_backoff else "")
+                + self._head_stale())
+
+    def _head_stale(self) -> str:
+        """SRV-907: ` stale=N` when the draft head counts the rounds it drafted nothing because the target's
+        picks were stale after a restore (its `stats["stale"]`, since the process started); "" for a head that
+        keeps no such count, so its line stays as it was."""
+        st = getattr(self.head, "stats", None)
+        n = st.get("stale") if isinstance(st, dict) else None
+        return f" stale={int(n)}" if n is not None else ""
 
     @staticmethod
     def _req() -> dict:

@@ -163,7 +163,15 @@ SAME_ROWS = {("engine/loader.py", "823f9dd4c230ec45d133b52e0a5edc0343098184526d9
              # 70,623 tokens (logprobs) gave the bytes before's tokens and logprobs bit for bit, and again after every
              # slot's graphs were dropped and captured anew. Ornith reads this file too: not run on Ornith
              ("engine/models/flashnext/engine.py", "5b0e3dfaee411ad9429d287b40aa58c28278939962dc0a711c19704946acfc44"):
-             "0a86e64e5cdb7a9fb54f2e2c81784e373b68beba004c4b6e853a982760531384"}
+             "0a86e64e5cdb7a9fb54f2e2c81784e373b68beba004c4b6e853a982760531384",
+             # SPD-321: tools/fn_prefill_kernels.py's `moe_grouped` and its reference take an optional `clamp` (a
+             # SwiGLU limit applied in place between the two GEMMs; Hy4-flash's prompt experts pass it). No CUDA source
+             # changes (the same build tag), and with clamp None, the call every other family makes, the function runs
+             # the statements it ran before in the same order. The check: the device pin of the grouped kernel's outputs
+             # at Flash-Next's, LFM2.5's and Flint's shapes (tests/gpu/test_fn_moe_grouped_pin_gpu.py, recorded on the
+             # tree before) passes on the Spark
+             ("tools/fn_prefill_kernels.py", "b23e70023afaae0e171de76d4fe8abe7ead0b95dc06d67f22806a2365d0d3910"):
+             "fa037990b84862bdbae21a389095978c5dd853cf9ea93b488db6ba9b0712bffe"}
 
 
 def adoption() -> str:

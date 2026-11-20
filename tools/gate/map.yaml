@@ -199,3 +199,4 @@ kernels:
   - paths: ['engine/models/hy4_flash/**', 'tools/fn_*kernels*.py', 'tools/csrc/fn_*/**', 'tools/exl3_linear.py', 'tools/csrc/exl3_linear/**']
     tests:
       - tests/gpu/test_hy4_vdense_gpu.py
+      - tests/gpu/test_hy4_prefill_grouped_gpu.py

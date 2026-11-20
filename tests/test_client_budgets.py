@@ -735,6 +735,148 @@ def test_the_request_keys_line_shows_the_shapes():
     assert '"enable_thinking": false' in line, line
 
 
+# ------------------------------------------------------------------ 10. the effort table under a plan
+
+#: SRV-899: the plans the effort table runs under (tests/test_effort_table.py): one that does not decide the effort,
+#: and one that does for each class level, under the profile's two `client_word` rules
+PLANS = [("decides=no", None, False, "ceiling")] + [
+    (f"{lv}/{rule}", cap, True, rule)
+    for lv, cap in (("low", 1024), ("medium", 8192), ("high", 16384), ("xhigh", None))
+    for rule in ("ceiling", "ignore")]
+PLAN_REQUESTS = ("nothing", "enable_thinking=false", "reasoning_effort=low", "reasoning_effort=high",
+                 "reasoning_effort=xhigh", "reasoning_effort=max", "max_reasoning_tokens=512")
+PLAN_DEFAULTS = (None, "xhigh", "off")
+PLAN_LIMIT = 160
+
+
+def _table_handler(spec, body: dict, cond, default, max_len: int = 256):
+    """One request under `cond`'s plan (None: no conductor) with `spec` in force and `default` as the server's effort
+    (off: thinking off for a request that says nothing): the template calls, the loop's calls, the log, the status
+    line."""
+    import test_effort_table as table
+    serve(None, max_len=max_len)
+    tok = table.Recorder(frame.MonTok())
+    app.STATE.update(tok=tok, think_budget=0, spec=spec, conductor=cond, monitor=frame.monitor("on"),
+                     reasoning_effort=None if default == "off" else default,
+                     thinking_default="off" if default == "off" else "on")
+    req = Req("/v1/chat/completions", body)
+    out = io.StringIO()
+    with _Spy() as spy, logbuf_capture(out):
+        head, _ = req.response()
+    return tok.calls, spy.calls, out.getvalue(), head
+
+
+def table_under_a_plan(families=None) -> dict:
+    """The effort table's rows under a plan, for every family (or `families`), by its own spec: what
+    tests/test_effort_table.py pins without a plan, and the monitor's cap and the journal row's budget fields."""
+    import copy
+
+    import test_effort_table as table
+    reqs = dict(table.REQUESTS)
+    out, done = {}, {}
+    was = _Conductor.client_word
+    try:
+        for name in sorted(families or table.REGISTRY):
+            spec = table.REGISTRY[name].spec
+            for default in PLAN_DEFAULTS:
+                for label in PLAN_REQUESTS:
+                    for plan_label, cap, decides, rule in PLANS:
+                        k = table.key(name, label, default, PLAN_LIMIT, plan_label)
+                        memo = (spec, default, label, plan_label)
+                        if memo in done:          # the server reads the family's spec alone: an equal spec, one row
+                            out[k] = done[memo]
+                            continue
+                        _Conductor.client_word = rule
+                        cond = _Conductor(cap, decides)
+                        body = dict(copy.deepcopy(reqs[label]), messages=copy.deepcopy(table.MESSAGES),
+                                    max_tokens=PLAN_LIMIT, stream=False)
+                        calls, loop, log, head = _table_handler(spec, body, cond, default)
+                        seen = [{"budget": c["budget"], "max_new": c["max_new"], "prompt": c["prompt"],
+                                 "sup": c["sup"] is not None} for c in loop]
+                        row = table.row_of(calls, seen, log, head)
+                        sup = loop[0]["sup"] if loop else None
+                        row["monitor_cap"] = getattr(sup, "think_budget", None) if sup is not None else None
+                        extra = cond.plans[-1].row["extra"] if cond.plans else {}
+                        row["extra"] = {f: extra[f] for f in ("client_word", "client_budget", "json_reserve")
+                                        if f in extra}
+                        out[k] = done[memo] = row
+    finally:
+        _Conductor.client_word = was
+    return out
+
+
+def test_a_family_default_cap_yields_to_a_plan():
+    """SRV-899: a family's own default level caps a request nobody decided; a plan that decides the effort decides
+    it instead, and a plan that does not leaves the family's cap in force."""
+    from engine.models.adapter import EffortSpec, ReasoningSpec, ServeSpec
+    spec = ServeSpec(reasoning=ReasoningSpec(effort=EffortSpec(default="medium")))
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False}
+    _, loop, log, _ = _table_handler(spec, dict(body), _Conductor(None, decides=True), None)
+    assert "server default" not in log, log
+    _, loop, log, _ = _table_handler(spec, dict(body), _Conductor(None, decides=False), None)
+    assert "server default medium: cap 8192" in log, log
+    assert loop[0]["budget"] == thinking.with_reserve(8192, 160, thinking.AUTO, P)[0], loop[0]["budget"]
+
+
+def _hy4():
+    from engine.models import REGISTRY
+    return REGISTRY["hy_v4_flash"].spec
+
+
+def test_hy4_a_category_xhigh_with_server_xhigh_is_the_normal_mode_with_no_cap():
+    """The owner's fault (2026-11-20, 25,806 thinking tokens in 853.8 s): a plan that decides the effort at xhigh, the
+    server's default word xhigh, no effort in the request. On Hy4-flash's spec that is the template's normal mode
+    `high` with no cap below the monitor's backstop, never `max`."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False}
+    calls, loop, log, head = _table_handler(_hy4(), dict(body), _Conductor(None, decides=True), "xhigh")
+    assert head.startswith("HTTP/1.1 200"), head
+    words = [c["kwargs"].get("reasoning_effort") for c in calls]
+    assert words and all(w == "high" for w in words), words
+    assert loop[0]["budget"] == 0 and getattr(loop[0]["sup"], "think_budget", None) in (None, 0), loop[0]["budget"]
+    assert "server default" not in log and "client budget" not in log, log
+
+
+def test_hy4_the_default_cap_under_a_plan_that_does_not_decide_at_2048():
+    """SRV-899: under a plan that does not decide the effort, Hy4-flash's default (medium) caps a request with no
+    effort; at an output limit of 2,048 the answer reserve lowers the cap to the limit less the reserve and phrase."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 2048, "stream": False}
+    _, loop, log, head = _table_handler(_hy4(), dict(body), _Conductor(None, decides=False), None, max_len=4096)
+    assert head.startswith("HTTP/1.1 200"), head
+    want = thinking.with_reserve(8192, 2048, thinking.AUTO, P)[0]
+    assert loop[0]["budget"] == want, (loop[0]["budget"], want)
+    assert "server default medium: cap 8192" in log and "server default: answer reserve 512 of 2048" in log, log
+
+
+def test_hy4_the_default_cap_with_a_json_answer():
+    """SRV-899: a JSON answer (`response_format`) with no effort, on Hy4-flash's spec and no conductor: the family's
+    default cap stands and the JSON answer's own reserve applies to it, once (not the default's second reserve)."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False,
+            "response_format": {"type": "json_object"}}
+    _, loop, log, head = _table_handler(_hy4(), dict(body), None, None)
+    assert head.startswith("HTTP/1.1 200"), (head, log[-400:])
+    assert "server default medium: cap 8192" in log and "json answer: reserve" in log, log
+    assert "server default: answer reserve" not in log, log
+    # the reserve lowered the cap, so with the monitor on it closes hidden (the monitor holds the cap) as a JSON
+    # answer's reserve does on every model
+    cap = thinking.with_reserve(8192, 160, thinking.AUTO, P)[0]
+    got = loop[0]["budget"] or getattr(loop[0]["sup"], "think_budget", None)
+    assert got == cap, (loop[0]["budget"], getattr(loop[0]["sup"], "think_budget", None), cap)
+
+
+def test_the_table_under_a_plan():
+    """SRV-899: the effort table's rows under a conductor's plan are the pinned ones."""
+    import test_effort_table as table
+    with open(table.FIXTURE) as fh:
+        want = json.load(fh).get("plan_rows") or {}
+    assert want, "no pinned plan rows: write them (python tests/test_effort_table.py --write FILE --with-plan)"
+    families = sorted({k.split("|", 1)[0] for k in want})
+    got = table_under_a_plan(families)
+    bad, counts = table._check(want, got, set(families))
+    table._say("plan", counts)
+    assert not bad, f"{len(bad)} rows moved:\n" + "\n".join(bad[:40])
+    return f"{len(want)} rows"
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):

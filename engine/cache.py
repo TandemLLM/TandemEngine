@@ -1460,6 +1460,14 @@ class StateStore:
             self._evict_locked(nbytes)
         return True
 
+    def holds(self, conv_id: str | None) -> bool:
+        """Whether an entry of one conversation is stored (`drop_session`'s lookup, read only). INTERIM
+        (SRV-907): read by `_prefill` for a resident prefix with `solo` only."""
+        if not conv_id:
+            return False
+        with self.lock:
+            return any(e.conv_id == conv_id for e in self._d.values())
+
     def drop_session(self, conv_id: str | None) -> int:
         """Forget every entry of one conversation -- its compaction has started, and the history
         those entries are keyed by will not be sent again. Returns the bytes given back."""
@@ -1734,6 +1742,28 @@ class ResidentPrefix:
     they were put back under the resident's after every call (2026-10-17 23:38: a worker's first
     three calls, 2,532, 5,764 and 7,925 tokens beside a 24,200-token chat, each read from 0).
 
+    THE CONVERSATION FIRST (`chat_first`, SRV-907; a family's `Capabilities.chat_first`). The size rule
+    knows neither whose request it is nor whether it goes on with the rows. On a model that reads ~140
+    rows a second and serves one lane, both cost a whole re-read: with thinking on a chat's next prompt
+    leaves the answer's reasoning out, so it shares only the last prompt and is shorter than a quarter of
+    the rows (158 tokens beside 662 on Hy4-flash: a guest of its own conversation, which then keeps no end
+    and no prompt end); and the conductor's 2,345-token question replaced every chat under 9,380 rows. With
+    the flag, two more conditions: a request that holds the whole last prompt that became the resident
+    one (`last_n` tokens) is never a guest, and replaces no other session's rows (no park, no pin, no
+    keeper: it is the same conversation); and the server's own question (`own`) is a guest whenever rows
+    are in place that it does not hold all of. `stay` is not the carrier: `begin` hands it to a side
+    slot's keeper, which writes the conversation to the NVMe first. Without the flag, every line below
+    runs as before.
+
+    A GUEST FROM THE STORE (`guest_store`, SRV-905; a family's `Capabilities.head_mark`). Once a prompt
+    without a plan has its head mark, the conductor's question resumes from its head in the state store
+    on every call, as a guest of the chat in place. Two lines of `_prefill` acted on the conversation's
+    state for it: a store or disk restore dropped the end anchor (the restore writes the rows below it),
+    and a tainted conversation (a kept end) turned the store's snapshots off, so the question never stored
+    its head. With the flag, such a guest's stash starts at row 0, so every row the restore writes is put
+    back and the end stays; and the store keeps its snapshots unless its own prefill resumed in a
+    session's rows (the end, the prompt end, an anchor above `taint`).
+
     MEMORY. `budget_bytes` bounds the anchors (27 at the default 4 GiB) and `stash_bytes` the
     guest stash (2 GiB = ~20k rows at 104 kB a row). Both are allocated once and reused: an
     evicted anchor's buffers take the next anchor, so a 190k prefill that passes 185 boundaries
@@ -1805,7 +1835,8 @@ class ResidentPrefix:
     def __init__(self, budget_bytes: int, chunk: int, *, tail: int = 4, stash_bytes: int = 0,
                  guest_max: int = 16384, guest_frac: float = 0.25,
                  pin_bytes: int = 0, pin_anchors: int = 8, park_bytes: int = 0,
-                 park_anchors: int = 4, mem: "Budget | None" = None, end: bool = False):
+                 park_anchors: int = 4, mem: "Budget | None" = None, end: bool = False,
+                 chat_first: bool = False, guest_store: bool = False, solo: bool = False):
         self.budget = int(budget_bytes)
         self.chunk = int(chunk)
         self.tail = max(1, int(tail))
@@ -1844,6 +1875,7 @@ class ResidentPrefix:
         self.park_base = 0
         self.park_rows = 0
         self.park_owner: str | None = None
+        self.park_last_n = 0               # SRV-907: the parked conversation's `last_n`, back with it
         self.park_anchors: dict[int, tuple] = {}
         self._park_bufs: list | None = None
         self._park_views: list | None = None
@@ -1858,6 +1890,20 @@ class ResidentPrefix:
         self.end_adopt = None
         self.park_align = None
         self.owner: str | None = None      # the session (x-session-id) the rows belong to
+        # SRV-907 (`chat_first`): the guest test knows the conversation's next turn and the server's own
+        # questions; `last_n` is the length of the last prompt that became the resident one (0: none)
+        self.chat_first = bool(chat_first)
+        self.last_n = 0
+        # SRV-907: the server's own question ran as no guest (nothing of a conversation was in place, or the
+        # stash had no budget): its rows from `own_from` up are nobody's (`release_own`), and `own_prev` is
+        # the owner and `last_n` before it
+        self.own_from: int | None = None
+        self.own_prev: tuple = (None, 0)
+        # SRV-905 (`guest_store`): a guest that resumes from the store keeps the end; it stores its own head
+        self.guest_store = bool(guest_store)
+        # INTERIM (SRV-907, a family's `Capabilities.solo`; goes when the family builds side slots): one lane,
+        # a conversation the store remembers takes it from another one (`_prefill`)
+        self.solo = bool(solo)
         # the end of the last generation (`keep_end`): its line `at`, the hidden spans below it
         # and the drafter's mark; its state in `_end_bufs`, allocated once and reused
         self.end_on = bool(end)
@@ -2116,6 +2162,7 @@ class ResidentPrefix:
         self._cut(s)
         self.tokens = [int(t) for t in tokens[:n]]
         self.valid = n
+        self.last_n = n                    # SRV-907: its next turn holds this prompt (`chat_first`)
         # the guest's rows came from a grid prefill that resumed at or above `s`: under the gate only when
         # the rows below it were (`begin`), so a taint below `s` is kept and one above it moves to `s`
         self.taint = None if old_taint is None else min(int(old_taint), s)
@@ -2142,6 +2189,24 @@ class ResidentPrefix:
         if e > len(tokens) and not eng.trim_pending(len(tokens)):
             return False
         return True
+
+    def release_own(self) -> None:
+        """SRV-907: the rows the server's own question wrote in place as no guest are nobody's: back to the
+        rows below where it resumed (all of them, from row 0: nothing). Called after its turn (server/app.py
+        `_remember_turn`) and by the next prefill, for a question whose client left before that: its rows
+        must not stay the resident prompt that the next short chat would be a guest of."""
+        k = self.own_from
+        self.own_from = None
+        if k is None:
+            return
+        if k <= 0:
+            self.clear()
+            self.owner = None
+            return
+        self.rows_gen += 1
+        self._cut(int(k))
+        self.capturing = False
+        self.owner, self.last_n = self.own_prev
 
     def keep_prompt_end(self, eng, drafter, tokens, n: int) -> str:
         """SPD-215: after a prefill that read the prompt to its end `n`: the state there, with the prompt's
@@ -2269,7 +2334,8 @@ class ResidentPrefix:
 
     def begin(self, eng, drafter, ids, start: int, c: int, kind: str | None,
               session: str | None = None, compacting: bool = False,
-              scratch: bool = False, reach: int | None = None, stay: bool = False) -> None:
+              scratch: bool = False, reach: int | None = None, stay: bool = False,
+              continues: bool = False, own: bool = False) -> None:
         """What the rows will hold once this request's prefill has run.
 
         `start` is where the prefill resumes (a resident anchor, a store entry, or 0) and `c` how
@@ -2283,9 +2349,16 @@ class ResidentPrefix:
         commit; a guest's stash then holds the rows up to there (and two slack margins), not as
         many as the stash budget holds (FX5). `stay`: the session comes back (ENG-371), so this
         request is never a guest.
+
+        SRV-907, with `chat_first` only: `continues` (the request holds the whole last prompt in place,
+        `last_n`) is never a guest and replaces no other session's rows; `own` (the server's own question)
+        is a guest whenever rows are in place and the stash has a budget, also when its prompt holds them
+        all; when it is no guest, `own_from` says where its own rows start (`release_own`).
         """
         self.rows_gen += 1
         self.capturing = False
+        mine = bool(own) and self.chat_first and not scratch
+        self.own_from = None
         if kind == "session":
             # rows written by verify blocks: nothing anchored after them is a cold prefill's state.
             # A long conversation in place goes to the disk first (it is not a guest's to keep)
@@ -2294,6 +2367,8 @@ class ResidentPrefix:
                 self._spill(eng, drafter, "evict")
             self.clear()
             self.owner = session
+            if mine:
+                self.own_from, self.own_prev = 0, (None, 0)
             if not scratch:
                 # SRV-678: the restore writes the snapshot's rows in place (`restore`), so they
                 # are this prompt's up to `start`, and the prefill goes on from there as from an
@@ -2305,16 +2380,29 @@ class ResidentPrefix:
                 self.valid = start
                 self.capturing = self.chunk > 0
                 self.taint = 0
+                self.last_n = len(ids)
             return
         n = len(ids)
-        if not stay and self.is_guest(n, c):
-            self._stash_for(eng, drafter, min(start, (c // self.chunk) * self.chunk), reach)
+        continues = bool(continues) and self.chat_first
+        guest = self.is_guest(n, c) and not continues
+        if mine and self.valid > 0 and self.stash_budget > 0:
+            # SRV-907: the server's own question, at any size; one whose prompt holds every row in place
+            # too, which would otherwise go on with the conversation's rows and leave them its own
+            guest = True
+        if not stay and guest:
+            s = min(start, (c // self.chunk) * self.chunk)
+            if self.guest_store and kind in ("prefix", "disk"):
+                s = 0                      # SRV-905: the restore writes every row below `start`
+            self._stash_for(eng, drafter, s, reach)
             return
         if self.valid and c < self.valid:
             self.stats["invalidated"] += 1
         keep = min(start, c)
+        if mine:
+            self.own_from, self.own_prev = keep, (self.owner, self.last_n)
         parked, refused = self.stats["parks"], self.stats["refused_park"]
-        other = session is None or session != self.owner
+        # SRV-907: a turn that goes on with the rows in place replaces nobody's
+        other = (session is None or session != self.owner) and not continues
         # A conversation longer than the RAM park holds above `keep` goes whole to
         # the disk (engine/spill.py) before this prefill writes a row; it is not parked or pinned
         spilled = (self.spiller is not None and self.valid > keep and not compacting and other
@@ -2348,6 +2436,7 @@ class ResidentPrefix:
         self.capturing = self.chunk > 0 and not scratch
         if not scratch:
             self.t_used = time.monotonic()
+            self.last_n = n                # SRV-907; a scratch prefill's caller puts the old bookkeeping back
         if kind in ("end", "pend"):
             # a prefill from the end of a generation (or of the last prompt: off the grid) writes a
             # session's rows
@@ -2366,6 +2455,27 @@ class ResidentPrefix:
         per_row = sum(t.numel() // t.shape[ax] * t.element_size() for t, ax in views)
         ab = self._anchor_bytes or eng.cost().section_bytes
         return max(0, (self.park_budget - self.park_anchor_max * ab) // max(1, per_row))
+
+    def sets_aside(self, eng, drafter, keep: int) -> bool:
+        """INTERIM (SRV-907, `solo`; goes with it): whether a prefill that replaces the rows above `keep` would
+        keep the conversation in place out of its way (`begin`): the NVMe spill from its `min_tokens`, else the
+        park from one chunk above `keep` (`_park_now`'s floor, with its end anchor or up to its anchors). The
+        memory policy may still refuse the park; the sizes alone are asked here."""
+        keep = int(keep)
+        if self.valid <= keep:
+            return False
+        if self.spiller is not None and self.valid >= self.spiller.min_tokens:
+            return True
+        if not self.park_budget:
+            return False
+        views = _kv_views(eng, drafter)
+        per_row = sum(t.numel() // t.shape[ax] * t.element_size() for t, ax in views)
+        ab = self._anchor_bytes or eng.cost().section_bytes
+        cap_rows = max(0, (self.park_budget - self.park_anchor_max * ab) // max(1, per_row))
+        if self._end_to_park(keep, cap_rows) is not None:
+            return True
+        above = [b for b in self.anchors if keep < b <= min(self.valid, keep + cap_rows)]
+        return bool(above) and max(above) - keep >= self.chunk
 
     def _spill(self, eng, drafter, reason: str) -> bool:
         """The resident conversation to the disk; whether it is there now."""
@@ -2409,11 +2519,13 @@ class ResidentPrefix:
         self.clear()
         return how
 
-    def adopt(self, tokens, valid: int, taint, owner, count: str = "spill_restores") -> None:
+    def adopt(self, tokens, valid: int, taint, owner, count: str = "spill_restores",
+              last_n: int = 0) -> None:
         """A conversation read back from the disk is the resident prompt from here on: its rows
         are in place (engine/spill.py wrote them), its anchors and end anchor follow through
         `adopt_anchor` and `adopt_end`. What the rows held before goes. `count`: the counter it
-        adds to (`side_carries` for a conversation carried from a side slot, FX10)."""
+        adds to (`side_carries` for a conversation carried from a side slot, FX10). `last_n`
+        (SRV-907): the length of its last prompt, as saved with it; 0 when not known."""
         self._stash = None
         self._drop_end()
         for b in list(self.anchors):
@@ -2423,6 +2535,7 @@ class ResidentPrefix:
         self.taint = None if taint is None else int(taint)
         self.owner = owner
         self.capturing = False
+        self.last_n = int(last_n or 0)
         self.stats[count] += 1
 
     def adopt_anchor(self, eng, b: int):
@@ -2692,6 +2805,9 @@ class ResidentPrefix:
             self.anchors[b] = buf
         self.tokens = list(self.pin_tokens)
         self.valid = r
+        # SRV-907: the pin holds a head up to an anchor, and an anchor lies below the end of the prompt it was
+        # taken in: no whole last prompt is in place, so no turn goes on with it here (0 says so)
+        self.last_n = 0
         self.taint = self.pin_taint
         self.stats["pin_hits"] += 1
         return True
@@ -2763,6 +2879,7 @@ class ResidentPrefix:
             self.stats["park_ends"] += 1
         self.park_tokens = list(self.tokens[:top])
         self.park_base, self.park_rows, self.park_owner = keep, rows, self.owner
+        self.park_last_n = self.last_n
         self.park_taint = (self.taint if self.taint is not None and self.taint < top
                            else None)
         self._park_views = [(t, ax) for t, ax in views]
@@ -2847,7 +2964,7 @@ class ResidentPrefix:
             self._allocated += 1
         self.park_end, self.park_regions = None, []
         self.park_tokens, self.park_base, self.park_rows, self.park_owner = [], 0, 0, None
-        self.park_taint = None
+        self.park_taint, self.park_last_n = None, 0
         self._trim_pool()
 
     def _trim_pool(self) -> None:
@@ -2999,7 +3116,7 @@ class ResidentPrefix:
             elif ra > rb:
                 t.narrow(ax, base + rb, ra - rb).copy_(buf.narrow(ax, rb, ra - rb))
         back, back_tokens, back_owner = self.park_anchors, self.park_tokens, self.park_owner
-        back_taint = self.park_taint
+        back_taint, back_last_n = self.park_taint, self.park_last_n
         back_end, back_regions = self.park_end, self.park_regions
         self.park_anchors = {}
         self.park_end, self.park_regions = None, []
@@ -3015,12 +3132,13 @@ class ResidentPrefix:
                 self.stats["park_ends"] += 1
             self.park_tokens = list(self.tokens[:base + rb])
             self.park_rows, self.park_owner = rb, self.owner
+            self.park_last_n = self.last_n
             self.park_taint = (self.taint if self.taint is not None and self.taint < base + rb
                                else None)
             self.stats["park_swaps"] += 1
         else:
             self.park_tokens, self.park_rows, self.park_owner = [], 0, None
-            self.park_taint = None
+            self.park_taint, self.park_last_n = None, 0
         for b in [b for b in self.anchors if b > base]:
             self._free.append(self.anchors.pop(b))
         for b, pair in back.items():
@@ -3030,6 +3148,7 @@ class ResidentPrefix:
         self.valid = base + ra
         self.owner = back_owner
         self.taint = back_taint
+        self.last_n = back_last_n          # SRV-907: the parked conversation's last prompt, with its rows
         if back_end is not None:
             self._adopt_parked_end(eng, back_end, back_regions)
         self._trim_pool()
@@ -3160,7 +3279,7 @@ class ResidentPrefix:
         self.park_end, self.park_regions = None, []
         self._park_bufs, self._park_views = None, None
         self.park_tokens, self.park_base, self.park_rows, self.park_owner = [], 0, 0, None
-        self.park_taint = None
+        self.park_taint, self.park_last_n = None, 0
         return freed
 
     def shed_pin(self, safe: bool = False) -> int:
@@ -3205,6 +3324,8 @@ class ResidentPrefix:
         self._stash = None
         self.capturing = False
         self.end, self.taint = None, None
+        self.last_n = 0
+        self.own_from = None
 
     @property
     def pin_bytes(self) -> int:
@@ -3481,7 +3602,7 @@ def prefill(eng, drafter, ids: list[int], device, *, store: StateStore | None = 
             compacting: bool = False, checkpoint_upto: int | None = None,
             disk=None, disk_tag: dict | None = None, end_mm: bool = False,
             scratch: bool = False, reach: int | None = None, stay: bool = False,
-            grid_mark: int | None = None):
+            grid_mark: int | None = None, own: bool = False):
     """Bring the engine to `len(ids)` and return the logits of the last position.
 
     Returns `(logits, reused, forwarded)`. `reused` is how many prompt tokens came out of the
@@ -3539,6 +3660,9 @@ def prefill(eng, drafter, ids: list[int], device, *, store: StateStore | None = 
     store's snapshots on those lines, and resumes only from snapshots and anchors on them, so
     another prompt with the same head resumes at the mark bit for bit. The disk tier keeps the
     0-anchored grid: it serves and writes only the lines below the mark. None: the grid of old.
+
+    `own` (SRV-907): the server's own question (the conductor's); a guest of the rows in place at any
+    size on a resident prefix with `chat_first` (`ResidentPrefix.begin`), nothing elsewhere.
     """
     grid = Grid(chunk, grid_mark) if chunk > 0 else None
     if resident is not None:
@@ -3548,7 +3672,7 @@ def prefill(eng, drafter, ids: list[int], device, *, store: StateStore | None = 
                         checkpoint=checkpoint, resident=resident, on_chunk=on_chunk, info=info,
                         key_ids=key_ids, mem=mem, compacting=compacting,
                         checkpoint_upto=checkpoint_upto, disk=disk, disk_tag=disk_tag,
-                        end_mm=end_mm, scratch=scratch, reach=reach, stay=stay, grid=grid)
+                        end_mm=end_mm, scratch=scratch, reach=reach, stay=stay, grid=grid, own=own)
     finally:
         if resident is not None:
             resident.grid = None
@@ -3556,7 +3680,7 @@ def prefill(eng, drafter, ids: list[int], device, *, store: StateStore | None = 
 
 def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, resident, on_chunk,
              info, key_ids, mem, compacting, checkpoint_upto, disk, disk_tag, end_mm, scratch,
-             reach, stay, grid):
+             reach, stay, grid, own=False):
     """`prefill` on its grid (`Grid`)."""
     n = len(ids)
     if scratch:
@@ -3575,6 +3699,8 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
         if disk is not None and res._stash is not None:
             _disk(disk, "fence", 0)          # a guest's rows go back: a job of its copies none
         res.settle_guest(eng)
+        if res.own_from is not None:
+            res.release_own()                # SRV-907: rows a question whose client left wrote in place
         if res.spiller is not None:
             # a conversation on the disk (engine/spill.py) that beats every cache in RAM is read
             # back in place first; the server asks before its replay too (text prompts)
@@ -3645,15 +3771,26 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
                        if res is not None and n - start >= REREAD_WORDS_TOKENS else None)
     taint = res.taint if res is not None else None
     if res is not None:
+        # SRV-907: the request holds the whole last prompt in place, so it goes on with the conversation
+        continues = res.chat_first and 0 < res.last_n <= c
+        if (res.solo and not own and conv_id is not None and conv_id != res.owner and store is not None
+                and store.holds(conv_id) and res.sets_aside(eng, drafter, min(start, c))):
+            # INTERIM (SRV-907, `solo`; deleted with the capability when the family builds side slots): on
+            # one lane a second chat the store remembers takes the lane, as a side slot would give it one,
+            # when the park or the NVMe takes the conversation in place first (`begin`). One they cannot
+            # take (under a chunk above the shared head, under the spill's `min_tokens`) would be cut, and
+            # two short chats taking turns would both read themselves again every turn: the size rule stands
+            stay = True
         # decided before any row is written: a guest's stash must hold the rows as they are now
         res.begin(eng, drafter, keys, start, c, kind, session=conv_id, compacting=compacting,
-                  scratch=scratch, reach=reach, stay=stay)
+                  scratch=scratch, reach=reach, stay=stay, continues=continues, own=own)
         res.end_hold = False               # ENG-371: held from the server's memory gate to here
-        if kind in ("prefix", "disk"):
+        if kind in ("prefix", "disk") and not (res.guest_store and res._stash is not None):
             # the restore writes over the rows below it. dropped after `begin`, whose
             # eviction writes the conversation to the NVMe with its end anchor first; dropped
             # before it, the conversation went to the disk without its end and its
-            # next turn re-read the tokens above its last grid anchor (live 13:34: 759 tokens)
+            # next turn re-read the tokens above its last grid anchor (live 13:34: 759 tokens).
+            # SRV-905: a guest's stash holds every row the restore writes (`begin`): they come back
             res._drop_end()
     if hit is not None:
         restore(eng, hit[1].snap, drafter)
@@ -3694,8 +3831,12 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
     lim = n if checkpoint_upto is None else min(n, int(checkpoint_upto) + 1)
     if res is not None and res.taint is not None:
         # a session's rows (an end anchor's prefill, or one above `taint`): no prefix snapshot,
-        # and nothing for the disk, whose files are a cold grid prefill's bytes
-        checkpoint, kind_disk = False, "session"
+        # and nothing for the disk, whose files are a cold grid prefill's bytes. SRV-905: the taint is
+        # the conversation's, not a guest's that resumed from the store or read cold
+        if not (res.guest_store and res._stash is not None and kind not in ("end", "pend")
+                and not (kind == "resident" and start > res.taint)):
+            checkpoint = False
+        kind_disk = "session"
     else:
         kind_disk = kind
     ckpt = (store.boundaries(eng, drafter, start, lim, chunk, grid)

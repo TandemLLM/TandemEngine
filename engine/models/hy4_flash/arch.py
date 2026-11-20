@@ -1,7 +1,7 @@
 """The hy_v4_flash family's entry in the model registry (engine/models/__init__.py discovers it)."""
 
 from engine.models import Arch, register
-from engine.models.adapter import ServeSpec
+from engine.models.adapter import EffortSpec, ReasoningSpec, ServeSpec
 
 ARCH = register(Arch(
     name="hy_v4_flash",
@@ -14,8 +14,13 @@ ARCH = register(Arch(
     manifest="engine.models.hy4_flash.serving:manifest",
     rank=6,
     # the arg-key form, which the model writes with suffixed tags (tokenizer.py gives them their plain names);
-    # one sequence at a time until the row path has its own kernels
-    spec=ServeSpec(tool_format="argkey", side_slots=False),
+    # one sequence at a time until the row path has its own kernels. Its template takes three modes (max, high,
+    # no_think; the pack's chat_template.jinja): the levels from low to high are its high, and only a request's own
+    # xhigh or max is its max. With no effort asked and nothing else deciding, medium: the mode high with that
+    # level's cap (SRV-899, ENG-468)
+    spec=ServeSpec(tool_format="argkey", side_slots=False, reasoning=ReasoningSpec(effort=EffortSpec(
+        words=(("low", "high"), ("medium", "high"), ("high", "high"), ("xhigh", "max")),
+        default="medium"))),
     # Flash-Next's reference primitives (the stable top-k, the expert bank, an EXL3 projection's product) and
     # its n-gram table readers (the O_DIRECT row reader, the codebook)
     uses=("engine/models/flashnext/ref.py", "engine/models/flashnext/ple.py"),

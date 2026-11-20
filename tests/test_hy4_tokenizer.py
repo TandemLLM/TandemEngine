@@ -111,11 +111,12 @@ def test_a_call_in_the_models_form_reads_as_arg_key():
 def test_the_effort_words():
     tok = Hy4Tokenizer(_Stand())
     assert effort_of({}) == "high" and effort_of({"enable_thinking": False, "reasoning_effort": "xhigh"}) == "no_think"
+    # the server hands the template's own word (the family's EffortSpec): a mode passes, anything else is high
     assert [effort_of({"reasoning_effort": w}) for w in ("low", "medium", "high", "xhigh", "max", "no_think", "odd")] == \
-        ["high", "high", "high", "high", "high", "no_think", "high"]
+        ["high", "high", "high", "high", "max", "no_think", "high"]
     kw = tok.apply_chat_template([], enable_thinking=False, tools=TOOLS)
     assert kw == {"reasoning_effort": "no_think", "tools": TOOLS}
-    return "off -> no_think, every effort word (xhigh and max too) -> high; enable_thinking never reaches the template"
+    return "off -> no_think, the template's own modes pass, anything else -> high; enable_thinking never reaches the template"
 
 
 def _real():
@@ -130,15 +131,16 @@ def test_the_real_template_thinking_on_and_off():
     msgs = [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hello"}]
     on = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=True)
     off = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
-    mx = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=True, reasoning_effort="xhigh", tokenize=False)
+    xh = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=True, reasoning_effort="xhigh", tokenize=False)
+    mx = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=True, reasoning_effort="max", tokenize=False)
     o, c = tok.convert_tokens_to_ids("<think>"), tok.convert_tokens_to_ids("</think>")
     on, off = list(on["input_ids"] if hasattr(on, "keys") else on), list(off["input_ids"] if hasattr(off, "keys") else off)
     assert (o, c) == (120029, 120030) and on[-1] == o and off[-2:] == [o, c], (on[-3:], off[-3:])
     assert opens_think(tok.decode(on[-8:])) and not opens_think(tok.decode(off[-8:]))
     assert tok("</think>", add_special_tokens=False).input_ids == [c]
     raw_on, raw_off = tok._tok.decode(on), tok._tok.decode(off)
-    assert "reasoning_effort:high" in raw_on and "reasoning_effort:no_think" in raw_off and "reasoning_effort:high" in mx and "reasoning_effort:max" not in mx
-    return f"on ends with {o}, off with {o} {c}; the effort line reads high (xhigh too) and no_think"
+    assert "reasoning_effort:high" in raw_on and "reasoning_effort:no_think" in raw_off and "reasoning_effort:max" in mx and "reasoning_effort:high" in xh
+    return f"on ends with {o}, off with {o} {c}; the effort line reads high, no_think and max (a word not its own: high)"
 
 
 def test_the_real_template_tools_and_a_call_round_trip():
@@ -157,6 +159,47 @@ def test_the_real_template_tools_and_a_call_round_trip():
     assert len(ids) < 60 and tok._tok.convert_tokens_to_ids(f"<tool_call{S}>") in ids
     _read(tok, ids)
     return f"the tools prompt, an earlier turn's calls in the model's form, and {len(ids)} ids read back as two calls"
+
+
+#: the template's turn marks (its lines 3-5), by name
+TURN = ("<｜hy_start:opensource｜>", "<｜hy_middle:opensource｜>", "<｜hy_end:opensource｜>")
+
+
+class _TurnStand(_Stand):
+    """The stand-in with the template's turn marks as tokens too."""
+
+    def __init__(self):
+        super().__init__()
+        self.tags += list(TURN)
+
+    def encode(self, text, add_special_tokens=False):
+        return self(text).input_ids
+
+
+def test_the_turn_marks_reach_the_servers_lookup():
+    """SRV-905: `template_marks` gives the turn opener's id, the ids of `user` and the turn end's id, ids the
+    wrapped tokenizer knows, and the server's lookup (`_marks_of`) returns them; a tokenizer without the marks
+    gives none. With HY4_TOKENIZER: the pack's ids (120000, `user` as one token, 120025)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_forward_tree  # noqa: F401  (the CPU environment before the server imports)
+    from server import app
+    stand = _TurnStand()
+    tok = Hy4Tokenizer(stand)
+    want = (stand.convert_tokens_to_ids(TURN[0]), stand.encode("user"), stand.convert_tokens_to_ids(TURN[2]))
+    assert tok.template_marks() == want and min(want[0], want[2]) >= 1000, tok.template_marks()
+    assert app._marks_of(tok) == want
+    assert Hy4Tokenizer(_Stand()).template_marks() is None and app._marks_of(Hy4Tokenizer(_Stand())) is None
+    if SKIP:
+        return SKIP
+    real = _real()
+    marks = real.template_marks()
+    assert marks == (120000, [3717], 120025) and app._marks_of(real) == marks, marks
+    ids = real.apply_chat_template([{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}],
+                                   add_generation_prompt=True, enable_thinking=False)
+    ids = list(ids["input_ids"] if hasattr(ids, "keys") else ids)
+    i = next(j for j in range(len(ids)) if ids[j] == marks[0] and ids[j + 1:j + 2] == marks[1])
+    assert ids[i - 1] == marks[2], "the first user turn starts right after the system turn's end"
+    return f"the pack's marks {marks}; the first user turn at row {i}"
 
 
 if __name__ == "__main__":

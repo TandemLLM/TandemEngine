@@ -290,6 +290,38 @@ def test_5_the_waiting_line_names_tandemllm_s_own_work():
         assert app._wait_reason(me) == ("another request is running", 1)
     finally:
         app.HOLDER["who"] = None
+    # SRV-899: on a family with one lane, a client's request that holds the engine inside its reasoning block is
+    # said as thinking; with side slots, or once it writes its answer, it stays "another request is running"
+    import types
+
+    from engine.models.adapter import ServeSpec
+    state, real_state, real_spec = {"now": "thinking"}, app.activity_mod.state_of, app.STATE.get("spec")
+    app.activity_mod.state_of = lambda rec, **kw: state["now"]
+    try:
+        client = {"rank": app.RANK_TURN, "t": 0.0, "side": None, "own": False, "rec": types.SimpleNamespace()}
+        app.HOLDER["who"] = client
+        app.STATE["spec"] = ServeSpec(side_slots=False)
+        assert app._wait_reason(me) == ("another request is thinking", 1)
+        # a fixed string while the holder thinks: the waiting line (`queued`) sends a line when the reason or the place
+        # changes, so a thinking holder adds no line however long it thinks; it changes once, when the answer starts
+        seen = {app._wait_reason(me) for _ in range(5)}
+        assert seen == {("another request is thinking", 1)}, seen
+        assert not any(ch.isdigit() for ch in next(iter(seen))[0])
+        state["now"] = "writing"
+        assert app._wait_reason(me) == ("another request is running", 1)
+        state["now"] = "thinking"
+        app.STATE["spec"] = ServeSpec()
+        assert app._wait_reason(me) == ("another request is running", 1), "side slots: as before"
+        app.STATE["spec"] = ServeSpec(side_slots=False)
+        app.HOLDER["who"] = dict(client, own=True)
+        assert app._wait_reason(me) == (app.OWN_WAIT["question"], 1), "TandemLLM's own question keeps its words"
+    finally:
+        app.activity_mod.state_of = real_state
+        app.HOLDER["who"] = None
+        if real_spec is None:
+            app.STATE.pop("spec", None)
+        else:
+            app.STATE["spec"] = real_spec
     # the voice says each in words, in English and German
     for reason in app.OWN_WAIT.values():
         en = voice.natural("queue", {"reason": reason, "n": 1}, "en")
