@@ -7,7 +7,8 @@
 One load through the engine's own loader (cold tables, the hot-row cache of --table-cache-gb), one engine with a state
 of --rows + 64 rows. The prompt is the first --rows token ids of --text, raw (no template), in chunks of the engine's
 PREFILL_CHUNK; "chunk 2" is the last chunk. For each arm (`pair`: the routed experts on the pair kernels, `grouped`:
-on the family's grouped kernels, `group`: on the shared prefill kernel, where the engine has it):
+on the family's grouped kernels, `group`: on the shared prefill kernel, `v2`: the prompt pass on fixed-order kernels,
+HY4_PREFILL_V2; each where the engine has it):
 
   1. a warm-up of 4,608 random ids (every path compiled and launched);
   2. a control pass: the table cache emptied, every chunk unsynced, a device sync at each chunk's end: seconds and
@@ -57,6 +58,8 @@ PARTS = {
     "_engram_take": "Engram row reads",
     "route": "router",
     "forward_chunk": "rest", "mlp_chunk": "rest", "dense": "rest", "final": "rest", "embed": "rest", "rope": "rest",
+    # the prompt pass on fixed-order kernels (HY4_PREFILL_V2, arm v2): `_mla` apart by kind below
+    "_attention_chunk_v2": "attention glue", "_heads_mm": "absorbed halves", "_sparse_reads": "indexer", "_norm_v2": "norms",
 }
 #: gate 0 C's measured parts of the last chunk on the 3.56 pack (ms, grouped mean of two reps and pair), for the
 #: first run's check
@@ -97,9 +100,13 @@ def cold_reads(before: list, after: list) -> int:
 def set_arm(eng, arm: str) -> None:
     if arm == "group" and not hasattr(eng, "_experts_chunk"):
         raise SystemExit("arm group: this engine has no shared prefill expert path (_experts_chunk)")
+    if arm == "v2" and not hasattr(eng, "prefill_v2"):
+        raise SystemExit("arm v2: this engine has no prompt pass on fixed-order kernels (prefill_v2)")
     eng.prefill_grouped = arm == "grouped"
     if hasattr(eng, "prefill_experts"):
-        eng.prefill_experts = "group" if arm == "group" else "rows"
+        eng.prefill_experts = "group" if arm in ("group", "v2") else "rows"
+    if hasattr(eng, "prefill_v2"):
+        eng.prefill_v2 = arm == "v2"
 
 
 def instrument(eng):
@@ -112,6 +119,8 @@ def instrument(eng):
         if hasattr(eng, name):
             T.wrap(eng, name, lab)
     T.wrap(eng, "attend_chunk", lambda q, K, allowed, li, *rest: "sparse attention" if kinds[li] == SPARSE else "window attention")
+    if hasattr(eng, "_mla"):
+        T.wrap(eng, "_mla", lambda qa, qr, lat, ctl, sel, li, *rest: "sparse attention" if kinds[li] == SPARSE else "window attention")
     if not hasattr(eng, "_engram_take"):
         # the read inside the layer loop (the tree before S2): the tables' packed reads apart from the CPU decode
         for t in eng.tables.values():
@@ -180,7 +189,7 @@ def main() -> int:
     ap.add_argument("--pack", required=True)
     ap.add_argument("--text", help="the prompt's text file (raw, no template)")
     ap.add_argument("--rows", type=int, default=8192)
-    ap.add_argument("--arms", default="grouped,pair", help="comma list of pair, grouped, group")
+    ap.add_argument("--arms", default="grouped,pair", help="comma list of pair, grouped, group, v2")
     ap.add_argument("--reps", type=int, default=2, help="profiles of the last chunk an arm (gate 0: 2 grouped, 1 pair)")
     ap.add_argument("--table-cache-gb", type=float, default=2.0)
     ap.add_argument("--max-len", type=int, default=0, help="the state's rows (default --rows + 64)")

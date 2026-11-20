@@ -762,6 +762,70 @@ def table_rows(a, eng, cfg, say) -> bool:
     return ok
 
 
+#: SPD-323: `mla_rows` against its torch reference: max |diff| / max |ref| (the kernel's weights are rounded to bf16
+#: before the mix, the reference's are not: within two bf16 steps)
+MLA_REL = 1e-2
+
+
+def v2_micro(a, eng, cfg, say) -> bool:
+    """SPD-323 (the prefill design's F1 micro, question 3): `mla_rows` on one window and one sparse layer's real inputs
+    of the last 4,096-row chunk of --digest-text at each context of --micro-ctx: ms (median of 7 after 2), the
+    reference on 64 of its rows within MLA_REL, and a row alone equal to the same row in the chunk. Pass 80 ms a
+    sparse layer and 25 ms a window layer; kill above 150 and 50 (the fallback is then `attend_r` at M rows)."""
+    from tokenizers import Tokenizer
+    from engine.models.hy4_flash import kernels as K_
+    from engine.models.hy4_flash.config import SPARSE
+    from tools.hy4_prefill_profile import set_arm
+    if not a.digest_text:
+        raise SystemExit("v2-micro: --digest-text")
+    tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+    text = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids
+    win = next(li for li in range(20, cfg.num_hidden_layers) if cfg.layer_types[li] != SPARSE)
+    spa = next(li for li in range(20, cfg.num_hidden_layers) if cfg.layer_types[li] == SPARSE)
+    ok = True
+    for ctx in (int(c) for c in a.micro_ctx.split(",")):
+        if len(text) < ctx:
+            raise SystemExit(f"--digest-text holds {len(text)} tokens, --micro-ctx asks for {ctx}")
+        got, real = {}, eng._mla
+
+        def spy(qa, qr, lat, ctl, sel, li):
+            if li in (win, spa):
+                got[li] = (qa.clone(), qr.clone(), lat.clone(), ctl.clone(), sel.clone())
+            return real(qa, qr, lat, ctl, sel, li)
+        set_arm(eng, "v2")
+        eng._mla = spy
+        try:
+            eng.prefill(torch.tensor(text[:ctx]), eng.new_state(ctx + 64), head=None)
+        finally:
+            del eng._mla
+        for li in (win, spa):
+            qa, qr, lat, ctl, sel = got[li]
+            sink, scale = eng.sinks[li].reshape(-1), cfg.attn(li).qk ** -0.5
+            run = lambda: K_.mla_rows(qa, qr, lat, ctl, sel, sink, scale)  # noqa: E731
+            ts = []
+            for r in range(9):
+                sync(a.device)
+                t0 = time.perf_counter()
+                out = run()
+                sync(a.device)
+                if r >= 2:
+                    ts.append(1e3 * (time.perf_counter() - t0))
+            ms = sorted(ts)[len(ts) // 2]
+            rows = torch.linspace(0, qa.shape[0] - 1, 64).long().tolist()
+            ref = K_.mla_rows_reference(qa[rows], qr[rows], lat, ctl[rows].contiguous(), sel[rows], sink, scale)
+            rel = float((out[rows].float() - ref.float()).abs().max() / ref.float().abs().max())
+            alone = all(torch.equal(K_.mla_rows(qa[j:j + 1], qr[j:j + 1], lat, ctl[j:j + 1], sel[j:j + 1], sink, scale)[0], out[j])
+                        for j in (0, 17, qa.shape[0] // 2, qa.shape[0] - 1))
+            sparse = cfg.layer_types[li] == SPARSE
+            line, kill = (80.0, 150.0) if sparse else (25.0, 50.0)
+            ok = ok and rel < MLA_REL and alone and ms <= kill
+            say("v2_micro_mla", context=ctx, layer=li, kind="sparse" if sparse else "window", rows=int(qa.shape[0]),
+                keys_mean=round(float(ctl[:, 1].float().mean()), 1), ms=round(ms, 2), pass_ms=line, kill_ms=kill,
+                passed=ms <= line, killed=ms > kill, rel_vs_reference=rel, within=rel < MLA_REL, row_alone_equal=alone,
+                launch={"HB": K_.MLA_HB, "BN": K_.MLA_BN, "warps": K_.MLA_WARPS, "stages": K_.MLA_STAGES})
+    return ok
+
+
 def profile(a, eng, cfg, ids, say) -> None:
     """One decode step and one 6-row block taken apart: exclusive wall time a part, launched one by one with a
     device sync around every part (so the parts add up; a graph's replay of the same pass is given beside them)."""
@@ -921,11 +985,13 @@ def main() -> int:
     ap.add_argument("--answer", type=int, default=600)
     ap.add_argument("--profile", action="store_true", help="one decode step and one drafted round taken apart by part")
     ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit,"
-                                   "prefill-digest,experts-equal,experts-crossover,table-rows)")
+                                   "prefill-digest,experts-equal,experts-crossover,table-rows,v2-micro)")
+    ap.add_argument("--prefill-v2", action="store_true", help="the prompt pass on fixed-order kernels (HY4_PREFILL_V2=1)")
+    ap.add_argument("--micro-ctx", default="8192,32768", help="v2-micro: the contexts (rows of --digest-text) to time at")
     ap.add_argument("--digest-text", help="prefill-digest: a text file, its first --digest-rows token ids raw")
     ap.add_argument("--digest-rows", type=int, default=8192)
     ap.add_argument("--digest-chat", help="prefill-digest: a text file, as a chat request (the essay ask, thinking off)")
-    ap.add_argument("--digest-arms", default="grouped", help="prefill-digest: comma list of the expert paths (pair, grouped, group)")
+    ap.add_argument("--digest-arms", default="grouped", help="prefill-digest: comma list of the paths (pair, grouped, group, v2)")
     ap.add_argument("--prefill-experts", default="group", choices=("group", "rows"),
                     help="the prompt's experts on the shared prefill kernel (group) or the row kernels (rows; --grouped picks their form)")
     ap.add_argument("--digest-out", help="prefill-digest: write the digests to this JSON file")
@@ -966,6 +1032,7 @@ def main() -> int:
     eng = Hy4FlashEngine(cfg, W, tables, device=a.device, max_len=a.max_len, banks=banks, cuts=cuts)
     eng.prefill_grouped = a.grouped
     eng.prefill_experts = a.prefill_experts
+    eng.prefill_v2 = a.prefill_v2
     say("load", timing=timing, weights_gib=round(pack.resident_bytes() / (1 << 30), 3), banks=len(banks), mem=mem())
 
     g = torch.Generator().manual_seed(7)
@@ -1116,6 +1183,8 @@ def main() -> int:
         experts_crossover(a, eng, cfg, say)
     if only is not None and "table-rows" in only:
         res["ok"] = table_rows(a, eng, cfg, say) and res["ok"]
+    if banks and only is not None and "v2-micro" in only:
+        res["ok"] = v2_micro(a, eng, cfg, say) and res["ok"]
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
     if a.prices_at and want("prices"):

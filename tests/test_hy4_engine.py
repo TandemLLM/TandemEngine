@@ -455,6 +455,52 @@ def test_two_states_interleaved_keep_their_own_rows():
     return f"{len(eng._elayers)} tables' jobs crossed; two states' chunks of {E.PREFILL_CHUNK} in turn equal their lone prefills"
 
 
+def test_a_sparse_row_reads_by_its_own_position():
+    """SPD-323 (F1): on the prompt pass on fixed-order kernels, a chunk that crosses the row from which sparse layers
+    read lists (index_topk) gives every row the read list the decode step takes for that row, in every sparse layer:
+    the rows before the line every row up to theirs, the rows past it their groups' rows."""
+    cfg, ref, eng = tiny()
+    toks = PROMPT[:35]
+    lists, real = {}, eng._sparse_reads
+
+    def spy(x, qres, li, st, slots, cos, sin):
+        ctl, sel = real(x, qres, li, st, slots, cos, sin)
+        for t, p in enumerate(slots.tolist()):
+            base, n, lst = ctl[t].tolist()
+            lists[(li, p)] = sel[t, :n].tolist() if lst else list(range(base, base + n))
+        return ctl, sel
+    eng.prefill_v2, eng._sparse_reads = True, spy
+    try:
+        st = eng.new_state()
+        eng.prefill(toks[:5], st, head=None)
+        eng.prefill(toks[5:], st, head=None)          # rows 5 to 34: across row index_topk
+    finally:
+        eng.prefill_v2 = False
+        del eng._sparse_reads
+    want, cur, real_sel = {}, {}, eng._select
+
+    def spy_sel(li, st, iq, hw, cos, sin, c):
+        out = real_sel(li, st, iq, hw, cos, sin, c)
+        cur[li] = out[0].tolist()
+        return out
+    eng._select = spy_sel
+    try:
+        st = eng.new_state()
+        for p, t in enumerate(toks.tolist()):
+            cur.clear()
+            eng.step(int(t), st)
+            for li in cfg.sparse_layers:
+                want[(li, p)] = [q for q in cur[li] if q <= p] if li in cur else list(range(p + 1))
+    finally:
+        del eng._select
+    rows = sorted(k for k in lists if k[1] >= 5)
+    bad = [k for k in rows if lists[k] != want[k]]
+    assert not bad, [(k, lists[k], want[k]) for k in bad[:3]]
+    listed = sum(1 for k in rows if k[1] >= cfg.index_topk)
+    assert listed and any(k[1] < cfg.index_topk for k in rows), rows
+    return f"{len(rows)} (layer, row) read lists of a chunk across row {cfg.index_topk} equal the decode step's ({listed} lists)"
+
+
 def test_capacity_is_checked():
     cfg, ref, eng = tiny()
     st = eng.new_state(12)

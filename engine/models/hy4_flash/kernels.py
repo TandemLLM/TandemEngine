@@ -331,3 +331,101 @@ def hc(h: torch.Tensor, pend: tuple | None, fn: torch.Tensor, base: torch.Tensor
     posto = None if head else torch.empty(B, S, dtype=torch.float32, device=h.device)
     _hc_apply[(B,)](hout, mix, base, scale, w, xn, mix if head else posto, H, NMIX, hc_eps, mag, eps, S=S, HB=_pow2(H), HEAD=head, num_warps=8)
     return xn, posto, hout
+
+
+# ------------------------------------------------------------------------------------ the prompt pass's attention
+# SPD-323 (the prefill design's F1): Hy4's latent attention over a prompt chunk in one launch, both kinds. A program owns
+# one row and a tile of MLA_HB heads. A row's visible keys are its virtual columns 0..n-1: position base + c (a dense or
+# window row) or SEL[row, c] (a row that reads a list), read in place from one latent buffer [rows, R + RP] by position,
+# MLA_BN keys a step in the row's own order. Scores (qa . k[:R] + qr . k[R:]) * scale on the tensor cores in fp32; a
+# running softmax over the steps (fn_seq_kernels `_attn_rows_split`'s); the weights rounded to bf16 times k[:R], summed
+# in fp32; at the end the sink joins the denominator. A row's sums depend on its own keys in its own order, never on
+# the other rows of the launch. The launch shape is part of the bits (a sum's order follows its block's shape): the
+# constants below are frozen with tests/gpu/test_hy4_mla_rows_gpu.py's digests.
+
+#: heads a program takes (the query tile of every dot)
+MLA_HB = 16
+#: keys a step
+MLA_BN = 32
+#: warps and pipeline stages of the launch
+MLA_WARPS = 8
+MLA_STAGES = 2
+
+if HAVE_TRITON:
+
+    @triton.jit
+    def _mla_rows(QA, QR, LAT, CTL, SEL, SINK, OUT, heads, scale, s_qa_t, s_qa_h, s_qr_t, s_qr_h, s_lat, s_sel,
+                  s_o_t, s_o_h, R: tl.constexpr, RP: tl.constexpr, HB: tl.constexpr, BN: tl.constexpr):
+        t = tl.program_id(0).to(tl.int64)
+        hs = tl.program_id(1) * HB + tl.arange(0, HB)
+        hm = hs < heads
+        base = tl.load(CTL + t * 3)
+        n = tl.load(CTL + t * 3 + 1)
+        lst = tl.load(CTL + t * 3 + 2)
+        r = tl.arange(0, R)
+        rp = tl.arange(0, RP)
+        qa = tl.load(QA + t * s_qa_t + hs[:, None].to(tl.int64) * s_qa_h + r[None, :], mask=hm[:, None], other=0.0)
+        qr = tl.load(QR + t * s_qr_t + hs[:, None].to(tl.int64) * s_qr_h + rp[None, :], mask=hm[:, None], other=0.0)
+        m_i = tl.full([HB], -float("inf"), dtype=tl.float32)
+        l_i = tl.zeros([HB], dtype=tl.float32)
+        acc = tl.zeros([HB, R], dtype=tl.float32)
+        for c0 in range(0, n, BN):
+            cols = c0 + tl.arange(0, BN)
+            cm = cols < n
+            sel = tl.load(SEL + t * s_sel + cols, mask=cm & (lst != 0), other=0)
+            pos = tl.where(lst != 0, sel, base + cols).to(tl.int64)
+            k = tl.load(LAT + pos[:, None] * s_lat + r[None, :], mask=cm[:, None], other=0.0)
+            kr = tl.load(LAT + pos[:, None] * s_lat + R + rp[None, :], mask=cm[:, None], other=0.0)
+            s = tl.dot(qa, tl.trans(k)) + tl.dot(qr, tl.trans(kr))
+            s = tl.where(cm[None, :], s * scale, -float("inf"))
+            m_new = tl.maximum(m_i, tl.max(s, 1))
+            p = tl.exp(s - m_new[:, None])
+            alpha = tl.exp(m_i - m_new)
+            l_i = l_i * alpha + tl.sum(p, 1)
+            acc = acc * alpha[:, None] + tl.dot(p.to(tl.bfloat16), k)
+            m_i = m_new
+        # the sink as one more logit: everything rescaled to the larger of the keys' maximum and the sink, so no term
+        # overflows (the same quotient as mix / (l + exp(sink - m)))
+        sink = tl.load(SINK + hs, mask=hm, other=0.0)
+        mx = tl.maximum(m_i, sink)
+        a = tl.exp(m_i - mx)
+        o = acc * (a / (l_i * a + tl.exp(sink - mx)))[:, None]
+        tl.store(OUT + t * s_o_t + hs[:, None].to(tl.int64) * s_o_h + r[None, :], o.to(tl.bfloat16), mask=hm[:, None])
+
+
+def mla_rows(qa: torch.Tensor, qr: torch.Tensor, lat: torch.Tensor, ctl: torch.Tensor, sel: torch.Tensor,
+             sink: torch.Tensor, scale: float) -> torch.Tensor:
+    """Every row of a prompt chunk over its own keys. qa [T, heads, R] bf16 (the absorbed key half of the query), qr
+    [T, heads, RP] bf16 (its rotated rope half), lat [N, R + RP] bf16 (the latents by position, any row stride),
+    ctl int32 [T, 3] (base, n, reads a list), sel int32 [T, *] (a list row's positions, ascending), sink fp32 [heads]
+    -> the weighted latents [T, heads, R] bf16, the sink's weight dropped."""
+    T, H, R = qa.shape
+    RP = qr.shape[2]
+    assert lat.shape[1] == R + RP and lat.stride(1) == 1 and qa.stride(2) == 1 and qr.stride(2) == 1
+    assert ctl.dtype == torch.int32 and ctl.is_contiguous() and sel.dtype == torch.int32 and sel.stride(1) == 1
+    out = torch.empty(T, H, R, dtype=torch.bfloat16, device=qa.device)
+    if T == 0:
+        return out
+    _mla_rows[(T, triton.cdiv(H, MLA_HB))](
+        qa, qr, lat, ctl, sel, sink.contiguous(), out, H, float(scale), qa.stride(0), qa.stride(1), qr.stride(0), qr.stride(1),
+        lat.stride(0), sel.stride(0), out.stride(0), out.stride(1), R=R, RP=RP, HB=MLA_HB, BN=MLA_BN,
+        num_warps=MLA_WARPS, num_stages=MLA_STAGES)
+    return out
+
+
+def mla_rows_reference(qa: torch.Tensor, qr: torch.Tensor, lat: torch.Tensor, ctl: torch.Tensor, sel: torch.Tensor,
+                       sink: torch.Tensor, scale: float) -> torch.Tensor:
+    """`mla_rows` in plain torch, one row a call, fp32 (the CPU's path and the kernel's reference): the softmax with
+    the sink as one more logit, exact, its weights unrounded -> qa's dtype."""
+    T, H, R = qa.shape
+    out = torch.empty(T, H, R, dtype=qa.dtype, device=qa.device)
+    sk = sink.reshape(-1, 1).float()
+    for t in range(T):
+        base, n, lst = (int(v) for v in ctl[t].tolist())
+        pos = sel[t, :n].long() if lst else torch.arange(base, base + n, device=lat.device)
+        k = lat[pos].float()
+        s = (qa[t].float() @ k[:, :R].T + qr[t].float() @ k[:, R:].T) * scale
+        z = torch.cat((s, sk), dim=1)
+        e = torch.exp(z - z.max(dim=1, keepdim=True).values)
+        out[t] = ((e[:, :-1] / e.sum(dim=1, keepdim=True)) @ k[:, :R]).to(qa.dtype)
+    return out

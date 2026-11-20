@@ -215,6 +215,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         self.experts_min = EXPERTS_MIN if moe_warps(self.device) == GROUP_WARPS else 0
         #: SPD-319: the prompt pass's one table-row reader thread, made at the first chunk
         self._reader = None
+        #: SPD-323: the prompt pass on fixed-order kernels (serving sets it from HY4_PREFILL_V2): another record of the
+        #: prompt pass's bits; off, the pass before
+        self.prefill_v2 = False
         self.prompt_hidden = None
         self.stats = {"rows": 0, "blocks": 0, "prefill_rows": 0, "engram_rows": 0}
 
@@ -914,7 +917,8 @@ class Hy4FlashEngine(Hy4FlashRef):
                 self.stats["engram_rows"] += rows.shape[0] * rows.shape[1]
                 h = h + self.engram_apply(h, rows, li, live)
             x, post = self.hc(h, p + "hc_attn_layer.hc_pre.")
-            y = self.attention_chunk(self.rms(x, self.w(p + "input_layernorm.weight")), li, st, slots)
+            attn = self._attention_chunk_v2 if self.prefill_v2 else self.attention_chunk
+            y = attn(self.rms(x, self.w(p + "input_layernorm.weight")), li, st, slots)
             h = self.inject(h, y, post)
             x, post = self.hc(h, p + "hc_mlp_layer.hc_pre.")
             y = self.mlp_chunk(self.rms(x, self.w(p + "post_attention_layernorm.weight")), li)
@@ -1007,6 +1011,96 @@ class Hy4FlashEngine(Hy4FlashRef):
             st.win[li][slots[-Wn:] % Wn] = lat[-Wn:]
         y = (out * torch.sigmoid(gate).view(T, a.heads, a.v)).reshape(T, a.heads * a.v)
         return self.rms(self.lin(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
+
+    # ------------------------------------------------------------------------- the prompt pass on fixed-order kernels
+    def _norm_v2(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """The RMS norm of rows with its weight: the row kernel (`K_.norm`) on a device, the row pass's `rms_r` else."""
+        if self.fused:
+            return K_.norm(x.contiguous(), w, self.cfg.rms_norm_eps)
+        return self.rms_r(x, w)
+
+    def _heads_mm(self, a: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """a [T, heads, K] @ w [heads, K, N] -> fp32 [T, heads, N]: on a device `mm` with the rows on the product's tile
+        axis (an element is the sum the row pass's `attend_r` takes, without its 16-fold padding); else `mm` a row."""
+        T, H, Kk = a.shape
+        if self.fused:
+            return K_.mm(a.transpose(0, 1), w).transpose(0, 1)
+        return self.mm(a.reshape(T * H, 1, Kk), w).view(T, H, -1)
+
+    def _mla(self, qa: torch.Tensor, qr: torch.Tensor, lat: torch.Tensor, ctl: torch.Tensor, sel: torch.Tensor,
+             li: int) -> torch.Tensor:
+        """Every row of a chunk over its own keys (kernels.py `mla_rows`; its torch reference off the device)."""
+        a = self.cfg.attn(li)
+        sink = self.sinks[li].reshape(-1)
+        if self.fused:
+            return K_.mla_rows(qa.contiguous(), qr.contiguous(), lat, ctl, sel, sink, a.qk ** -0.5)
+        return K_.mla_rows_reference(qa, qr, lat, ctl, sel, sink, a.qk ** -0.5)
+
+    def _sparse_reads(self, x: torch.Tensor, qres: torch.Tensor, li: int, st: Hy4EngState, slots: torch.Tensor,
+                      cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """A sparse layer's read lists of a chunk's rows as `mla_rows` takes them: ctl int32 [T, 3] (base 0, the keys a
+        row reads, whether it reads its list) and sel int32 [T, index_topk] (the positions, ascending; the keys past a
+        row are the list's tail). The rule is each row's own: a row whose group is below `group_topk` reads every row
+        up to itself. The lists from the indexer as the pass before computes them (`_sparse_positions_chunk`)."""
+        cfg, dev = self.cfg, self.device
+        NS, rr, T = cfg.index_topk, cfg.index_kpool, slots.shape[0]
+        ctl = torch.zeros(T, 3, dtype=torch.int32, device=dev)
+        ctl[:, 1] = (slots + 1).to(torch.int32)
+        sel = torch.zeros(T, NS, dtype=torch.int32, device=dev)
+        if int(slots[-1]) // rr < cfg.group_topk:
+            return ctl, sel
+        p_ = f"layers.{li}.self_attn.compressed_indexer."
+        iq = self.lin(qres, self.w(p_ + "query_projection.weight"))
+        hw = self.lin(x, self.w(p_ + "head_weight_projection.weight"))
+        for i in range(0, T, SUB_LIST):
+            sl = slots[i:i + SUB_LIST]
+            pq, valid = self._sparse_positions_chunk(li, st, sl, iq[i:i + SUB_LIST], hw[i:i + SUB_LIST], cos[i:i + SUB_LIST],
+                                                     sin[i:i + SUB_LIST])
+            sel[i:i + SUB_LIST] = pq.to(torch.int32)
+            ctl[i:i + SUB_LIST, 1] = valid.sum(dim=1).to(torch.int32)
+            ctl[i:i + SUB_LIST, 2] = (sl // rr >= cfg.group_topk).to(torch.int32)
+        return ctl, sel
+
+    def _attention_chunk_v2(self, x: torch.Tensor, li: int, st: Hy4EngState, slots: torch.Tensor) -> torch.Tensor:
+        """SPD-323 (F1): a chunk's attention, both kinds on `mla_rows`. The projections as the pass before (`lin`), the
+        rotary by `rotate`, the norms on the row kernel; the query's absorbed key half by `mm` with the rows on the
+        tile axis. A sparse layer's latents go into the state first and every row reads its own keys there in place; a
+        window layer's rows read a buffer of the ring's last rows before the chunk and the chunk's own. The value
+        half by `mm`, then the gate, `o_proj` and its norm."""
+        cfg, dev = self.cfg, self.device
+        a, kind, p_ = cfg.attn(li), cfg.layer_types[li], f"layers.{li}.self_attn."
+        T, R, L0, Wn = x.shape[0], cfg.kv_lora_rank, st.length, cfg.sliding_window
+        gate = self.lin(x, self.w(p_ + "linear_gate.weight"))
+        qres = self._norm_v2(self.lin(x, self.w(p_ + "q_a_proj.weight")), self.w(p_ + "q_a_layernorm.weight"))
+        q = self.lin(qres, self.w(p_ + "q_b_proj.weight")).view(T, a.heads, a.qk)
+        ckv = self.lin(x, self.w(p_ + "kv_a_proj_with_mqa.weight"))
+        cos, sin = self.rope(self.pos3(slots.cpu() + st.delta), kind)
+        qr = rotate(q[..., a.nope:], cos[:, None], sin[:, None])
+        lat = torch.cat((self._norm_v2(ckv[:, :R], self.w(p_ + "kv_a_layernorm.weight")), rotate(ckv[:, R:], cos, sin)), dim=-1)
+        qa = self._heads_mm(q[..., :a.nope], self.wk[li]).to(self.dtype)
+        if kind == SPARSE:
+            st.lat[li][slots] = lat
+            self._index_chunk(x, qres, li, st, slots)
+            ctl, sel = self._sparse_reads(x, qres, li, st, slots, cos, sin)
+            mix = self._mla(qa, qr, st.lat[li], ctl, sel, li)
+            if li in self.pick_layers:
+                # the last row's read list, for the draft head's layers
+                pi, L, NS = st.pick_layers.index(li), L0 + T, cfg.index_topk
+                pq = sel[-1, :NS].long() if int(ctl[-1, 2]) else self.ar(NS)
+                st.pick_q[pi].copy_(pq)
+                st.pick_ok[pi].copy_(pq <= L - 1)
+        else:
+            # the ring's Wn - 1 rows before the chunk (by position; those before row 0 are never read), then the chunk's
+            before = torch.arange(L0 - Wn + 1, L0, device=dev)
+            buf = torch.cat((st.win[li][before % Wn], lat))
+            i = torch.arange(T, device=dev)
+            n = (slots + 1).clamp(max=Wn)
+            ctl = torch.stack((i + (Wn - 1 - slots).clamp(min=0), n, torch.zeros_like(n)), dim=1).to(torch.int32).contiguous()
+            mix = self._mla(qa, qr, buf, ctl, torch.zeros(T, 1, dtype=torch.int32, device=dev), li)
+            st.win[li][slots[-Wn:] % Wn] = lat[-Wn:]
+        out = self._heads_mm(mix, self.wv[li]).to(self.dtype)
+        y = (out * torch.sigmoid(gate).view(T, a.heads, a.v)).reshape(T, a.heads * a.v)
+        return self._norm_v2(self.lin(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
 
     def attend_chunk(self, q: torch.Tensor, K: torch.Tensor, allowed: torch.Tensor, li: int, w: tuple | None = None) -> torch.Tensor:
         """q [t, heads, qk] over shared latents K [n, R + rope] with `allowed` [t, n] -> [t, heads, v]. `w`: another
