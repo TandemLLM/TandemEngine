@@ -4259,7 +4259,7 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
 
     `own` (SRV-907): the conductor's own question. On a resident prefix with `chat_first` it keeps
     neither a session snapshot (nobody asks for one again: each took 42 to 81 MiB of the store) nor an
-    end; when it was no guest, nothing of a conversation was in place, and its rows are given back.
+    end; when it was no guest, the rows it wrote are given back (`ResidentPrefix.release_own`).
     """
     eng, drafter = STATE["engine"], STATE["drafter"]
     if cold:
@@ -4354,11 +4354,8 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
     res = STATE.get("resident")
     if own_q:
         # SRV-907: a guest's stash puts the conversation back at the next request; rows of its own in
-        # place (it was no guest) are nobody's, as the warm-up's (`_warm_prefill`)
-        n_p = int(STATE.get("last_prompt_n") or 0)
-        if (getattr(res, "_stash", None) is None and n_p and int(res.valid) >= n_p
-                and res.tokens[:n_p] == [int(t) for t in committed[:n_p]]):
-            res.clear()
+        # place (it was no guest: `begin` noted where they start) are nobody's, as the warm-up's
+        res.release_own()
     elif res is not None and res.end_on and committed:
         if mm is None and not delta:
             if getattr(res, "_stash", None) is not None and _guest_promotes(res, committed, conv_id):

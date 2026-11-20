@@ -1893,6 +1893,11 @@ class ResidentPrefix:
         # questions; `last_n` is the length of the last prompt that became the resident one (0: none)
         self.chat_first = bool(chat_first)
         self.last_n = 0
+        # SRV-907: the server's own question ran as no guest (nothing of a conversation was in place, or the
+        # stash had no budget): its rows from `own_from` up are nobody's (`release_own`), and `own_prev` is
+        # the owner and `last_n` before it
+        self.own_from: int | None = None
+        self.own_prev: tuple = (None, 0)
         # SRV-905 (`guest_store`): a guest that resumes from the store keeps the end; it stores its own head
         self.guest_store = bool(guest_store)
         # INTERIM (SRV-907, a family's `Capabilities.solo`; goes when the family builds side slots): one lane,
@@ -2184,6 +2189,24 @@ class ResidentPrefix:
             return False
         return True
 
+    def release_own(self) -> None:
+        """SRV-907: the rows the server's own question wrote in place as no guest are nobody's: back to the
+        rows below where it resumed (all of them, from row 0: nothing). Called after its turn (server/app.py
+        `_remember_turn`) and by the next prefill, for a question whose client left before that: its rows
+        must not stay the resident prompt that the next short chat would be a guest of."""
+        k = self.own_from
+        self.own_from = None
+        if k is None:
+            return
+        if k <= 0:
+            self.clear()
+            self.owner = None
+            return
+        self.rows_gen += 1
+        self._cut(int(k))
+        self.capturing = False
+        self.owner, self.last_n = self.own_prev
+
     def keep_prompt_end(self, eng, drafter, tokens, n: int) -> str:
         """SPD-215: after a prefill that read the prompt to its end `n`: the state there, with the prompt's
         tokens, for the next turn that shares them (`pend_offer`). Not for a guest, a scratch prefill or a
@@ -2328,10 +2351,13 @@ class ResidentPrefix:
 
         SRV-907, with `chat_first` only: `continues` (the request holds the whole last prompt in place,
         `last_n`) is never a guest and replaces no other session's rows; `own` (the server's own question)
-        is a guest whenever rows are in place that it does not hold all of and the stash has a budget.
+        is a guest whenever rows are in place and the stash has a budget, also when its prompt holds them
+        all; when it is no guest, `own_from` says where its own rows start (`release_own`).
         """
         self.rows_gen += 1
         self.capturing = False
+        mine = bool(own) and self.chat_first and not scratch
+        self.own_from = None
         if kind == "session":
             # rows written by verify blocks: nothing anchored after them is a cold prefill's state.
             # A long conversation in place goes to the disk first (it is not a guest's to keep)
@@ -2340,6 +2366,8 @@ class ResidentPrefix:
                 self._spill(eng, drafter, "evict")
             self.clear()
             self.owner = session
+            if mine:
+                self.own_from, self.own_prev = 0, (None, 0)
             if not scratch:
                 # SRV-678: the restore writes the snapshot's rows in place (`restore`), so they
                 # are this prompt's up to `start`, and the prefill goes on from there as from an
@@ -2356,9 +2384,10 @@ class ResidentPrefix:
         n = len(ids)
         continues = bool(continues) and self.chat_first
         guest = self.is_guest(n, c) and not continues
-        if (own and self.chat_first and self.valid > 0 and c < self.valid
-                and self.stash_budget > 0):
-            guest = True                   # SRV-907: the server's own question, at any size
+        if mine and self.valid > 0 and self.stash_budget > 0:
+            # SRV-907: the server's own question, at any size; one whose prompt holds every row in place
+            # too, which would otherwise go on with the conversation's rows and leave them its own
+            guest = True
         if not stay and guest:
             s = min(start, (c // self.chunk) * self.chunk)
             if self.guest_store and kind in ("prefix", "disk"):
@@ -2368,6 +2397,8 @@ class ResidentPrefix:
         if self.valid and c < self.valid:
             self.stats["invalidated"] += 1
         keep = min(start, c)
+        if mine:
+            self.own_from, self.own_prev = keep, (self.owner, self.last_n)
         parked, refused = self.stats["parks"], self.stats["refused_park"]
         # SRV-907: a turn that goes on with the rows in place replaces nobody's
         other = (session is None or session != self.owner) and not continues
@@ -3266,6 +3297,7 @@ class ResidentPrefix:
         self.capturing = False
         self.end, self.taint = None, None
         self.last_n = 0
+        self.own_from = None
 
     @property
     def pin_bytes(self) -> int:
@@ -3639,6 +3671,8 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
         if disk is not None and res._stash is not None:
             _disk(disk, "fence", 0)          # a guest's rows go back: a job of its copies none
         res.settle_guest(eng)
+        if res.own_from is not None:
+            res.release_own()                # SRV-907: rows a question whose client left wrote in place
         if res.spiller is not None:
             # a conversation on the disk (engine/spill.py) that beats every cache in RAM is read
             # back in place first; the server asks before its replay too (text prompts)

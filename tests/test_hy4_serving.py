@@ -499,9 +499,61 @@ def test_the_conductors_question_is_a_guest_at_any_size():
         _, tq = _turn(eng, res, q, 3, "q", own=True)
         assert tq["guest"], tq
         assert res.end is not None and res.end["at"] == len(c1) - 1 and res.pend["at"] == 37, (res.end, res.pend)
-        _, t2 = _turn(eng, res, c1 + tokens(5, 32), 4, "chat")
+        p2 = c1 + tokens(5, 32)
+        want = _cold_greedy(p2, 8)
+        c2, t2 = _turn(eng, res, p2, 8, "chat")
     assert t2["kind"] == "end" and t2["reused"] == len(c1) - 1, t2
+    assert c2[len(p2):] == want, "the chat's next turn after the question is not a cold read's"
     return f"a {len(q)}-row question beside {len(c1) - 1} rows was a guest; the chat resumed at its end"
+
+
+def test_a_question_that_holds_every_row_leaves_the_chat_intact():
+    """The conductor's question whose prompt holds every row in place (the chat's whole context, then its own
+    text) runs as a guest too. As no guest it went on with the chat's rows and made them its own, and the rows
+    it then gave back were the chat's: its rows, anchors and end."""
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        c1, _ = _turn(eng, res, tokens(37, 110), 30, "chat")
+        e = res.end["at"]
+        q = c1 + tokens(40, 111)
+        assert res.common(q) == res.valid == e
+        _, tq = _turn(eng, res, q, 3, "q", own=True)
+        assert tq["guest"] and tq["kind"] == "end", tq
+        assert res.valid == e and res.end["at"] == e and res.pend["at"] == 37 and res.owner == "chat", res.report()
+        p2 = c1 + tokens(5, 112)
+        want = _cold_greedy(p2, 6)
+        c2, t2 = _turn(eng, res, p2, 6, "chat")
+    assert (t2["kind"], t2["reused"]) == ("end", e) and c2[len(p2):] == want, t2
+
+
+def test_a_question_whose_client_left_leaves_nothing_in_place():
+    """The conductor's first question after a start is no guest (nothing is in place); when its client leaves
+    (the conductor's timeout is 8 s, the first read of its head about 19 s on the device), `_remember_turn`
+    never runs. Its rows are given back at the next prefill, so the next short chat is no guest of them."""
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        cache.prefill(eng, None, tokens(300, 113), "cpu", chunk=CH, resident=res, own=True)   # no `_remember`
+        assert res.own_from == 0 and res.valid == 300, (res.own_from, res.valid)
+        p = tokens(37, 114)
+        assert len(p) < 0.25 * res.valid
+        c, t = _turn(eng, res, p, 10, "chat")
+    assert not t["guest"] and res.owner == "chat" and res.pend["at"] == 37 and res.end["at"] == len(c) - 1, t
+    assert c[37:] == _cold_greedy(p, 10)
+
+
+def test_a_question_at_the_chats_prompt_end_stores_nothing():
+    """A guest that resumed at the chat's prompt end wrote a session's rows: the store takes no snapshot of them
+    (the guard that lets a guest store its head keeps this case out)."""
+    store = cache.StateStore(BIG, chunk=CH)
+    with _prompt_end():
+        res, eng = _prefix(), serving32()
+        p1 = tokens(37, 115)
+        c1, _ = _turn(eng, res, p1, 30, "chat", store=store)
+        puts = store.stats["puts"]
+        q = p1 + [_other(c1[37])] + tokens(60, 116)
+        _, tq = _turn(eng, res, q, 3, "q", own=True, store=store)
+    assert tq["guest"] and (tq["kind"], tq["reused"]) == ("pend", 37), tq
+    assert store.stats["puts"] == puts, "a question resumed at the chat's prompt end stored a snapshot"
 
 
 def test_the_chat_after_the_conductors_question_owns_the_rows():
