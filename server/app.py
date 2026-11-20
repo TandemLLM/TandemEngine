@@ -4737,7 +4737,8 @@ def _carry_from_side(ids: list[int], session=None) -> dict | None:
             for (t, ax), (u, _) in zip(v0, v1):
                 kvpool.ensure_for(t, e)                         # SRV-307
                 t.narrow(ax, 0, e).copy_(u.narrow(ax, 0, e))
-            res.adopt(rec["tokens"], e, 0, rec.get("owner"), count="side_carries")
+            res.adopt(rec["tokens"], e, 0, rec.get("owner"), count="side_carries",
+                      last_n=int(rec.get("n_prompt") or 0))     # SRV-907: its last prompt
             if drafter is not None and hasattr(drafter, "state_resume"):
                 drafter.state_resume(e)    # again, over the rows carried in (`cache.drafter_resume`)
             pair = res.adopt_end(eng, {"at": e, "hidden": rec["hidden"], "mark": rec["mark"],

@@ -580,6 +580,46 @@ def test_a_follow_up_on_a_side_slots_prefix_is_no_guest():
     assert t2["kind"] == "pend" and not t2["guest"] and res.end["at"] == len(c2) - 1, (t2, res.end)
 
 
+def test_the_last_prompt_comes_back_with_its_rows():
+    """The length of the last prompt (`last_n`) travels with the conversation's rows: into the park and back,
+    to the NVMe and back. After a park swap, a short request of another session that holds as many of the
+    returned chat's tokens as the other conversation's last prompt had is a guest, as by size. The pin brings
+    back a head below an anchor, never a whole last prompt: `last_n` is 0 there."""
+    with _prompt_end():
+        res, eng = _prefix(park_bytes=BIG), serving32()
+        a = tokens(60, 120)
+        _turn(eng, res, a, 200, "A")
+        _turn(eng, res, tokens(20, 121), 3, "B", stay=True)      # a worker's request: A goes to the park
+        assert res.owner == "B" and res.last_n == 20 and res.park_last_n == 60 and res.stats["parks"] == 1
+        assert res.unpark(eng, None) and res.owner == "A" and res.last_n == 60 and res.park_last_n == 20
+        q = a[:25] + [_other(a[25])] + tokens(5, 122)
+        assert len(q) < 0.25 * res.valid
+        _, tq = _turn(eng, res, q, 2, "C")
+        assert tq["guest"], tq
+        res, eng = _prefix(pin_bytes=BIG), serving32()
+        _turn(eng, res, tokens(100, 123), 2, "A")
+        _turn(eng, res, tokens(60, 124), 2, "B")                 # too long for a guest: A's head is pinned
+        assert res.pin_rows > 0 and res.last_n == 60, (res.pin_rows, res.last_n)
+        assert res.unpin(eng, None) and res.last_n == 0
+    d = tempfile.mkdtemp(prefix="hy4-last-n-")
+    try:
+        t = _tier(d)
+        sp = spill.SessionSpill(os.path.join(d, "sessions"), chunk=CH, fingerprint="hy4", tier=t,
+                                settings={"budget_gb": 1.0, "min_tokens": 64, "drain_min_tokens": CH, "codec": "off"},
+                                free_bytes=lambda p: 10 ** 15, floor_bytes=0).open()
+        res, eng = _prefix(), serving32()
+        _turn(eng, res, tokens(100, 125), 10, "A")
+        info = sp.save_resident(res, eng, None, "evict")
+        assert info is not None, sp.stats
+        res.clear()
+        assert res.last_n == 0
+        assert sp.restore(res, eng, None, sp.entries[info["eid"]]) is not None, sp.stats
+        assert res.last_n == 100 and res.owner == "A", (res.last_n, res.owner)
+        t.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_a_promoted_guests_next_turn_is_no_guest():
     """5.1 test 3: a chat that ran as a guest on a side slot and became its conversation (`promote_guest`): its
     next turn holds its whole prompt and is no guest, though it is shorter than the rows; the turn after it

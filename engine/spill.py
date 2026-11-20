@@ -846,6 +846,7 @@ class SessionSpill:
         gen = getattr(res, "rows_gen", None)
         info = self._save(eng, drafter, tokens=res.tokens[:n], n=n, rows_from=None,
                           anchors=anchors, end=end, taint=res.taint, owner=res.owner,
+                          last_n=int(getattr(res, "last_n", 0) or 0),
                           reason=reason, extra=self._extra(res) if end is not None else None,
                           resident=True, stop=stop, guard=guard, used=used)
         if info is not None:
@@ -950,7 +951,8 @@ class SessionSpill:
             return None
         return self._save(eng, drafter, tokens=res.park_tokens[:top], n=top, rows_from=rows_from,
                           anchors=dict(res.park_anchors), end=end, taint=res.park_taint,
-                          owner=res.park_owner, reason=reason, extra=extra, resident=False)
+                          owner=res.park_owner, reason=reason, extra=extra, resident=False,
+                          last_n=int(getattr(res, "park_last_n", 0) or 0))
 
     def _extra(self, res) -> dict | None:
         if self.extra_of is None:
@@ -961,7 +963,7 @@ class SessionSpill:
             return None
 
     def _save(self, eng, drafter, *, tokens, n, rows_from, anchors, end, taint, owner, reason,
-              extra, resident, stop=None, guard=None, used=None) -> dict | None:
+              extra, resident, stop=None, guard=None, used=None, last_n: int = 0) -> dict | None:
         import torch
         from engine.cache import _kv_views, state_now
         t0 = time.perf_counter()
@@ -1206,6 +1208,7 @@ class SessionSpill:
                    "tsha": _tsha(tokens), "owner": owner, "reason": reason, "resident": resident,
                    "created": round(now, 3), "used": round(now if used is None else min(now, used), 3),
                    "taint": taint,
+                   "last_n": int(last_n),     # SRV-907: the resident prefix's `last_n` (its last prompt)
                    "layout": layout,
                    "state": [[str(t.dtype), list(t.shape)] for t in state],
                    "anchors": [int(b) for b in keep], "anchor_files": files,
@@ -1498,7 +1501,8 @@ class SessionSpill:
                                              (man["end"].get("served_hidden") or ())],
                            **({"delta": int(man["end"].get("delta") or 0), "mm": True}
                               if man["end"].get("mm") else {})}
-                res.adopt(e.tokens, n, man.get("taint"), man.get("owner"))
+                res.adopt(e.tokens, n, man.get("taint"), man.get("owner"),
+                          last_n=int(man.get("last_n") or 0))
                 low = 0 if low is None else low
                 abuf = self._anchor_buf(eng)
                 offs, anc_payload = dc._sections([dc._nb(t) for t in state])

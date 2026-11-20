@@ -1875,6 +1875,7 @@ class ResidentPrefix:
         self.park_base = 0
         self.park_rows = 0
         self.park_owner: str | None = None
+        self.park_last_n = 0               # SRV-907: the parked conversation's `last_n`, back with it
         self.park_anchors: dict[int, tuple] = {}
         self._park_bufs: list | None = None
         self._park_views: list | None = None
@@ -2497,11 +2498,13 @@ class ResidentPrefix:
         self.clear()
         return how
 
-    def adopt(self, tokens, valid: int, taint, owner, count: str = "spill_restores") -> None:
+    def adopt(self, tokens, valid: int, taint, owner, count: str = "spill_restores",
+              last_n: int = 0) -> None:
         """A conversation read back from the disk is the resident prompt from here on: its rows
         are in place (engine/spill.py wrote them), its anchors and end anchor follow through
         `adopt_anchor` and `adopt_end`. What the rows held before goes. `count`: the counter it
-        adds to (`side_carries` for a conversation carried from a side slot, FX10)."""
+        adds to (`side_carries` for a conversation carried from a side slot, FX10). `last_n`
+        (SRV-907): the length of its last prompt, as saved with it; 0 when not known."""
         self._stash = None
         self._drop_end()
         for b in list(self.anchors):
@@ -2511,7 +2514,7 @@ class ResidentPrefix:
         self.taint = None if taint is None else int(taint)
         self.owner = owner
         self.capturing = False
-        self.last_n = 0                    # SRV-907: its last prompt's length is not known here
+        self.last_n = int(last_n or 0)
         self.stats[count] += 1
 
     def adopt_anchor(self, eng, b: int):
@@ -2781,7 +2784,9 @@ class ResidentPrefix:
             self.anchors[b] = buf
         self.tokens = list(self.pin_tokens)
         self.valid = r
-        self.last_n = 0                    # SRV-907: the pinned head is no last prompt
+        # SRV-907: the pin holds a head up to an anchor, and an anchor lies below the end of the prompt it was
+        # taken in: no whole last prompt is in place, so no turn goes on with it here (0 says so)
+        self.last_n = 0
         self.taint = self.pin_taint
         self.stats["pin_hits"] += 1
         return True
@@ -2853,6 +2858,7 @@ class ResidentPrefix:
             self.stats["park_ends"] += 1
         self.park_tokens = list(self.tokens[:top])
         self.park_base, self.park_rows, self.park_owner = keep, rows, self.owner
+        self.park_last_n = self.last_n
         self.park_taint = (self.taint if self.taint is not None and self.taint < top
                            else None)
         self._park_views = [(t, ax) for t, ax in views]
@@ -2937,7 +2943,7 @@ class ResidentPrefix:
             self._allocated += 1
         self.park_end, self.park_regions = None, []
         self.park_tokens, self.park_base, self.park_rows, self.park_owner = [], 0, 0, None
-        self.park_taint = None
+        self.park_taint, self.park_last_n = None, 0
         self._trim_pool()
 
     def _trim_pool(self) -> None:
@@ -3089,7 +3095,7 @@ class ResidentPrefix:
             elif ra > rb:
                 t.narrow(ax, base + rb, ra - rb).copy_(buf.narrow(ax, rb, ra - rb))
         back, back_tokens, back_owner = self.park_anchors, self.park_tokens, self.park_owner
-        back_taint = self.park_taint
+        back_taint, back_last_n = self.park_taint, self.park_last_n
         back_end, back_regions = self.park_end, self.park_regions
         self.park_anchors = {}
         self.park_end, self.park_regions = None, []
@@ -3105,12 +3111,13 @@ class ResidentPrefix:
                 self.stats["park_ends"] += 1
             self.park_tokens = list(self.tokens[:base + rb])
             self.park_rows, self.park_owner = rb, self.owner
+            self.park_last_n = self.last_n
             self.park_taint = (self.taint if self.taint is not None and self.taint < base + rb
                                else None)
             self.stats["park_swaps"] += 1
         else:
             self.park_tokens, self.park_rows, self.park_owner = [], 0, None
-            self.park_taint = None
+            self.park_taint, self.park_last_n = None, 0
         for b in [b for b in self.anchors if b > base]:
             self._free.append(self.anchors.pop(b))
         for b, pair in back.items():
@@ -3120,7 +3127,7 @@ class ResidentPrefix:
         self.valid = base + ra
         self.owner = back_owner
         self.taint = back_taint
-        self.last_n = 0                    # SRV-907: the parked conversation's last prompt is not known
+        self.last_n = back_last_n          # SRV-907: the parked conversation's last prompt, with its rows
         if back_end is not None:
             self._adopt_parked_end(eng, back_end, back_regions)
         self._trim_pool()
@@ -3251,7 +3258,7 @@ class ResidentPrefix:
         self.park_end, self.park_regions = None, []
         self._park_bufs, self._park_views = None, None
         self.park_tokens, self.park_base, self.park_rows, self.park_owner = [], 0, 0, None
-        self.park_taint = None
+        self.park_taint, self.park_last_n = None, 0
         return freed
 
     def shed_pin(self, safe: bool = False) -> int:
