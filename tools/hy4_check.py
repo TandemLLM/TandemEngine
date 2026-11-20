@@ -786,18 +786,48 @@ def v2_micro(a, eng, cfg, say) -> bool:
     for ctx in (int(c) for c in a.micro_ctx.split(",")):
         if len(text) < ctx:
             raise SystemExit(f"--digest-text holds {len(text)} tokens, --micro-ctx asks for {ctx}")
-        got, real = {}, eng._mla
+        got, real, hcs = {}, eng._mla, {}
+        real_hc = getattr(eng, "_hc_v2", None)
 
         def spy(qa, qr, lat, ctl, sel, li):
             if li in (win, spa):
                 got[li] = (qa.clone(), qr.clone(), lat.clone(), ctl.clone(), sel.clone())
             return real(qa, qr, lat, ctl, sel, li)
+
+        def spy_hc(h, pend, pre, w):
+            if pre == f"layers.{win}.hc_mlp_layer.hc_pre.":
+                hcs["x"] = (h.clone(), (pend[0].clone(), pend[1].clone()), pre, w)
+            return real_hc(h, pend, pre, w)
         set_arm(eng, "v2")
         eng._mla = spy
+        if real_hc is not None:
+            eng._hc_v2 = spy_hc
         try:
             eng.prefill(torch.tensor(text[:ctx]), eng.new_state(ctx + 64), head=None)
         finally:
             del eng._mla
+            if real_hc is not None:
+                del eng._hc_v2
+        if "x" in hcs:
+            # F2 (question 5): one hyper-connection of 4,096 rows on the row kernels, whole and in sub-batches of 512
+            h, pend, pre, w = hcs["x"]
+            c = cfg
+            args = (*eng._hcw(pre), w, c.rms_norm_eps, c.hc_eps, c.hc_magnitude)
+            ts = []
+            for r in range(9):
+                sync(a.device)
+                t0 = time.perf_counter()
+                whole = K_.hc(h, pend, *args)
+                sync(a.device)
+                if r >= 2:
+                    ts.append(1e3 * (time.perf_counter() - t0))
+            parts = [K_.hc(h[i:i + 512].contiguous(), (pend[0][i:i + 512].contiguous(), pend[1][i:i + 512].contiguous()), *args)
+                     for i in range(0, h.shape[0], 512)]
+            same = all(torch.equal(torch.cat([p_[k] for p_ in parts]), whole[k]) for k in range(3))
+            ms_hc = sorted(ts)[len(ts) // 2]
+            ok = ok and same
+            say("v2_micro_hc", context=ctx, layer=win, rows=int(h.shape[0]), ms=round(ms_hc, 2), pass_ms=6.0, passed=ms_hc <= 6.0,
+                sub_batches_of_512_equal=same)
         for li in (win, spa):
             qa, qr, lat, ctl, sel = got[li]
             sink, scale = eng.sinks[li].reshape(-1), cfg.attn(li).qk ** -0.5

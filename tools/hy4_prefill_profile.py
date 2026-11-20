@@ -60,6 +60,8 @@ PARTS = {
     "forward_chunk": "rest", "mlp_chunk": "rest", "dense": "rest", "final": "rest", "embed": "rest", "rope": "rest",
     # the prompt pass on fixed-order kernels (HY4_PREFILL_V2, arm v2): `_mla` apart by kind below
     "_attention_chunk_v2": "attention glue", "_heads_mm": "absorbed halves", "_sparse_reads": "indexer", "_norm_v2": "norms",
+    "_hc_v2": "hyper-connections", "_inject_v2": "hyper-connections", "route_r": "router",
+    "engram_r": "Engram decode, apply, hashing, copy", "_forward_chunk_v2": "rest", "_mlp_chunk_v2": "rest", "_final_v2": "rest",
 }
 #: gate 0 C's measured parts of the last chunk on the 3.56 pack (ms, grouped mean of two reps and pair), for the
 #: first run's check

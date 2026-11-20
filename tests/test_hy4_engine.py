@@ -501,6 +501,60 @@ def test_a_sparse_row_reads_by_its_own_position():
     return f"{len(rows)} (layer, row) read lists of a chunk across row {cfg.index_topk} equal the decode step's ({listed} lists)"
 
 
+class _v2:
+    """The prompt pass on fixed-order kernels (HY4_PREFILL_V2) for a block of the test."""
+
+    def __init__(self, eng):
+        self.eng = eng
+
+    def __enter__(self):
+        self.eng.prefill_v2 = True
+
+    def __exit__(self, *exc):
+        self.eng.prefill_v2 = False
+
+
+def test_v2_matches_the_reference():
+    """SPD-325 (F2): the prompt pass on fixed-order kernels against the reference forward, in one chunk and in chunks
+    of 7 (attention 5 rows at a time, read lists 3), within the fp32 bound of the pass before."""
+    cfg, ref, eng = tiny()
+    want = ref.forward(PROMPT, Hy4State())
+    with _v2(eng):
+        got = eng.prefill(PROMPT, eng.new_state(), head="all")
+        with _small_chunks():
+            got2 = eng.prefill(PROMPT, eng.new_state(), head="all")
+    err, err2 = (got - want).abs().max().item(), (got2 - want).abs().max().item()
+    assert err < BOUND and err2 < BOUND, (err, err2)
+    # and the state it leaves is the one decode steps continue
+    st = eng.new_state()
+    with _v2(eng), _small_chunks():
+        eng.prefill(PROMPT[:19], st, head=None)
+    steps = torch.cat([eng.step(int(t), st) for t in PROMPT[19:]])
+    err3 = (steps - want[19:]).abs().max().item()
+    assert err3 < BOUND, err3
+    return f"45 rows: one chunk {err:.1e}, chunks of 7 {err2:.1e}; 19 prompt rows then 26 steps {err3:.1e}"
+
+
+def test_every_prompt_rows_head_input_is_kept():
+    """SPD-325 (F2): `prompt_hidden` holds the head input of every row of the last chunk, one row a token (the shared
+    drafter's sync reads them all), and its last row gives the prompt's last logits; on both passes."""
+    cfg, ref, eng = tiny()
+    out = []
+    for v2 in (False, True):
+        eng.prefill_v2 = v2
+        try:
+            lg = eng.prefill(PROMPT, eng.new_state(), head="last")
+            assert eng.prompt_hidden.shape == (PROMPT.shape[0], cfg.hidden_size), eng.prompt_hidden.shape
+            assert torch.equal(eng.head(eng.prompt_hidden[-1:]), lg)
+            with _small_chunks():
+                eng.prefill(PROMPT, eng.new_state(), head=None)
+            assert eng.prompt_hidden.shape == (PROMPT.shape[0] % 7 or 7, cfg.hidden_size), eng.prompt_hidden.shape
+        finally:
+            eng.prefill_v2 = False
+        out.append(f"{'v2' if v2 else 'before'}: {PROMPT.shape[0]} rows, then the last chunk's {PROMPT.shape[0] % 7 or 7}")
+    return "; ".join(out)
+
+
 def test_capacity_is_checked():
     cfg, ref, eng = tiny()
     st = eng.new_state(12)
