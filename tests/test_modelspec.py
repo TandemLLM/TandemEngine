@@ -42,9 +42,9 @@ def test_every_family_has_a_spec():
     own = {n: (a.spec.tool_format, a.spec.reasoning.opens_itself, a.spec.prompt.system_first, a.spec.side_slots)
            for n, a in REGISTRY.items() if a.spec != ServeSpec()}
     # SPD-217: Ornith (qwen3_5_moe) builds side slots now, so its spec is the default one
-    # Hy4-flash serves one sequence at a time until its row path has kernels and graphs
+    # Hy4-flash builds side slots too (ENG-485: its lanes take turns)
     assert own == {"flint": ("argkey", True, False, True), "lfm2_moe": ("pythonic", False, True, True),
-                   "hy_v4_flash": ("argkey", False, True, False)}, own
+                   "hy_v4_flash": ("argkey", False, True, True)}, own
     return f"{len(REGISTRY)} families, {len(own)} with their own spec"
 
 
@@ -81,8 +81,8 @@ def test_the_spec_says_what_the_engine_builds():
         assert caps, (name, "no engine class with Capabilities")
         assert all(c.side_slots == a.spec.side_slots for c in caps), (name, a.spec.side_slots, caps)
         seen[name] = a.spec.side_slots
-    # SPD-217: Ornith too (its joint verify pass); Hy4-flash not yet (its entry and its engine both say so)
-    assert all(v for n, v in seen.items() if n != "hy_v4_flash") and not seen["hy_v4_flash"], seen
+    # SPD-217: Ornith too (its joint verify pass); ENG-485: Hy4-flash too (its lanes take turns)
+    assert all(seen.values()), seen
     return seen
 
 

@@ -124,7 +124,7 @@ class Hy4FlashServing:
     # turns (ENG-485: `joint_verify` False, each lane its own verify; no joint pass, no side lane); the shadow
     # reader was validated on Qwen text. The router's notes have no place in its prompt (`notes: False`, as
     # Flint's): it asks for none (SRV-899)
-    caps = Capabilities(caches=True, side_slots=False, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=False,
+    caps = Capabilities(caches=True, side_slots=True, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=False,
                         side_lane=False, joint_plain=False, conductor={"notes": False})
 
     # the conversation cache on one lane (SRV-907): a chat's next turn is never a guest of its own rows, and
@@ -132,9 +132,6 @@ class Hy4FlashServing:
     # prompt without a plan is marked where its first user turn starts, so a repeated head is read once
     # (SRV-905, server/app.py `_head_mark`)
     caps = dataclasses.replace(caps, chat_first=True, head_mark=True)
-    # INTERIM (SRV-907): a second chat the store remembers takes the one lane (`Capabilities.solo`); delete this
-    # line with the capability in the commit that builds this family's side slots
-    caps = dataclasses.replace(caps, solo=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)

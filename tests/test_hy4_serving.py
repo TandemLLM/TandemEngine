@@ -313,7 +313,8 @@ def test_the_caps_carry_the_conductor_fit():
     `no_insertion_point`): its caps say `notes: False`, the key Flint declares for the same reason."""
     from engine.models.flint.serving import FlintServing
     assert Hy4FlashServing.caps.conductor == {"notes": False} == FlintServing.caps.conductor
-    assert not Hy4FlashServing.caps.side_slots and Hy4FlashServing.caps.caches
+    # ENG-485: side slots whose lanes take turns
+    assert Hy4FlashServing.caps.side_slots and not Hy4FlashServing.caps.joint_verify and Hy4FlashServing.caps.caches
 
 
 def test_the_packs_limits_reach_the_cache_policy():
@@ -977,14 +978,14 @@ def test_the_marks_and_the_mark_of_every_other_family_are_as_before():
 
 
 def test_interim_a_second_chat_the_store_remembers_takes_the_lane():
-    """INTERIM (SRV-907, `Capabilities.solo`; this test goes with the capability when the family builds side
-    slots). On one lane a second chat ran as a guest of the first: its first turn (short) kept a session snapshot,
+    """INTERIM (SRV-907, `Capabilities.solo`, asked for here: ENG-485 gave Hy4-flash side slots and its caps no longer
+    set it; this test goes with the capability). On one lane a second chat ran as a guest of the first: its first turn (short) kept a session snapshot,
     and its next turn with thinking on holds only its last prompt, so it was a guest again and read itself
     again every turn. Now a conversation the store remembers takes the lane: the first chat is parked with its
     end, not cut, and comes back from the park at its end."""
     store = cache.StateStore(BIG, chunk=CH)
     with _prompt_end():
-        res, eng = _prefix(park_bytes=BIG), serving32()
+        res, eng = _prefix(park_bytes=BIG, solo=True), serving32()
         ca1, _ = _turn(eng, res, tokens(60, 100), 150, "A", store=store)
         b1 = tokens(30, 101)
         cb1, tb1 = _turn(eng, res, b1, 4, "B", store=store)

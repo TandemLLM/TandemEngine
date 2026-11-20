@@ -182,7 +182,7 @@ def serving(max_len: int = 256) -> Hy4FlashServing:
 
 def test_a_side_slot_shares_the_engine_and_owns_its_state():
     s0 = serving()
-    assert not s0.caps.joint_verify and not hasattr(s0, "forward_tree_multi")
+    assert s0.caps.side_slots and not s0.caps.joint_verify and not hasattr(s0, "forward_tree_multi")
     s1, d1 = s0.side_slot(128, None)
     assert type(s1) is Hy4FlashServing and s1.fn is s0.fn and d1 is None and s1.max_len == 128
     assert s1.st is not s0.st and s1.st.lat_all.data_ptr() != s0.st.lat_all.data_ptr()
