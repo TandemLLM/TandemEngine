@@ -37,7 +37,7 @@ MODULES = ("engine/models/hy4_flash/__init__.py", "engine/models/hy4_flash/confi
            "engine/models/hy4_flash/kernels.py", "engine/models/hy4_flash/native.py",
            "engine/models/hy4_flash/dfly.py", "engine/models/hy4_flash/table.py", "engine/models/hy4_flash/pack.py",
            "engine/models/hy4_flash/load.py",
-           "engine/models/flashnext/ref.py", "engine/settings.py")
+           "engine/models/flashnext/ref.py", "engine/models/flashnext/ple.py", "engine/settings.py")
 #: the model's name in ops/prices/ and models/
 MODEL_ID = "hy4-flash"
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))

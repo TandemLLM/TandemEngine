@@ -304,6 +304,21 @@ def test_the_fingerprint_covers_the_kernels_the_family_compiles():
     return f"{len(rels)} files; a line more in the shared kernels, the EXL3 source or the family's kernel moves the fingerprint"
 
 
+def test_the_fingerprint_covers_every_file_the_family_uses():
+    """ENG-512: every file of another package this family's entry `uses` is in its manifest, so a change there moves its
+    fingerprint: table.py reads its rows through flashnext/ple.py's O_DIRECT reader (BLOCK, DirectRows), which the
+    manifest left out."""
+    from engine.models import REGISTRY
+    from engine.models.hy4_flash.serving import MODULES
+    uses = set(REGISTRY["hy_v4_flash"].uses)
+    assert "engine/models/flashnext/ple.py" in uses and uses <= set(MODULES), sorted(uses - set(MODULES))
+    for path in uses:
+        mod = path[:-3].replace("/", ".")
+        users = [f for f in MODULES if f.startswith("engine/models/hy4_flash/")
+                 and mod in open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), f)).read()]
+        assert users, (path, "no file of the family imports it: leave it out of `uses`")
+
+
 def test_the_prompt_pass_takes_the_grouped_kernels_by_default():
     """SPD-311: a prompt's routed experts run on the grouped kernels unless QWEN38_HY4_PREFILL_GROUPED=0 says the pair
     kernels; build() hands the setting to the engine. The two give the same bits: the kernels are the device's (the
