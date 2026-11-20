@@ -2456,6 +2456,27 @@ class ResidentPrefix:
         ab = self._anchor_bytes or eng.cost().section_bytes
         return max(0, (self.park_budget - self.park_anchor_max * ab) // max(1, per_row))
 
+    def sets_aside(self, eng, drafter, keep: int) -> bool:
+        """INTERIM (SRV-907, `solo`; goes with it): whether a prefill that replaces the rows above `keep` would
+        keep the conversation in place out of its way (`begin`): the NVMe spill from its `min_tokens`, else the
+        park from one chunk above `keep` (`_park_now`'s floor, with its end anchor or up to its anchors). The
+        memory policy may still refuse the park; the sizes alone are asked here."""
+        keep = int(keep)
+        if self.valid <= keep:
+            return False
+        if self.spiller is not None and self.valid >= self.spiller.min_tokens:
+            return True
+        if not self.park_budget:
+            return False
+        views = _kv_views(eng, drafter)
+        per_row = sum(t.numel() // t.shape[ax] * t.element_size() for t, ax in views)
+        ab = self._anchor_bytes or eng.cost().section_bytes
+        cap_rows = max(0, (self.park_budget - self.park_anchor_max * ab) // max(1, per_row))
+        if self._end_to_park(keep, cap_rows) is not None:
+            return True
+        above = [b for b in self.anchors if keep < b <= min(self.valid, keep + cap_rows)]
+        return bool(above) and max(above) - keep >= self.chunk
+
     def _spill(self, eng, drafter, reason: str) -> bool:
         """The resident conversation to the disk; whether it is there now."""
         try:
@@ -3753,12 +3774,12 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
         # SRV-907: the request holds the whole last prompt in place, so it goes on with the conversation
         continues = res.chat_first and 0 < res.last_n <= c
         if (res.solo and not own and conv_id is not None and conv_id != res.owner and store is not None
-                and store.holds(conv_id)):
+                and store.holds(conv_id) and res.sets_aside(eng, drafter, min(start, c))):
             # INTERIM (SRV-907, `solo`; deleted with the capability when the family builds side slots): on
-            # one lane a second chat the store remembers takes the lane, as a side slot would give it one.
-            # The conversation in place goes to the park or the NVMe first when it is long enough for them
-            # (`begin`: the park takes a chunk or more, the spill its `min_tokens`); a shorter one keeps only
-            # what the store holds of it
+            # one lane a second chat the store remembers takes the lane, as a side slot would give it one,
+            # when the park or the NVMe takes the conversation in place first (`begin`). One they cannot
+            # take (under a chunk above the shared head, under the spill's `min_tokens`) would be cut, and
+            # two short chats taking turns would both read themselves again every turn: the size rule stands
             stay = True
         # decided before any row is written: a guest's stash must hold the rows as they are now
         res.begin(eng, drafter, keys, start, c, kind, session=conv_id, compacting=compacting,

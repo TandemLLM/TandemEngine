@@ -885,6 +885,47 @@ def test_interim_a_second_chat_the_store_remembers_takes_the_lane():
     return f"the second chat took the lane; the first came back from the park at its end ({len(ca1) - 1})"
 
 
+def test_interim_a_chat_too_short_for_the_park_keeps_the_lane():
+    """INTERIM (SRV-907, `solo`; goes with it). A chat under one chunk above what it shares with the second
+    chat is too short for the park (and the spill): the second chat would cut it, and two short chats taking
+    turns would both read themselves again every turn. The size rule stands there: the second chat is a guest."""
+    store = cache.StateStore(BIG, chunk=64)
+    with _prompt_end():
+        res, eng = _prefix(park_bytes=BIG, chunk=64), serving32()
+        ca1, _ = _turn(eng, res, tokens(40, 130), 10, "A", store=store, chunk=64)
+        e = res.end["at"]
+        assert e < res.chunk
+        b1 = tokens(8, 131)
+        cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store, chunk=64)
+        assert tb1["guest"] and store.holds("B"), tb1
+        b2 = b1 + [_other(cb1[8])] + tokens(2, 132)
+        assert len(b2) < 0.25 * res.valid
+        _, tb2 = _turn(eng, res, b2, 2, "B", store=store, chunk=64)
+        assert tb2["guest"] and res.owner == "A" and res.end["at"] == e and res.stats["parks"] == 0, tb2
+        p2 = ca1 + tokens(3, 133)
+        want = _cold_greedy(p2, 4, chunk=64)
+        c2, ta2 = _turn(eng, res, p2, 4, "A", store=store, chunk=64)
+    assert (ta2["kind"], ta2["reused"]) == ("end", e) and c2[len(p2):] == want, ta2
+
+
+def test_interim_a_session_hit_takes_the_lane_as_before():
+    """INTERIM (SRV-907, `solo`). A second chat whose prompt matches its session snapshot resumes from the store
+    whatever the rule: the conversation in place is written to the NVMe only from the spill's `min_tokens`, and
+    is dropped otherwise, as on every family. The rule changes nothing here (with and without it)."""
+    got = []
+    for solo in (True, False):
+        store = cache.StateStore(BIG, chunk=CH)
+        with _prompt_end():
+            res, eng = _prefix(park_bytes=BIG, solo=solo), serving32()
+            _turn(eng, res, tokens(60, 134), 100, "A", store=store)
+            b1 = tokens(20, 135)
+            cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store)
+            assert tb1["guest"], tb1
+            _, tb2 = _turn(eng, res, cb1 + tokens(3, 136), 2, "B", store=store)
+        got.append((tb2["kind"], tb2["reused"], res.owner, res.stats["parks"], res.park_rows, res.valid))
+    assert got[0] == got[1] and got[0][:4] == ("session", len(cb1) - 1, "B", 0), got
+
+
 if __name__ == "__main__":
     from scriptmode import run
     run(globals())

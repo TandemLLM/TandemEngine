@@ -49,8 +49,8 @@ class Capabilities:
     # when it resumes from the state store (`ResidentPrefix(guest_store=True)`). False: the mark from a plan only
     head_mark: bool = False
     # INTERIM (SRV-907), for a family that builds no side slots yet: a conversation the state store holds an entry
-    # of takes slot 0 from another one, which goes to the park or the NVMe when it is long enough for them and
-    # otherwise keeps what the store holds of it (engine/cache.py `ResidentPrefix.solo`).
+    # of takes slot 0 from another one when the park or the NVMe can take that one first; otherwise the size rule
+    # stands (engine/cache.py `ResidentPrefix.solo`, `sets_aside`).
     # Delete it, and the two places that read it (server/app.py `_load_caches`, engine/cache.py `_prefill`), in the
     # commit that gives the family side slots: a second chat then has a slot of its own
     solo: bool = False
