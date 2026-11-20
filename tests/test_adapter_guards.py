@@ -205,13 +205,15 @@ GOLDEN_FP4 = {
     # SPD-311, SPD-327: Hy4-flash's row kernels grouped and its prompt pass on fixed-order kernels by default (knobs.py),
     # ENG-485 its lanes (engine.py), and ENG-512 flashnext/ple.py in its manifest: hy_v4_flash. ENG-512's gap on Ornith
     # too (its pack index reads ple.py's safetensors_index): qwen3_5_moe. One rebuild with SPD-321's move
+    # SPD-321, the prefill review: the shared prefill kernel only where its inline kernels build (engine.py; the rows
+    # where they do are the same): hy_v4_flash
     "qwen4_exp": "12cd38b79e24220638d0b1a3aaa9fd29781e7457a28b2264404f2c0b4877a802",
     "nemotron_h": "81d0d5f57bceb5b496cef3b2f5e4587ab3de986b015632d11a118b2ce4d258e3",
     "lfm2_moe": "b4e4a64045d8a65cdcfbbe7c9d26c065d743b15b13cf9d0624612ab70d10425e",
     "qwen3_5_moe": "d6acb7f9cc633e2e051124444e7f75fc92b816600b909f365570852245a925f7",
     "flint": "b282e37d1f5d4acf22ba31b64e7f7056c408c453646ed11814b049398e0e0c8f",
     # Hy4-flash: a new family (its first golden), then the moves above
-    "hy_v4_flash": "f54e0407bcf1795a159bafc1ad8f5f68fbab28d3c9703959e87678901cfda323",
+    "hy_v4_flash": "cbc14a267d6e85e5c94bbf230798af355c60c358c254f67161eb4277a0c843bd",
 }
 #: adapters the refactor may move once (the coordinator's OK, 2026-10-22): Flint's knobs leave the shared
 #: table and its kernels take the generic launch option
