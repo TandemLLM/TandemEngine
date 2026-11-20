@@ -432,9 +432,11 @@ def serve(a, ctx) -> dict:
     # from what the weights and the window's state hold on the device
     if (info["device"] == "cuda" and getattr(a, "mem_ceiling_gib", None) == SERVER_LIMITS[0]
             and getattr(a, "mem_peak_gib", None) == SERVER_LIMITS[1]):
-        a.mem_ceiling_gib, a.mem_peak_gib = memory_limits(torch.cuda.memory_allocated() / (1 << 30))
+        from engine.cache import cuda_stats      # torch's flattening readers leave cyclic garbage
+        held = cuda_stats("allocated_bytes.all.current")[0] / (1 << 30)
+        a.mem_ceiling_gib, a.mem_peak_gib = memory_limits(held)
         ctx.log(f"[server] Hy4-flash: memory ceiling {a.mem_ceiling_gib:g} GiB, peak {a.mem_peak_gib:g} GiB "
-                f"(the pack and a {a.max_len:,}-token window hold {torch.cuda.memory_allocated() / (1 << 30):.1f} GiB)")
+                f"(the pack and a {a.max_len:,}-token window hold {held:.1f} GiB)")
     drafter = None
     if a.drafter != "none" and _S.get("HY4_DFLY") == "1":
         if not info["dfly"]:
