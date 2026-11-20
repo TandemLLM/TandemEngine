@@ -389,8 +389,8 @@ parallelism:
 methods:
 - id: reasoning_effort
   label: Thinking effort
-  what: Whether the model thinks before it answers, when a client does not say. On, such a request thinks in the
-    model's normal mode with the medium cap of 8,192 tokens; off turns thinking off. A client's own effort is served
+  what: Whether the model thinks before it answers, when a client does not say. On, such a request on the engine
+    alone thinks in the model's normal mode with the medium cap of 8,192 tokens; off turns thinking off. A client's own effort is served
     as asked, and only an explicit xhigh or max reaches the model's strongest mode.
   type: enum
   options:

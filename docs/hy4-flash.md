@@ -54,14 +54,14 @@ Hy4-flash needs its chat template. It always opens with a system turn that carri
 | off | the client, or the server default `off` | `no_think` | none: no thinking |
 | off | a conductor category (`summarize`) | `high`; the router closes the block at the end of the prompt | none: no thinking |
 | low | the client, a category | `high` | 1,024 tokens |
-| medium | the client, a category, or nobody: the engine's default for this model | `high` | 8,192 |
+| medium | the client, a category, or nobody on the engine alone (no conductor plan that decides the effort) | `high` | 8,192 |
 | high | the client, a category | `high` | 16,384 |
 | xhigh | a category | `high` | none below the conductor's backstop of 30,720 |
-| xhigh or max | the client | `max` | none; the block closes 2,048 tokens and the closing phrase before the output limit |
+| xhigh or max | the client | `max` | none on the engine alone and where the client's word wins, and the block then closes 2,048 tokens and the closing phrase before the output limit; under the agent profiles (`hermes`, `coding`, `overnight`) the class's cap |
 
 A request that names no effort, on the engine alone, thinks in mode `high` and stops at 8,192 thinking tokens, with the answer reserve after them; the server's `--think-budget` wins when it is set. `--reasoning-effort` keeps one job here: `off` turns thinking off for a request that says nothing about thinking. Any other value is not used, and the start log says so. Under the conductor, a category decides the cap and never the mode, and whether a client's word wins over the category is the profile's own rule (TandemApp's `thinking.client_word`).
 
-Only a client's own `xhigh` or `max` reaches `max`, and that mode has no steady length. Three turns in it thought 82, 7,759 and 25,806 tokens; the longest ran 853.8 s and came from a category's xhigh with a server default of xhigh, before this mapping. Four Chat turns in mode `high` thought 45 to 536 tokens. Tencent's later template drops `max`, so a pack built from it would map xhigh to `high` in its spec.
+Only a client's own `xhigh` or `max` reaches `max`. The lengths below were measured; the mode each turn ran in was read from the code of the build that served it, not observed. On build `c98758af`, which sent the server's default xhigh to `max`, three such turns thought 82, 7,759 and 25,806 tokens; the 25,806-token turn ran 853.8 s and came from a category's xhigh with a server default of xhigh. Four Chat turns with an explicit `low`, which that build rendered as `high`, thought 45 to 536 tokens. Tencent's later template drops `max`; a pack built from it would need its spec to map xhigh to `high`.
 
 Tool calls use the model's own tags, which the tokenizer reads under the `argkey` form's names. One served call passed on `hy4-3.56`: the answer ended with `finish_reason` `tool_calls` and one well-formed call, and the model answered the follow-up turn that carried the tool's result. That is one call and one follow-up, so the model card says `tools: true`, and `parallel_tool_calls` and `structured` stay false: neither is tested. A forced `tool_choice` (required or named) is not checked with these tags.
 
