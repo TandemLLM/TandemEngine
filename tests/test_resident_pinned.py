@@ -1,30 +1,41 @@
 """The resident prefix and the state store, pinned byte for byte on the 27B and on Flash-Next.
 
-The conversation cache of a family without side slots changes the guest test, the prefill's head mark and
-the store's guards in engine/cache.py and server/app.py, behind capabilities only that family sets. This
-test is the proof that nothing moves for the families that do not set them: one scripted sequence through
-`cache.prefill` and the cache calls of the server's `_remember_turn` (the session snapshot, the end anchor,
-a side slot's promotion), on the 27B's served engine class on the random model and on Flash-Next's serving
-adapter on its small host pack, and after every step:
+The conversation cache of a family without side slots (SRV-905, SRV-907) changes the guest test, the
+prefill's head mark and the store's guards in engine/cache.py and server/app.py, behind capabilities only
+that family sets. This test is the proof that nothing moves for the families that do not set them.
 
-  -  where the prefill resumed (`info["kind"]`, rows reused and forwarded) and what `keep_end` said
-  -  the resident prefix's report (the switch log's clock fields left out) and the store's report
-  -  sha-256 digests of the engine's state (its sections, and its views up to `kv.length`) and the logits
+WHAT IT PINS. One scripted sequence of requests through the server's own decode loop and turn end
+(server/app.py `generate_stream`, `_remember`: the prefill through every cache tier in RAM, the greedy loop,
+the session snapshot, the end anchor), on the 27B's served engine class on the random model and on
+Flash-Next's serving adapter on its small host pack, without a drafter. After every request it records where
+the prefill resumed and how much it forwarded, the tokens written, the resident prefix's report (the switch
+log's clock fields left out), the store's report, sha-256 digests of the engine's state (its sections, and its
+views up to `kv.length`), and every call `begin` made to a keeper or a spill. The sequence: a first
+conversation read cold (the store keeps its lines); a chat of five turns, the second resumed at its end and
+the third at its prompt end; a short guest; a longer request of another session that takes the lane (the park
+holds the chat) and the chat back; a store hit of each kind, the prefix one by a guest; a prompt with a grid
+mark twice; a worker's request (`stay`). A prefix shaped as a side slot's (every shorter request a guest, a
+keeper, no park): a chat's guest that becomes its conversation (`promote_guest`, called as `_remember_turn`
+does on a side slot), its next turn, a worker's request that calls the keeper. A prefix with a session spill
+and no park: a conversation that another one sends to the spill.
 
-The sequence: a first conversation read cold (the store keeps its lines); a chat of five turns, the second
-resumed at its end and the third at its prompt end; a short request that is a guest, then the chat again;
-a longer request of another session that replaces the chat (the park takes it), then the chat back; a
-store hit of each kind, the prefix one by a guest; a prompt with a grid mark twice; a side slot's guest that
-becomes its conversation (`promote_guest`), then its next turn.
+WHAT IT DOES NOT PIN. The handler's routing (the queue, the slot choice, carries between slots) and a real
+side slot; drafters; images; the conductor; the memory policy (none here); the disk tier; the spill's files
+(a stand-in records `begin`'s calls to it and writes nothing); the keeper's NVMe write (a stand-in records the
+call). The server's own question (`own`) did not exist on the tree this is recorded on: a separate test runs
+the sequence with it and without it and asserts the records are equal (with the families' flags off, `own`
+must change nothing).
 
 The digests depend on the torch build and the CPU's GEMM kernels, so the fixture is keyed by host as in
-tests/test_refactor_gate.py. It is recorded on the tree before the change and compared after it:
+tests/test_refactor_gate.py. It is recorded on the code before the change, then compared at every later
+commit; a host without a recorded key prints SKIP and compares nothing:
 
-    QSE_PIN_RECORD=1 python tests/test_resident_pinned.py     # on the untouched tree
-    python tests/test_resident_pinned.py                      # on every later commit
+    git checkout --detach a85182c7 && git checkout <head> -- tests/test_resident_pinned.py
+    QSE_PIN_RECORD=1 python tests/test_resident_pinned.py     # the code before the change
+    python tests/test_resident_pinned.py                      # every later commit: "N steps reproduce"
 
-A host without a recorded key prints its digests' count and skips the comparison. Re-recording is
-allowed only for a commit that is SUPPOSED to change the other families' caching, and its message says so.
+Re-recording is allowed only for a commit that is SUPPOSED to change the other families' caching, and its
+message says so.
 
 Run: python tests/test_resident_pinned.py
 """
@@ -32,10 +43,12 @@ Run: python tests/test_resident_pinned.py
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import platform
 import sys
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -85,103 +98,118 @@ def _res_report(res) -> dict:
     return {k: v for k, v in res.report().items() if k not in CLOCK}
 
 
-def _greedy(eng, lg, n0: int, k: int) -> list[int]:
-    """`k` greedy tokens after a prompt of `n0` rows, as the served loop leaves them: every token but the last
-    forwarded (`kv.length == n0 + k - 1`)."""
-    out, pos = [], n0
-    for i in range(k):
-        t = int(lg.reshape(-1, lg.shape[-1])[-1].argmax())
-        out.append(t)
-        if i == k - 1:
-            break
-        lg = eng.forward(torch.tensor([t]), start=pos, last_only=True)
-        pos += 1
-    return out
-
-
-def _remember(eng, res, store, committed: list[int], n_prompt: int, session) -> str:
-    """The cache calls of server/app.py `_remember_turn` on a slot without a memory policy: the session
-    snapshot into the store, a side slot's guest promoted, then the end anchor."""
-    if store is not None and eng.kv.length and eng.kv.length <= len(committed):
-        if store.reserve(cache._snapshot_estimate(eng, eng.kv.length, None)):
-            snap = cache.capture(eng, None, max_bytes=store.max_entry)
-            if snap is not None:
-                store.put(committed, snap, session, kind="session")
-    return res.keep_end(eng, None, committed, n_prompt, [])
+def _serve_state(eng, res, store, ch: int, max_len: int) -> None:
+    """The server's state around `generate_stream` (tests/test_end_anchor.py `_state`), on this engine."""
+    from engine.penalty import PenaltySpec
+    from engine.spec import Relax
+    from server import app
+    from test_app_loop import FakeTok
+    app.STATE.clear()
+    app.STATE.update(engine=eng, drafter=None, k=4, tree=False, sampled_tree=False, relax=Relax(1.0, 1),
+                     verbose=False, state_store=store, prefix_cache=store is not None, prefix_chunk=ch,
+                     session_cache=store is not None, tok=FakeTok(), device="cpu", max_len=max_len,
+                     default_max_tokens=32, pen_spec=PenaltySpec(), model="t", cfg_eos=None, think_budget=0,
+                     think_stall=False, reasoning_format="tags", request_timeout=0.0, max_queue=8,
+                     queue_timeout=5.0, pattern_stop=None, response_cache=None, suffix_store=None,
+                     resident=res, disk_cache=None, mem=None)
 
 
 class Play:
-    """One engine, one resident prefix and one store; `step` runs a request and records it."""
+    """One engine, one resident prefix and one store; `step` runs a request as the server does and records it."""
 
-    def __init__(self, eng, ch: int, res, store):
-        self.eng, self.ch, self.res, self.store = eng, ch, res, store
+    def __init__(self, eng, ch: int, res, store, max_len: int, own: bool = False):
+        self.eng, self.ch, self.res, self.store, self.max_len = eng, ch, res, store, max_len
+        self.own = own                     # pass `own` where the step says so (`test_own_changes_nothing`)
+        self.calls: list = []              # the keeper's and the spill's calls from `begin`
         self.rows: list[dict] = []
 
-    def step(self, name: str, ids: list[int], k: int, session, grid_mark=None, remember=True) -> list[int]:
-        info: dict = {}
-        lg, reused, fwd = cache.prefill(self.eng, None, list(ids), "cpu", store=self.store, chunk=self.ch,
-                                        conv_id=session, checkpoint=self.store is not None, resident=self.res,
-                                        info=info, grid_mark=grid_mark)
-        row = {"step": name, "n": len(ids), "kind": info.get("kind"), "reused": int(reused),
-               "forwarded": int(fwd), "logits": _digest([lg]), "after_prefill": _state(self.eng)}
-        out = _greedy(self.eng, lg, len(ids), k)
-        ctx = list(ids) + out
-        row["out"] = _json(out)
-        row["keep_end"] = _remember(self.eng, self.res, self.store, ctx, len(ids), session) if remember else None
+    def run(self, ids, k: int, session, grid_mark=None, stay=False, own=False, remember=True) -> list[int]:
+        from server import app
+        _serve_state(self.eng, self.res, self.store, self.ch, self.max_len)
+        kw = {}
+        if grid_mark is not None:
+            kw["grid_mark"] = grid_mark
+        if stay:
+            kw["stay"] = True
+        if own and self.own:
+            kw["own"] = True
+        out = [int(t) for t in app.generate_stream(torch.tensor(ids), k, set(), None, session, **kw)]
+        pre = dict(app.STATE["last_prefill"])
+        if remember:
+            app._remember(list(ids), out, session, **({"own": True} if own and self.own else {}))
+        self.pre = {"kind": pre.get("kind"), "reused": int(pre.get("reused") or 0),
+                    "forwarded": int(pre.get("forwarded") or 0)}
+        return list(ids) + out
+
+    def record(self, name: str, ctx=None, **more) -> None:
         rep = _res_report(self.res)
-        row.update(valid=rep["valid"], anchors=rep["anchors"], end_at=rep["end_at"], taint=rep["taint"],
-                   stash_pending=rep["stash_pending"], owner=rep["owner"], res=_json(rep),
-                   store=_json(self.store.report()) if self.store is not None else None, state=_state(self.eng))
+        row = {"step": name, **getattr(self, "pre", {}), "out": _json(ctx) if ctx is not None else None,
+               "valid": rep["valid"], "anchors": rep["anchors"], "end_at": rep["end_at"], "taint": rep["taint"],
+               "stash_pending": rep["stash_pending"], "owner": rep["owner"], "res": _json(rep),
+               "store": _json(self.store.report()) if self.store is not None else None,
+               "state": _state(self.eng), "calls": list(self.calls), **more}
         self.rows.append(row)
+
+    def step(self, name: str, ids, k: int, session, **kw) -> list[int]:
+        ctx = self.run(ids, k, session, **kw)
+        self.record(name, ctx)
         return ctx
 
 
-def play(eng, ch: int, side_eng=None) -> list[dict]:
-    """The sequence on one engine at chunk `ch` (its own prefill grid); `side_eng` a second engine of the same
-    weights for the side slot's part (a fresh one when None)."""
-    keep, cache.PROMPT_END = cache.PROMPT_END, True
+def play(make, ch: int, max_len: int, own: bool = False) -> list[dict]:
+    """The sequence on engines from `make()` at chunk `ch` (their own prefill grid). `own`: the steps that are
+    the server's own questions say so (a tree without `own` cannot)."""
+    from server import app
+    keep_pe, cache.PROMPT_END = cache.PROMPT_END, True
+    keep_state = dict(app.STATE)
     try:
+        # slot 0: a park, a stash, the end anchor, the store
         res = cache.ResidentPrefix(BIG, ch, stash_bytes=BIG, park_bytes=BIG, end=True)
-        store = cache.StateStore(BIG, chunk=ch)
-        p = Play(eng, ch, res, store)
+        p = Play(make(), ch, res, cache.StateStore(BIG, chunk=ch), max_len, own)
         g0 = _toks(5 * ch + 3, 1)
         g0c = p.step("first conversation, cold", g0, 4, "g")
-        a1 = _toks(6 * ch + 5, 2)
-        c1 = p.step("chat turn 1 replaces it", a1, 2 * ch, "A")
+        c1 = p.step("chat turn 1 replaces it", _toks(6 * ch + 5, 2), 2 * ch, "A")
         c2 = p.step("chat turn 2 at its end", c1 + _toks(ch // 2 + 1, 3), 6, "A")
         c3 = p.step("chat turn 3 at its prompt end", c2[:-6] + _toks(4, 4) + _toks(5, 5), 4, "A")
-        p.step("a short guest", _toks(ch + 2, 6), 3, "q")
+        p.step("a short guest (the server's own question)", _toks(ch + 2, 6), 3, "q", own=True)
         c4 = p.step("chat turn 4 after the guest", c3 + _toks(3, 7), 3, "A")
-        p.step("another session, too long for a guest", _toks(4 * ch + 1, 8), 3, "B")
+        p.step("another session, too long for a guest", _toks(4 * ch + 1, 8), 3, "B", own=True)
         p.step("the chat back from the park", c4 + _toks(3, 9), 2, "A")
         p.step("a prefix hit by a guest", g0[:ch + 1] + _toks(3, 10), 2, "r")
         p.step("a session hit", g0c + _toks(3, 11), 2, "g")
         head = _toks(3 * ch + 5, 12)
         p.step("a prompt with a grid mark", head + _toks(4, 13), 3, "m", grid_mark=3 * ch + 5)
         p.step("the same head again", head + _toks(6, 14), 3, "n", grid_mark=3 * ch + 5)
-        # a side slot's prefix (server/app.py `_side_resident`): every short request is a guest, and a chat's
-        # guest becomes the slot's conversation at its end (`promote_guest`)
-        side = side_eng() if callable(side_eng) else side_eng
+        p.step("a worker's request (stay)", _toks(ch + 3, 19), 2, "w", stay=True)
+        # a side slot's prefix (server/app.py `_side_resident`): every shorter request is a guest, a keeper writes
+        # another session's rows to the NVMe before they go, a chat's guest becomes the slot's conversation
         sres = cache.ResidentPrefix(BIG, ch, stash_bytes=BIG, guest_frac=1.0, end=True)
-        s = Play(side, ch, sres, None)
+        s = Play(make(), ch, sres, None, max_len, own)
+        sres.keeper = lambda r, e, d, stay: s.calls.append(["keeper", int(r.valid), bool(stay)])
         x1 = s.step("side: a conversation", _toks(5 * ch + 2, 15), ch, "X")
         y1 = _toks(2 * ch + 3, 16)
-        info: dict = {}
-        lg, reused, fwd = cache.prefill(side, None, y1, "cpu", chunk=ch, conv_id="Y", resident=sres, info=info)
-        out = _greedy(side, lg, len(y1), 3 * ch)
-        y1c = y1 + out
-        promoted = sres.promote_guest(side, None, y1c, len(y1), "Y")
-        kept = sres.keep_end(side, None, y1c, len(y1), [])
-        rep = _res_report(sres)
-        s.rows.append({"step": "side: a chat's guest promoted", "kind": info.get("kind"), "reused": int(reused),
-                       "forwarded": int(fwd), "promoted": promoted, "keep_end": kept, "valid": rep["valid"],
-                       "anchors": rep["anchors"], "end_at": rep["end_at"], "res": _json(rep),
-                       "state": _state(side)})
+        y1c = s.run(y1, 3 * ch, "Y", remember=False)
+        committed = list(app.STATE["last_ctx"])
+        promoted = sres.promote_guest(s.eng, None, committed, len(y1), "Y")
+        kept = sres.keep_end(s.eng, None, committed, len(y1), [])
+        s.record("side: a chat's guest promoted", y1c, promoted=promoted, keep_end=kept)
         s.step("side: the promoted chat's next turn", y1c + _toks(3, 17), 2, "Y")
         s.step("side: the old conversation's next turn", x1 + _toks(3, 18), 2, "X")
-        return p.rows + s.rows
+        s.step("side: a worker's request (stay), the keeper", _toks(ch + 1, 20), 2, "w", stay=True)
+        # a session spill (a stand-in: `begin`'s calls only, nothing written) and no park
+        pres = cache.ResidentPrefix(BIG, ch, stash_bytes=BIG, end=True)
+        q = Play(make(), ch, pres, None, max_len, own)
+        pres.spiller = types.SimpleNamespace(
+            min_tokens=4 * ch, cfg={}, maybe_restore=lambda *a, **k: None,
+            save_resident=lambda r, e, d, reason: q.calls.append(["spill", reason, int(r.valid)]) or {"eid": "pin"})
+        q.step("spill: a long conversation", _toks(5 * ch, 21), 4, "S")
+        q.step("spill: another one sends it to the spill", _toks(3 * ch, 22), 3, "T")
+        q.step("spill: a short one is cut, not spilled", _toks(2 * ch, 23), 2, "U")
+        return p.rows + s.rows + q.rows
     finally:
-        cache.PROMPT_END = keep
+        cache.PROMPT_END = keep_pe
+        app.STATE.clear()
+        app.STATE.update(keep_state)
 
 
 def host_key() -> str:
@@ -214,7 +242,8 @@ def _check(kind: str, run) -> str:
     assert len(want) == len(got), (kind, len(want), len(got))
     bad = [(w["step"], sorted(f for f in w if w[f] != g.get(f))) for w, g in zip(want, got) if w != g]
     assert not bad, f"{kind}: the caching moved at {bad} (host {key})"
-    return f"{len(want)} steps reproduce ({key}): " + ", ".join(f"{r['kind'] or 'cold'} {r['reused']}" for r in got)
+    return f"{len(want)} steps reproduce ({key}): " + ", ".join(f"{r.get('kind') or 'cold'} {r.get('reused')}"
+                                                              for r in got)
 
 
 def _27b():
@@ -224,7 +253,7 @@ def _27b():
 
 def test_the_27bs_caching_is_pinned():
     """The 27B's served engine class (`Qwen38Engine`) on the random 4-layer model, a 16-row grid."""
-    return _check("27b", lambda: play(_27b(), 16, side_eng=_27b))
+    return _check("27b", lambda: play(_27b, 16, 512))
 
 
 def test_flashnexts_caching_is_pinned(monkeypatch):
@@ -237,12 +266,23 @@ def test_flashnexts_caching_is_pinned(monkeypatch):
     def one():
         eng, _ = H.whole(256)
         return FlashNextServing(eng, 256)
-    return _check("flashnext", lambda: play(one(), 8, side_eng=one))
+    return _check("flashnext", lambda: play(one, 8, 256))
+
+
+def test_own_changes_nothing_without_the_flags():
+    """The server's own question (`own` through `generate_stream` and `_remember`) on prefixes without the
+    families' flags: the records equal the sequence's without it, step for step. Skipped on a tree without it."""
+    if "own" not in inspect.signature(cache.prefill).parameters:
+        return "SKIP: this tree has no `own`"
+    plain, own = play(_27b, 16, 512), play(_27b, 16, 512, own=True)
+    diff = [a["step"] for a, b in zip(plain, own) if a != b]
+    assert len(plain) == len(own) and not diff, f"`own` moved the caching at {diff}"
+    return f"{len(plain)} steps equal with and without `own`"
 
 
 def test_the_pin_sees_a_moved_rule():
     """The pin is worth something only if a changed rule moves it: a guest test at half the rows in place."""
-    base = play(_27b(), 16, side_eng=_27b)
+    base = play(_27b, 16, 512)
     real = cache.ResidentPrefix.__init__
 
     def half(self, *a, **kw):
@@ -250,7 +290,7 @@ def test_the_pin_sees_a_moved_rule():
         real(self, *a, **kw)
     cache.ResidentPrefix.__init__ = half
     try:
-        moved = play(_27b(), 16, side_eng=_27b)
+        moved = play(_27b, 16, 512)
     finally:
         cache.ResidentPrefix.__init__ = real
     diff = [a["step"] for a, b in zip(base, moved) if a != b]
