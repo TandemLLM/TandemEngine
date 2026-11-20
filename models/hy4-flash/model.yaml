@@ -1,0 +1,506 @@
+# Hy4-flash in TandemLLM: the setup guide's registry entry (docs/setup.md). Schema 1.
+#
+# Tencent's Hy4-flash (engine/models/hy4_flash) in our EXL3 packs, one profile each (ops/profiles/hy4-<bpw>.env), one
+# Hugging Face repository a pack with the weights on main. weights_gib: the server's load stage `weights` at
+# 262,144 tokens (58.52 on 3.08, 67.17 on 3.56); drafters_gib: the DFly2 layers' own stage (0.08), already in the
+# pack. disk_gb: the repository's bytes / 1e9 with the four Engram tables (40.92 GB, the same files in both packs).
+# table: the Engram tables, read past the page cache through a 2 GiB hot-row cache. max_window: both packs were
+# served at 262,144 tokens (the 3.08 pack also filled to 262,144 real tokens); the checkpoint reads 1,048,576, which
+# is not tested. One chat at a time: the family builds no side slots yet. Quality: our KL runs against the
+# unquantized checkpoint. The measured table is empty: the served speeds so far are one chat request each, not the
+# table's shape, and are in the profile notes with their setup.
+schema: 1
+id: hy4-flash
+name: Hy4-flash
+family: Hy4
+engine: hy_v4_flash
+params: ~220B (64B of them Engram tables), ~11B active a token
+recommended: false
+order: 11
+pitch: Tencent's large mixture-of-experts model with Engram n-gram tables on the SSD, in our EXL3 packs, with its
+  own DFly2 draft layers.
+architecture: 42 layers with latent attention, 30 of them on a sliding window and 12 sparse ones whose indexer picks
+  the key groups a token reads; a dense first layer, then a mixture of 512 experts of which 16 and a shared one run
+  a token; hyper-connection streams; Engram n-gram tables at four layers (64B of the parameters, read from the SSD
+  a row at a time) and five DFly2 draft layers for speculation. It thinks before it answers unless thinking is off.
+license: The model's license (Tencent Hy License, Version 1.0, derived from Apache 2.0 with added terms for large
+  Model-as-a-Service businesses in its Section 10) is in each pack's LICENSE file and on Tencent's Hugging Face
+  page. TandemLLM itself is AGPL-3.0 or commercial.
+icon: null
+links:
+- label: Model card
+  url: https://huggingface.co/tencent/Hy4-flash
+- label: EXL3 3.08 bpw
+  url: https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0
+- label: EXL3 3.56 bpw
+  url: https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5
+devices:
+- id: dgx-spark
+  label: NVIDIA DGX Spark (128 GB unified memory)
+  total_gib: 121.63
+  reserved_gib: 10.0
+  note: The GPU and the CPU share this memory. MemTotal reads 121.6 GiB of the 128 GB.
+assets:
+- id: qwen3.5-2b
+  label: Qwen3.5-2B (the narrator, and Wren)
+  path: ${HOME}/.qwen38-spark-engine/models/qwen3.5-2b/config.json
+  also: []
+  fetchable: true
+  protected: false
+  hf_repo: Qwen/Qwen3.5-2B
+  fetch:
+  - repo: Qwen/Qwen3.5-2B
+    files:
+    - '*.json'
+    - '*.safetensors'
+    - '*.jinja'
+    - merges.txt
+    - LICENSE
+    to: ${HOME}/.qwen38-spark-engine/models/qwen3.5-2b
+    gb: 4.57
+  source: Public on Hugging Face; install.sh --setup downloads it for Wren, the fetch step when the narrator is on (VIS-153).
+- id: laya
+  label: Laya decision models
+  path: ${HOME}/.qwen38-spark-engine/deciders/laya/model.safetensors
+  also: []
+  fetchable: true
+  protected: false
+  hf_repo: convaiinnovations/laya
+  fetch:
+  - repo: convaiinnovations/laya
+    files:
+    - config.json
+    - rl_agent_config.json
+    - model.safetensors
+    - 'encoder/*'
+    - 'tokenizer/*'
+    - 'multilingual/*'
+    - 'typed-decisions/*'
+    to: ${HOME}/.qwen38-spark-engine/deciders/laya
+    gb: 2.35
+  source: Public on Hugging Face (no token needed); the fetch step downloads its three models when Laya is on (VIS-153). Its Python files are not downloaded.
+profiles:
+- id: hy4-3.08
+  label: EXL3 3.08 bpw
+  format: exl3
+  bpw: 3.08
+  disk_gb: 103.1
+  weights_gib: 58.52
+  drafters_gib: 0.08
+  hf_repo: 0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0
+  hf_private: true
+  made_by: {kind: ours, name: 0xBakeer, github: 0xBakeer}
+  recommended: false
+  badges:
+  - smaller
+  quality:
+    kl_vs_bf16: 0.0989
+    top1_pct: 88.52
+    ppl: null
+    date: '2026-11-19'
+    source: 'exllamav3''s cache-less forward with our hy_v4_flash converter patch, the pack against the unquantized
+      BF16 checkpoint (revision d88c9dfd) through the same forward, fp16 reference logits, KL(reference || pack) over
+      every position. chat2048 (wikitext-2 test rows 70..85 inside a templated no_think turn, 16 x 2,048): KL 0.0989,
+      median 0.0287, top-1 88.52 %, reference top-1 in the top 5 99.41 %, perplexity 8.12 for the reference, 8.36 for
+      the pack. conv2048 (held-out ultrachat test_sft conversations, 16 x 2,048, 2026-11-20): KL 0.1113, median
+      0.0065, top-1 92.11 %, top 5 99.16 %. This engine on the same chat2048 rows: KL 0.1009, top-1 88.49 %. Two
+      correct implementations differ by about KL 0.003 to 0.005 on such rows.'
+  assets_required: []
+  note: 'Served speed, one prose chat request (3,565-token prompt rendered by the pack''s template, thinking off,
+    600 tokens, greedy, tok/s from token 50, two requests a server, one sequence): plain 24.45 and 24.74 tok/s with
+    --max-len 8,192 on an idle box; drafted (DFly2 + lookup + StairCut) 34.64 and 35.36 with --max-len 8,192 alone,
+    before a later fix of the draft cost past 4,096 rows; drafted 32.19 and 33.08 with --max-len 262,144 while
+    another GPU job ran beside it, under a 70 GiB ceiling that shed a cache. Not measured on the current build, at
+    the full window on an idle box, or in the table''s shape. First token after 24 to 28 s on that prompt. The
+    Hugging Face repository is private for now: a download needs a token with access.'
+  hf_revision: main
+  max_window: 262144
+  table:
+    gib: 38.11
+    policy: cold
+    cache_gib: 2.0
+- id: hy4-3.56
+  label: EXL3 3.56 bpw
+  format: exl3
+  bpw: 3.56
+  disk_gb: 112.38
+  weights_gib: 67.17
+  drafters_gib: 0.08
+  hf_repo: 0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5
+  hf_private: true
+  made_by: {kind: ours, name: 0xBakeer, github: 0xBakeer}
+  recommended: true
+  badges:
+  - recommended
+  quality:
+    kl_vs_bf16: 0.0653
+    top1_pct: 90.54
+    ppl: null
+    date: '2026-11-20'
+    source: 'exllamav3''s cache-less forward with our hy_v4_flash converter patch, the pack against the unquantized
+      BF16 checkpoint (revision d88c9dfd) through the same forward, fp16 reference logits, KL(reference || pack) over
+      every position. chat2048 (wikitext-2 test rows 70..85 inside a templated no_think turn, 16 x 2,048): KL 0.0653,
+      median 0.0187, top-1 90.54 %, reference top-1 in the top 5 99.58 %, perplexity 8.12 for the reference, 8.32 for
+      the pack. conv2048 (held-out ultrachat test_sft conversations, 16 x 2,048): KL 0.0729, median 0.0033, top-1
+      93.75 %, top 5 99.42 %. Two correct implementations differ by about KL 0.003 to 0.005 on such rows.'
+  assets_required: []
+  note: 'The default: the lower KL of the two packs on both row sets. Served speed, one prose chat request (3,565-token
+    prompt rendered by the pack''s template, thinking off, 600 tokens, greedy, tok/s from token 50, two requests a
+    server, one sequence, --max-len 262,144, idle box): plain 22.75 and 23.05 tok/s, drafted (DFly2 + lookup +
+    StairCut over the pack''s price file) 27.70 and 28.08; the drafted text equals the plain text. First token after
+    27 to 31 s on that prompt. Load 106 s. After the load 72.5 GiB allocated, 73.4 to 73.8 reserved; the start took
+    the pack''s limits, ceiling 85 GiB and peak 92. The Hugging Face repository is private for now: a download needs
+    a token with access.'
+  hf_revision: main
+  max_window: 262144
+  table:
+    gib: 38.11
+    policy: cold
+    cache_gib: 2.0
+measurements:
+  build: 0.16.0
+  date: '2026-11-20'
+  method: 'not measured: the served speeds so far are one prose chat request each (in the profile notes), not the
+    table''s shape'
+  source: not measured
+  rows: []
+memory:
+  parts:
+  - id: engine
+    label: Engine state, the window layers' rings, the draft layers' buffers and graphs
+    gib: 1.19
+    kind: fixed
+    source: 'the load stages on 3.08 at 262,144 tokens (2026-11-20): the engine stage took 5.32 GiB with the window''s
+      state, less the state itself (4.13 GiB at 16,896 bytes a token, counted under Conversations)'
+  - id: allocator
+    label: Allocator reserve
+    gib: 1.3
+    kind: reserve
+    source: 'reserved less allocated after the load on 3.56 at 262,144 tokens, idle box (2026-11-20): 0.83 to 1.26 GiB'
+  sources:
+  - the server's [memory] load stages on the 3.08 and 3.56 packs at --max-len 262,144 (2026-11-20)
+  per_window_parts:
+  - id: prefill_workspace
+    label: Prefill workspace (a chunk's activations and the indexer's scores)
+    bytes_per_token: 29901
+    max_gib: 7.3
+    kind: reserve
+    source: 'the server''s own estimate, 7.3 GiB at 262,144 tokens; not measured (the 262,144-token fill on 3.08 added
+      0.4 GiB in the bare engine)'
+components:
+- id: conductor
+  label: Chat (beta)
+  group: features
+  what: 'On: the Chat tab with its service (chatd) and the conductor, which gives each request the right instructions and helper packages, keeps your memory notes and watches long sessions so they do not get stuck. Off (the default): the engine alone serves its API and the dashboard.'
+  default: false
+  required: false
+  memory_gib: 0.0
+  memory_max_gib: null
+  elastic: false
+  disk_gb: 0.1
+  depends_on: []
+  conflicts: []
+  knobs:
+    CONDUCTOR:
+      'on': 'on'
+      'off': raw
+    QSE_CONDUCTOR_CONFIG:
+      'on': ${HOME}/.qwen38-spark-engine/conductor
+      'off': 'off'
+    QSE_MODE:
+      'on': chat
+      'off': engine
+  assets: []
+  docs: docs/server.md
+  note: Off (the default), clients talk to the raw engine and the small models below have nothing to do. Not tested
+    with this model yet.
+- id: narrator
+  label: Narrator
+  group: roles
+  what: A small model that writes short status lines while the big model thinks, so you can see what it is doing.
+  default: false
+  required: false
+  memory_gib: 3.6
+  memory_max_gib: null
+  elastic: true
+  disk_gb: 4.3
+  depends_on:
+  - conductor
+  conflicts: []
+  knobs:
+    QWEN38_NARRATOR_MODEL:
+      'on': qwen3.5-2b
+      'off': ''
+    QWEN38_NARRATOR_DIR:
+      'on': ${HOME}/.qwen38-spark-engine/models/qwen3.5-2b
+      'off': ''
+  assets:
+  - qwen3.5-2b
+  docs: docs/server.md
+  note: Qwen3.5-2B, 3.60 GiB in the live memory split. When memory runs short it goes after the shadow reader and
+    loads again later.
+- id: laya
+  label: Laya decision models
+  group: roles
+  what: Three tiny classifiers that answer the conductor's quick questions, like what kind of request this is, in
+    milliseconds.
+  default: false
+  with_parent: true
+  required: false
+  memory_gib: 1.6
+  memory_max_gib: null
+  elastic: false
+  disk_gb: 2.3
+  depends_on:
+  - conductor
+  conflicts: []
+  knobs:
+    QWEN38_DECIDER_MODELS:
+      'on': laya-english,laya-multilingual,laya-typed-decisions
+      'off': ''
+  assets:
+  - laya
+  docs: docs/server.md
+  note: The class question's answer; without them every turn falls back to the profile's default level.
+- id: prompt_cache
+  label: Conversation cache
+  group: caches
+  what: Keeps the conversation the model is in, so the next turn starts where the last one ended instead of reading
+    everything again.
+  default: true
+  required: false
+  memory_gib: 0.0
+  memory_max_gib: 2.5
+  elastic: true
+  disk_gb: 0.0
+  depends_on: []
+  conflicts: []
+  knobs:
+    RESIDENT_GB:
+      'on': '2.5'
+      'off': '0'
+  assets: []
+  docs: docs/caches.md
+  note: The resident prefix with its anchors every 4,096 tokens; a restore equals a cold prefill. A prompt shorter
+    than 4,096 tokens has no anchor and is read again on a repeat. After a restore the first round drafts nothing.
+- id: state_store
+  label: State store
+  group: caches
+  what: Saves the model's state after short chats, so the same start a second time costs nothing.
+  default: true
+  required: false
+  memory_gib: 0.0
+  memory_max_gib: 2.0
+  elastic: true
+  disk_gb: 0.0
+  depends_on: []
+  conflicts: []
+  knobs:
+    CACHE_GB:
+      'on': '2'
+      'off': '0'
+  assets: []
+  docs: docs/caches.md
+  note: null
+- id: response_cache
+  label: Response cache
+  group: caches
+  what: Answers an identical greedy request again from memory, without running the model.
+  default: false
+  required: false
+  memory_gib: 0.25
+  memory_max_gib: null
+  elastic: false
+  disk_gb: 0.0
+  depends_on: []
+  conflicts: []
+  knobs:
+    RESPONSE_CACHE:
+      'on': 'on'
+      'off': 'off'
+  assets: []
+  docs: docs/caches.md
+  note: Off on the reference box. Useful for scripts that send the same request many times; never for a benchmark.
+- id: disk_tier
+  label: Disk cache
+  group: disk
+  what: Keeps the start of long prompts on the SSD, so a long agent session or a returning chat starts in seconds.
+  default: true
+  required: false
+  memory_gib: 0.0
+  memory_max_gib: null
+  elastic: false
+  disk_gb: 16.0
+  depends_on: []
+  conflicts: []
+  knobs:
+    QSE_DISK_CACHE:
+      'on': null
+      'off': 'off'
+  assets: []
+  docs: docs/caches.md
+  note: A folder of its own per profile (the profile file names it); a file of another fingerprint is swept.
+- id: nvme_spill
+  label: Session spill
+  group: disk
+  what: Moves a paused conversation to the SSD instead of dropping it, and brings it back on its next turn.
+  default: true
+  required: false
+  memory_gib: 0.0
+  memory_max_gib: null
+  elastic: false
+  disk_gb: 64.0
+  depends_on:
+  - disk_tier
+  conflicts: []
+  knobs:
+    SESSION_SPILL:
+      'on': 'on'
+      'off': 'off'
+  assets: []
+  docs: docs/caches.md
+  note: Compressed, up to SESSION_SPILL_GB (64 GB), inside the disk cache's folder.
+parallelism:
+  # one sequence at a time: the family's ServeSpec has no side slots, so the registry caps the lanes at 1
+  slots:
+    min: 1
+    max: 1
+    default: 1
+  window:
+    min: 8192
+    max: 262144
+    default: 262144
+    step: 4096
+  kv_pool:
+    default: false
+  floor_gb:
+    min: 10
+    max: 40
+    default: 15
+  kv_hard_floor_gb: 10
+  kv_bytes_per_token: 16896
+  typical_fill_tokens: 32768
+  side_slot_const_gib: 0.0
+  knobs:
+    slots: QSE_PARALLEL
+    window: MAX_LEN
+    side_window: QSE_SIDE_MAX_LEN
+    kv_pool: QSE_KV_POOL
+    floor_gb: QSE_PARALLEL_FLOOR_GB
+  fixed: {}
+methods:
+- id: reasoning_effort
+  label: Thinking effort
+  what: How long the model may think before it answers, when a client does not say. The model's template knows high
+    and max; low and medium think at high.
+  type: enum
+  options:
+  - value: medium
+    label: high (the model's own level)
+  - value: xhigh
+    label: max
+  default: medium
+  recommended: medium
+  knob: REASONING_EFFORT
+  docs: docs/server.md
+- id: default_max_tokens
+  label: Default answer length
+  what: The longest answer, in tokens, when a client does not set max_tokens.
+  type: int
+  min: 1024
+  max: 262144
+  default: 32768
+  recommended: 32768
+  knob: DEFAULT_MAX_TOKENS
+  docs: docs/server.md
+- id: request_timeout
+  label: Request time limit
+  what: Seconds one request may run before the engine stops it.
+  type: int
+  min: 60
+  max: 14400
+  default: 3600
+  recommended: 3600
+  knob: REQUEST_TIMEOUT
+  docs: docs/server.md
+- id: max_queue
+  label: Queue length
+  what: How many requests may wait for a free slot before new ones are turned away.
+  type: int
+  min: 1
+  max: 64
+  default: 8
+  recommended: 8
+  knob: MAX_QUEUE
+  docs: docs/server.md
+- id: queue_timeout
+  label: Queue wait
+  what: Seconds a request may wait in the queue before it gets an error.
+  type: int
+  min: 10
+  max: 3600
+  default: 240
+  recommended: 240
+  knob: QUEUE_TIMEOUT
+  docs: docs/server.md
+advanced:
+- id: port
+  label: Port
+  what: The port the API and the dashboard answer on.
+  type: int
+  min: 1024
+  max: 65535
+  default: 8000
+  recommended: 8000
+  knob: PORT
+  docs: docs/operations.md
+- id: host
+  label: Listen on
+  what: The whole network, or only this machine.
+  type: enum
+  options:
+  - value: 0.0.0.0
+    label: the whole network
+  - value: 127.0.0.1
+    label: this machine only
+  default: 0.0.0.0
+  recommended: 0.0.0.0
+  knob: HOST
+  docs: docs/operations.md
+- id: served_model
+  label: Raw engine name
+  what: The model name of the raw engine. With the conductor on, clients see TandemLLM and this name is a hidden
+    alias.
+  type: string
+  pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$
+  default: qwen38-spark-engine
+  recommended: qwen38-spark-engine
+  knob: SERVED_MODEL
+  docs: docs/server.md
+- id: dashboard_login
+  label: Dashboard login
+  what: With an admin password set, on makes the dashboard ask for it too.
+  type: enum
+  options:
+  - value: 'off'
+    label: 'off'
+  - value: 'on'
+    label: 'on'
+  default: 'off'
+  recommended: 'off'
+  knob: QSE_DASHBOARD_LOGIN
+  docs: docs/server.md
+- id: admin_password
+  label: Admin password
+  what: Without one, anyone who reaches the port can change the setup. Generate writes a random one into secrets.env
+    on the box; read it there with cat.
+  type: enum
+  options:
+  - value: keep
+    label: keep as it is
+  - value: generate
+    label: generate one
+  default: keep
+  recommended: keep
+  knob: null
+  docs: docs/operations.md

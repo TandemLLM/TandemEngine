@@ -530,7 +530,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_ADVERTISE` | `ops/serve.env, server/pairing/mdns.py, server/remote/overlay.py` |
 | `QSE_ALLOW_FROM` | `ops/serve.env, server/api/access.py, server/app.py` and 4 more |
 | `QSE_ANSWER_RESERVE` | `server/app.py` |
-| `QSE_ASSETS` | `engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env` and 16 more |
+| `QSE_ASSETS` | `engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env` and 17 more |
 | `QSE_BACKENDS` | `install.sh, ops/engines.sh, ops/serve.env` and 5 more |
 | `QSE_BARRIER_IDLE_OWNER` | `ops/serve.env, server/slots.py` |
 | `QSE_CAPTURE_GUARD_DEBUG` | `engine/capture_lock.py` |
@@ -556,9 +556,9 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_CORRECTOR_SHA256` | `engine/models/flashnext/corrector.py, ops/fetch_weights.py, ops/profiles/flashnext-3.05.env` and 1 more |
 | `QSE_DASHBOARD_LOGIN` | `ops/serve.env, ops/start.sh, server/api/auth.py` and 1 more |
 | `QSE_DISK_ADOPT_FROM` | `ops/serve.env, server/diskcache.py` |
-| `QSE_DISK_CACHE` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh` and 11 more |
+| `QSE_DISK_CACHE` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh` and 12 more |
 | `QSE_ENGINE_ALLOC_CONF` | `engine/cache.py, ops/profiles/_flashnext.env, ops/start.sh` |
-| `QSE_ENGINE_FLAGS` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh` and 10 more |
+| `QSE_ENGINE_FLAGS` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh` and 11 more |
 | `QSE_ENGINE_PORT` | `ops/engine_status.py` |
 | `QSE_EXL3_BPW` | `ops/profiles/_exl3.env, ops/profiles/exl3-2.5.env, ops/profiles/exl3-3.0.env` and 4 more |
 | `QSE_EXT` | `ops/serve.env, server/__init__.py, server/app.py` and 6 more |
@@ -578,11 +578,12 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_GUARD_MARGIN_GB` | `server/app.py` |
 | `QSE_HANDLER_TIMEOUT_S` | `server/app.py` |
 | `QSE_HEALTH_TTL_MS` | `ops/profiles/_flashnext.env, server/app.py, server/health_cache.py` |
+| `QSE_HY4_BPW` | `ops/profiles/_hy4.env, ops/profiles/hy4-3.08.env, ops/profiles/hy4-3.56.env` |
 | `QSE_IMAGE_BACKEND` | `server/app.py` |
 | `QSE_KV_ADMIT_ROWS` | `ops/serve.env, server/app.py` |
 | `QSE_KV_HARD_FLOOR_GB` | `ops/profiles/_flashnext.env, ops/serve.env, server/app.py` |
 | `QSE_KV_MARGIN_ROWS` | `server/app.py` |
-| `QSE_KV_POOL` | `engine/kvpool.py, ops/engines.sh, ops/profiles/_flashnext.env` and 7 more |
+| `QSE_KV_POOL` | `engine/kvpool.py, ops/engines.sh, ops/profiles/_flashnext.env` and 8 more |
 | `QSE_KV_POOL_MIN_ROWS` | `engine/kvpool.py` |
 | `QSE_KV_RECOMPUTE` | `ops/serve.env, server/app.py` |
 | `QSE_KV_TEST_REFUSE_AFTER` | `server/round_runner.py` |
@@ -597,7 +598,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_MANAGED_ENV` | `ops/serve.env, server/remote/overlay.py` |
 | `QSE_MAX_BODY_MB` | `server/api/http_body.py, server/app.py` |
 | `QSE_MEMINFO` | `ops/engines.sh` |
-| `QSE_MEM_NEED_GIB` | `ops/profiles/flashnext-2.05.env, ops/profiles/flashnext-3.05.env, ops/profiles/flashnext-4.05.env` and 27 more |
+| `QSE_MEM_NEED_GIB` | `ops/profiles/flashnext-2.05.env, ops/profiles/flashnext-3.05.env, ops/profiles/flashnext-4.05.env` and 29 more |
 | `QSE_MEM_WAIT_S` | `server/app.py` |
 | `QSE_METRICS_TOKEN` | `ops/make-secrets.sh, ops/start.sh, server/api/auth.py` |
 | `QSE_MODE` | `install.sh, ops/engines.sh, ops/serve.env` and 5 more |
@@ -619,9 +620,9 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_ORN_HEAD` | `ops/profiles/_ornith.env, ops/profiles/ornith-1.5-122b-exl3-4.0.env` |
 | `QSE_ORN_VARIANT` | `ops/profiles/_ornith.env, ops/profiles/ornith-1.5-122b-exl3-4.0.env` |
 | `QSE_PACK_VISION` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/serve.env` and 2 more |
-| `QSE_PAGE_CACHE_DROP` | `engine/models/nemotron_h/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env` and 6 more |
+| `QSE_PAGE_CACHE_DROP` | `engine/models/nemotron_h/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env` and 7 more |
 | `QSE_PAGE_CACHE_KEEP` | `ops/profiles/_flashnext.env, ops/serve.env, server/remote/overlay.py` |
-| `QSE_PARALLEL` | `ops/engines.sh, ops/profiles/_flashnext.env, ops/profiles/_flint.env` and 6 more |
+| `QSE_PARALLEL` | `ops/engines.sh, ops/profiles/_flashnext.env, ops/profiles/_flint.env` and 7 more |
 | `QSE_PARALLEL_AUTO_N` | `server/app.py, server/slots.py` |
 | `QSE_PARALLEL_BATCH` | `server/app.py` |
 | `QSE_PARALLEL_BUSY_WAIT_MS` | `server/slots.py` |
@@ -703,13 +704,13 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_USAGE_DEFAULT` | `server/app.py` |
 | `QSE_USAGE_LEDGER` | `install.sh, ops/engines.sh, ops/serve.env` and 4 more |
 | `QSE_VISION_ASKED` | `ops/serve.env, ops/start.sh, server/remote/overlay.py` |
-| `QSE_WEIGHTS` | `engine/models/flashnext/corrector.py, engine/models/flashnext/coupled.py, engine/models/flashnext/serving.py` and 21 more |
-| `QSE_WEIGHTS_ALSO` | `ops/profiles/_flashnext.env, ops/use-profile.sh` |
-| `QSE_WEIGHTS_DIR` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env` and 12 more |
-| `QSE_WEIGHTS_FILES` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env` and 9 more |
-| `QSE_WEIGHTS_GB` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/exl3-2.5.env` and 35 more |
-| `QSE_WEIGHTS_HF` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env` and 27 more |
-| `QSE_WEIGHTS_REVISION` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env` and 30 more |
+| `QSE_WEIGHTS` | `engine/models/flashnext/corrector.py, engine/models/flashnext/coupled.py, engine/models/flashnext/serving.py` and 22 more |
+| `QSE_WEIGHTS_ALSO` | `ops/profiles/_flashnext.env, ops/profiles/_hy4.env, ops/use-profile.sh` |
+| `QSE_WEIGHTS_DIR` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env` and 13 more |
+| `QSE_WEIGHTS_FILES` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env` and 10 more |
+| `QSE_WEIGHTS_GB` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/exl3-2.5.env` and 37 more |
+| `QSE_WEIGHTS_HF` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env` and 29 more |
+| `QSE_WEIGHTS_REVISION` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env` and 32 more |
 | `QSE_WREN_MODEL` | `server/setup/wren.py` |
 
 <!-- /generated -->

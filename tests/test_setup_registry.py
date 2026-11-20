@@ -279,9 +279,10 @@ def test_every_knob_is_registered():
 
 def _profile_env(name: str) -> dict:
     """What ops/profiles/<name>.env sets for the registry's fields, through bash (the _exl3 and
-    _flashnext templates included)."""
+    _flashnext templates included). The table policy is the family's own knob: Flash-Next's
+    QWEN38_FN_TABLE, Hy4-flash's QWEN38_HY4_TABLE."""
     out = subprocess.run(["bash", "-c", 'REPO="$1"; HOME=/h; set -a; . "$1/ops/profiles/$2.env"; '
-                          'echo "$QSE_WEIGHTS_HF|$QSE_WEIGHTS_GB|$QSE_WEIGHTS_REVISION|$QWEN38_FN_TABLE"',
+                          'echo "$QSE_WEIGHTS_HF|$QSE_WEIGHTS_GB|$QSE_WEIGHTS_REVISION|${QWEN38_FN_TABLE:-$QWEN38_HY4_TABLE}"',
                           "-", ROOT, name], capture_output=True, text=True, check=True).stdout.strip()
     hf, gb, rev, table = out.split("|")
     return {"hf": hf, "gb": float(gb), "revision": rev or None, "table": table or None}

@@ -1,0 +1,14 @@
+{
+  "model": "hy4-flash",
+  "label": "Hy4-flash",
+  "packs": ["hy4-*"],
+  "context_limit": 262144,
+  "max_output": 32768,
+  "capabilities": {
+    "thinking": true,
+    "tools": false,
+    "vision": false,
+    "structured": false,
+    "parallel_tool_calls": false
+  }
+}
