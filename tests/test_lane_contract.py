@@ -18,6 +18,17 @@ code, unchanged:
      the host fakes of Flash-Next (tests/test_fn_serving.py) and LFM2.5 (tests/test_lfm2_moe_serving.py)
                                            test_pin_a_side_slots_drafter
 
+The shared code (engine/methods/side_slot.py) answers every pin as each family's copy does:
+
+  5  `ensure_rows` gives every case of 1 (capped at the window for the three that cap, uncapped for
+     Flash-Next); under a family's read floor it commits the floor, over the window the window (a window under
+     the floor commits the window), inside a capture nothing          test_ensure_rows_*
+  6  `side_slot_bytes` is the three families' body; `open_pool` is the five families' line
+                                           test_side_slot_bytes_is_the_shared_body, test_open_pool_is_every_familys_line
+  7  `lane_drafter` builds the drafter each family's own side slot builds, from the same slot 0 (Flash-Next
+     plain, frozen and with a back-off; LFM2.5 with no head)
+                                           test_lane_drafter_equals_the_familys_own
+
 Run: python tests/test_lane_contract.py
 """
 
@@ -250,6 +261,104 @@ def test_pin_a_side_slots_drafter():
     # what differs today: Flash-Next captures the lane's head graphs at once (1 call), LFM2.5 calls nothing
     # (its head is NoHead, whose capture is a no-op)
     return "; ".join(out)
+
+
+# ------------------------------------------------------------------ the shared code against the pins
+
+def test_ensure_rows_answers_every_familys_cases():
+    from engine.methods.side_slot import ensure_rows
+    for name, capped in ENSURE.items():
+        def shared(ps, rows, window, capped=capped):
+            ensure_rows(ps, rows, window if capped else None)
+        for case in ENSURE_CASES:
+            assert _ensure_case(shared, case) == _want(case, capped), (name, case)
+    ensure_rows(None, 10, 64, floor=40)                 # the pool off: nothing to commit
+    return f"{len(ENSURE)} families' {len(ENSURE_CASES)} cases"
+
+
+def test_ensure_rows_commits_the_floor_and_stops_at_the_window():
+    """The design's test 4: rows under the floor commit the floor; rows over the window the window; a window under
+    the floor the window; nothing inside a capture."""
+    from engine.methods.side_slot import ensure_rows
+    base = dict(have=0, margin=8, dev=True, capturing=False)
+    cases = [(10, 2048, 4096, 2048), (3000, 2048, 4096, 3000), (5000, 2048, 4096, 4096), (10, 2048, 1024, 1024)]
+    for rows, floor, cap, want in cases:
+        ps = _Pages(**{k: base[k] for k in ("have", "margin", "dev")})
+        real = torch.cuda.is_current_stream_capturing
+        torch.cuda.is_current_stream_capturing = lambda: False
+        try:
+            ensure_rows(ps, rows, cap, floor=floor)
+            ensure_rows(ps, rows, cap, floor=floor)                 # committed: one int compare, no call
+        finally:
+            torch.cuda.is_current_stream_capturing = real
+        assert ps.asked == [want], (rows, floor, cap, ps.asked)
+    ps = _Pages(0, 8, True)
+    real = torch.cuda.is_current_stream_capturing
+    torch.cuda.is_current_stream_capturing = lambda: True
+    try:
+        ensure_rows(ps, 10, 4096, floor=2048)
+    finally:
+        torch.cuda.is_current_stream_capturing = real
+    assert ps.asked == [], "inside a capture: its caller committed the rows"
+    return f"{len(cases)} floor and window cases; a capture commits nothing"
+
+
+def test_side_slot_bytes_is_the_shared_body():
+    from engine.methods.side_slot import side_slot_bytes
+    cost = CostModel(section_bytes=12_345, view_bytes_per_token=678)
+    stub = NS(cost=lambda: cost)
+    for name in BYTES_BODY:
+        mod, cls = _family(name)
+        for paged in (True, False):
+            assert side_slot_bytes(cost, paged, mod.SIDE_SLOT_CONST) == cls.side_slot_bytes(stub, 4096, paged), name
+    return f"{len(BYTES_BODY)} families"
+
+
+def test_open_pool_is_every_familys_line():
+    from engine.methods.side_slot import open_pool
+    for name in POOL_OPEN:
+        expr = _own_pool_line(name)
+        for a, ctx, opener, on in _pool_cases():
+            own = eval(expr, {"getattr": getattr, "hasattr": hasattr}, {"a": a, "ctx": ctx})   # noqa: S307
+            assert open_pool(a, ctx) is own is (opener if on else None), (name, vars(a), vars(ctx))
+    return f"{len(POOL_OPEN)} families"
+
+
+def test_lane_drafter_equals_the_familys_own():
+    """The design's test 3: from the same slot 0, `lane_drafter` over a new serving and head gives the drafter the
+    family's own `side_slot` gives (prices, step, corpus, minimum order, freeze, siblings, back-off). It captures
+    the head's graphs once, as Flash-Next's does; LFM2.5's copy calls nothing, and its head (NoHead) captures
+    nothing either way."""
+    from engine.methods.side_slot import lane_drafter
+    from engine.models.flashnext.serving import FlashNextServing
+    from engine.models.lfm2_moe.serving import Lfm2MoeServing
+    out = []
+    for what, lane in (("flashnext", fn_lane), ("flashnext frozen", lambda: fn_lane(freeze=True)),
+                       ("flashnext back-off", lambda: fn_lane(backoff=2)), ("lfm2_moe", lfm_lane)):
+        s0, d0, _, d2, own_captures = lane()
+        if what.startswith("flashnext"):
+            e3 = FlashNextServing(s0.fn, 32)
+            head = e3.add_mtp_head(d0.depth)
+        else:
+            e3, head = Lfm2MoeServing(s0.fn, 32), NoHead()
+        with _Captures() as cap:
+            d3 = lane_drafter(e3, head, d0)
+        assert d3.s is e3 and d3.head is head and d3.cut is not d0.cut, what
+        assert signature(d3) == signature(d2), (what, signature(d3), signature(d2))
+        assert len(cap.calls) == 1 and own_captures == (1 if what.startswith("flashnext") else 0), what
+        out.append(what)
+    assert NoHead().capture_all() is None
+    # a family's own cut over the new prices (Hy4-flash's frozen draft prior goes this way)
+    s0, d0, _, _, _ = fn_lane()
+    seen = []
+
+    def make_cut(prices, siblings):
+        seen.append((prices.table == d0.cut.prices.table, siblings))
+        return StairCut(prices, siblings=True)
+    with _Captures():
+        d4 = lane_drafter(FlashNextServing(s0.fn, 32), NoHead(), d0, make_cut=make_cut)
+    assert seen == [(True, False)] and d4.cut.siblings is True
+    return ", ".join(out) + "; a family's own cut"
 
 
 if __name__ == "__main__":
