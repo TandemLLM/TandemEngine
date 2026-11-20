@@ -1,5 +1,6 @@
-"""On the board: Hy4-flash's prompt pass on the grouped expert kernels (the default, HY4_PREFILL_GROUPED=1) against
-the pair kernels (=0), SPD-311.
+"""On the board: Hy4-flash's prompt pass on its row kernels in their grouped form (HY4_PREFILL_EXPERTS=rows,
+HY4_PREFILL_GROUPED=1, the row kernels' default) against their pair form (=0), and against the shared prefill kernel
+(HY4_PREFILL_EXPERTS=group, the default path), SPD-311.
 
   * the same prompt, prefilled once on each: every row's logits and the whole state after it (the sparse layers'
     latents and indexer keys, the window layers' rings, the last tokens) are equal bit for bit;
@@ -36,8 +37,8 @@ def _eng():
     return _L["e"]
 
 
-def _pass(eng, ids: list[int], grouped: bool):
-    eng.prefill_grouped = grouped
+def _pass(eng, ids: list[int], experts: str, grouped: bool):
+    eng.prefill_experts, eng.prefill_grouped = experts, grouped
     st = eng.new_state(len(ids) + 8)
     logits = eng.prefill(torch.tensor(ids), st, head="all")
     nxt = eng.rows([int(logits[-1].argmax())], [-1], st)[0]
@@ -52,18 +53,19 @@ def test_the_grouped_prompt_pass_is_the_pair_ones_bit_for_bit():
     g = torch.Generator().manual_seed(11)
     # past the 256-row launches of the experts, so a chunk's pairs share experts across several launches
     ids = torch.randint(5, min(cfg.vocab_size, 900), (700,), generator=g).tolist()
-    was = eng.prefill_grouped
+    was = (eng.prefill_experts, eng.prefill_grouped)
     try:
-        la, sa, na = _pass(eng, ids, grouped=False)
-        lb, sb, nb = _pass(eng, ids, grouped=True)
+        la, sa, na = _pass(eng, ids, "rows", grouped=False)
+        arms = {"rows grouped": _pass(eng, ids, "rows", grouped=True), "group": _pass(eng, ids, "group", grouped=True)}
     finally:
-        eng.prefill_grouped = was
-    assert torch.equal(la, lb), float((la - lb).abs().max())
-    for f in ("lat_all", "ik_all", "win_all", "hist"):
-        assert torch.equal(getattr(sa, f), getattr(sb, f)), f
-    assert sa.length == sb.length == len(ids)
-    assert torch.equal(na, nb), float((na - nb).abs().max())
-    return f"{len(ids)} rows: every row's logits, the state and the next step equal"
+        eng.prefill_experts, eng.prefill_grouped = was
+    for arm, (lb, sb, nb) in arms.items():
+        assert torch.equal(la, lb), (arm, float((la - lb).abs().max()))
+        for f in ("lat_all", "ik_all", "win_all", "hist"):
+            assert torch.equal(getattr(sa, f), getattr(sb, f)), (arm, f)
+        assert sa.length == sb.length == len(ids), arm
+        assert torch.equal(na, nb), (arm, float((na - nb).abs().max()))
+    return f"{len(ids)} rows: rows grouped and group equal rows pair in every row's logits, the state and the next step"
 
 
 if __name__ == "__main__":

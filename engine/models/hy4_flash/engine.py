@@ -56,6 +56,27 @@ SUB_LIST = 32
 #: rows of a prompt chunk the routed experts take in one launch (a row's bits do not depend on the batch: the
 #: device check compares)
 EXPERT_SUB = 256
+#: SPD-321: rows from which a prompt chunk's routed experts take the shared prefill kernel
+#: (tools/fn_prefill_kernels.moe_grouped, one call for the chunk) instead of the row kernels in EXPERT_SUB launches.
+#: 0 until the device's crossover is measured (tools/hy4_check.py --only experts-crossover): every chunk takes it
+EXPERTS_MIN = 0
+#: SPD-321: the prefill kernel's item GEMM sums its K range over 4 warps in order (prefill.cu `GG_WK`); the row kernels
+#: give the same bits only where they split K over as many (`moe_launch()`'s warps), so only then may a chunk's row
+#: count choose between the two
+GROUP_WARPS = 4
+#: SPD-321: rows an item of the prefill kernel's GEMM takes (32 and 64 gave the same bits, 64 the faster: gate 0)
+GROUP_ROWS = 64
+#: SPD-319: ids a prompt chunk's table read takes at a time on the reader thread (one table's lock held for one piece)
+TABLE_PIECE = 4096
+
+
+def moe_warps(device) -> int | None:
+    """The warps the device's MoE row kernels split K over (its GPU adapter's `moe_launch()`), None where it has none."""
+    from tools import gpu as _gpu
+    try:
+        return int(_gpu.profile(device).moe_launch()[1])
+    except Exception:          # noqa: BLE001 -- a device without the MoE row kernels (NoInlineBuild, the CPU)
+        return None
 
 
 #: what torch's rms_norm adds under the root when no eps is given (the reference's Engram norms), for every float type
@@ -186,6 +207,14 @@ class Hy4FlashEngine(Hy4FlashRef):
         self.row_torch = False
         #: the prompt's routed experts on the grouped kernels (serving sets it from HY4_PREFILL_GROUPED)
         self.prefill_grouped = False
+        #: SPD-321: a prompt chunk's routed experts on the shared prefill kernel ("group") or on the row kernels ("rows",
+        #: the path before; serving sets it from HY4_PREFILL_EXPERTS). `experts_min`: the rows from which "group" takes the
+        #: chunk; below them the row kernels, which give the same bits only at the prefill kernel's warp split, so on any
+        #: other split every row count takes the prefill kernel
+        self.prefill_experts = "group"
+        self.experts_min = EXPERTS_MIN if moe_warps(self.device) == GROUP_WARPS else 0
+        #: SPD-319: the prompt pass's one table-row reader thread, made at the first chunk
+        self._reader = None
         self.prompt_hidden = None
         self.stats = {"rows": 0, "blocks": 0, "prefill_rows": 0, "engram_rows": 0}
 
@@ -875,11 +904,13 @@ class Hy4FlashEngine(Hy4FlashRef):
             st.gk_all[:, :st.Gc] = st.ik_all[:, cfg.index_kpool - 1::cfg.index_kpool][:, :st.Gc]
             st.gk_dirty = False
         grams = torch.stack([full[n_ctx - j: n_ctx - j + T] for j in range(cfg.engram_max_ngram_size)], dim=-1) if self.hashes else None
+        # every Engram layer's table rows read and decoded on the reader thread, in layer order, while the layers run
+        reads = self._engram_reads(grams) if self.hashes else {}
         h = self.embed(tokens).unsqueeze(1).expand(-1, cfg.hc_mult, -1).contiguous()
         for li in range(cfg.num_hidden_layers):
             p = f"layers.{li}."
             if li in self.hashes:
-                rows = self.engram_rows(li, self.hashes[li].ids(grams))
+                rows = self._engram_take(li, reads[li])
                 self.stats["engram_rows"] += rows.shape[0] * rows.shape[1]
                 h = h + self.engram_apply(h, rows, li, live)
             x, post = self.hc(h, p + "hc_attn_layer.hc_pre.")
@@ -895,6 +926,34 @@ class Hy4FlashEngine(Hy4FlashRef):
         self.prompt_hidden = self.final(h)
         self.stats["prefill_rows"] += T
         return self.prompt_hidden
+
+    def _engram_reads(self, grams: torch.Tensor) -> dict:
+        """SPD-319: a chunk's n-grams [T, n] -> {Engram layer: (its ids' shape, the future of its rows)}: every layer's ids
+        hashed here, then one job a layer, in layer order, on the engine's one reader thread (`_engram_read`). The
+        futures belong to the caller's frame: a chunk only ever takes its own rows."""
+        if self._reader is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._reader = ThreadPoolExecutor(1, thread_name_prefix="hy4-table-rows")
+        out = {}
+        for li in self._elayers:
+            ids = self.hashes[li].ids(grams)
+            out[li] = (tuple(ids.shape), self._reader.submit(self._engram_read, li, ids))
+        return out
+
+    def _engram_read(self, li: int, ids: torch.Tensor) -> torch.Tensor:
+        """The reader thread's job: the table rows of `ids` decoded on the CPU in the compute dtype [n, head_dim], the
+        read and the decode of `engram_rows`, in pieces of TABLE_PIECE ids (a piece holds the table's lock, so a decode
+        step's read waits for one piece at most)."""
+        t, flat = self.tables[li], ids.reshape(-1).cpu()
+        return torch.cat([t.gather(flat[i:i + TABLE_PIECE], dtype=self.dtype) for i in range(0, max(flat.shape[0], 1), TABLE_PIECE)])
+
+    def _engram_take(self, li: int, job: tuple) -> torch.Tensor:
+        """Layer li's rows from its job [T, heads, head_dim] on the device, as `engram_rows` gives them."""
+        shape, fut = job
+        e = fut.result().to(self.device).reshape(*shape, -1)
+        if self.cfg.engram_fp8_embedding and not getattr(self.tables[li], "fp8_done", False):
+            e = fp8_round_trip(e)
+        return e
 
     def attention_chunk(self, x: torch.Tensor, li: int, st: Hy4EngState, slots: torch.Tensor) -> torch.Tensor:
         cfg = self.cfg
@@ -1027,13 +1086,27 @@ class Hy4FlashEngine(Hy4FlashRef):
         idx, wts = self.route(x, li)
         z = self.lin(x, self.w(p + "routed_expert_down_proj.weight"))
         if li in self.banks:
-            B, gr = EXPERT_SUB, self.prefill_grouped
-            routed = torch.cat([self.combine(self.expert_pairs(z[i:i + B], idx[i:i + B], li, grouped=gr), idx[i:i + B], wts[i:i + B])
-                                for i in range(0, x.shape[0], B)])
+            routed = self._experts_chunk(z, idx, wts, li)
         else:
             routed = self._experts_grouped(z, idx, wts, li)
         routed = self.lin(routed, self.w(p + "routed_expert_up_proj.weight"))
         return self.rms(routed + self.dense(x, p + "shared_experts."), self.w(p + "combine_output_norm.weight"))
+
+    def _experts_chunk(self, z: torch.Tensor, idx: torch.Tensor, wts: torch.Tensor, li: int) -> torch.Tensor:
+        """A prompt chunk's routed experts on the layer's kernel bank, combined -> [T, latent]. "group" at `experts_min`
+        rows or more: one call of the shared prefill kernel for the whole chunk (an expert's tiles decoded once an item
+        of GROUP_ROWS pairs) with the SwiGLU clamp between its two GEMMs, where the row kernels clamp between their
+        launches. Otherwise the row kernels in EXPERT_SUB launches, grouped by HY4_PREFILL_GROUPED. By the code both
+        apply the same products in the same order a pair (tools/hy4_check.py --only experts-equal compares every MoE
+        layer on the device)."""
+        if self.prefill_experts == "group" and z.shape[0] >= self.experts_min:
+            from tools import fn_prefill_kernels as PK
+            ids = idx.to(torch.int32).contiguous()
+            yd = PK.moe_grouped(z.contiguous(), ids, self.banks[li], rows=GROUP_ROWS, clamp=self.cfg.swiglu_limit)
+            return self.combine(yd, idx, wts)
+        B, gr = EXPERT_SUB, self.prefill_grouped
+        return torch.cat([self.combine(self.expert_pairs(z[i:i + B], idx[i:i + B], li, grouped=gr), idx[i:i + B], wts[i:i + B])
+                          for i in range(0, z.shape[0], B)])
 
     def _experts_grouped(self, z: torch.Tensor, idx: torch.Tensor, wts: torch.Tensor, li: int) -> torch.Tensor:
         """A chunk's routed experts, an expert's rows together, the pairs added in fp32 and rounded once."""

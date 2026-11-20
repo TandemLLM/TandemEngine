@@ -1,6 +1,7 @@
 """The Hy4-flash engine on a tiny random model, on the CPU: the row path and the prefill against the
 reference forward, a verify block's rows against the decode step's (bit for bit), trees, commit of a moved
-path, rollback, and the rings, groups and read lists past their first wrap."""
+path, rollback, and the rings, groups and read lists past their first wrap. The tiny byte gate (SPD-317) holds the
+bytes of a fixed script against a host's recorded digests (tests/byte_pins.py)."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from engine.models.hy4_flash import engine as E  # noqa: E402
 from engine.models.hy4_flash.ref import Hy4FlashRef, Hy4State  # noqa: E402
 from tests.hy4_tiny import random_weights, tiny_config  # noqa: E402
@@ -189,6 +191,268 @@ def test_bf16_engram_rows_follow_the_reference_norm():
     d = ((step - full).abs().mean() / full.abs().mean()).item()
     assert d < 0.05, d
     return f"rows of rms 0.05: the row form against the reference's {rel:.4f}; a step against the prompt pass's row {d:.4f} of the mean logit size"
+
+
+def byte_gate_run(eng=None) -> dict:
+    """SPD-317 (S0.5): one fixed script on the tiny model in BF16, every logit and every stored tensor as a digest: a
+    120-row prompt in chunks of 16, six decode steps, a tree block with a wrong branch, its commit and one more step."""
+    from byte_pins import digest
+    if eng is None:
+        cfg = tiny_config()
+        W, tables = random_weights(cfg)
+        eng = E.Hy4FlashEngine(cfg, W, tables, dtype=torch.bfloat16, max_len=256)
+    g = torch.Generator().manual_seed(17)
+    toks = torch.randint(4, 60, (140,), generator=g)
+    st = eng.new_state()
+    out = {}
+    old = E.PREFILL_CHUNK
+    E.PREFILL_CHUNK = 16
+    try:
+        out["prefill"] = eng.prefill(toks[:120], st, head="all")
+    finally:
+        E.PREFILL_CHUNK = old
+    out["prompt_hidden"] = eng.prompt_hidden
+    for i in range(6):
+        out[f"step{i}"] = eng.step(int(toks[120 + i]), st)
+    t = toks[126:130].tolist()
+    lg, hid = eng.rows([t[0], (t[1] + 1) % 64, t[2], t[1], t[2]], [-1, 0, 1, 0, 3], st)
+    out["tree"], out["tree_hidden"] = lg, hid
+    eng.commit(st, [0, 3, 4])
+    out["after_commit"] = eng.step(int(toks[130]), st)
+    n = st.length
+    out.update(lat=st.lat_all[:, :n], ik=st.ik_all[:, :n], win=st.win_all, hist=st.hist, gk=st.gk_all[:, :n // eng.cfg.index_kpool])
+    return {k: digest(v) for k, v in out.items()}
+
+
+def test_the_tiny_byte_gate():
+    """The prompt pass, decode, a tree and a commit keep their bytes across a change that must not move them (the
+    form of tests/test_refactor_gate.py; recorded on the tree before the prefill steps, tests/byte_pins.py)."""
+    from byte_pins import check
+    got = byte_gate_run()
+    assert got == byte_gate_run(), "two runs in one process differ: the gate cannot work"
+    return check("hy4_byte_gate.json", "tiny_bf16", got)
+
+
+def _pair_walk(eng, z, idx, li, lim):
+    """Every (row, slot) pair through its expert, one row at a time, the SwiGLU clamps where `lim` is set: [M k, latent]
+    fp32, the contract of the shared prefill kernel and of the row kernels (on the CPU, the tiny model's weights)."""
+    import torch.nn.functional as F
+    p = f"layers.{li}.mlp.experts."
+    G, U, D = eng.w(p + "gate_proj"), eng.w(p + "up_proj"), eng.w(p + "down_proj")
+    out = []
+    for r in range(z.shape[0]):
+        zr = z[r:r + 1].clone()
+        for e in idx[r].tolist():
+            g, u = F.linear(zr, G.weight(e, z.dtype)), F.linear(zr, U.weight(e, z.dtype))
+            if lim is not None:
+                g, u = g.clamp(max=lim), u.clamp(min=-lim, max=lim)
+            out.append(F.linear(F.silu(g) * u, D.weight(e, z.dtype)).float())
+    return torch.cat(out)
+
+
+class _Kernels:
+    """The shared prefill kernel (tools/fn_prefill_kernels.moe_grouped) and the engine's row kernels (`expert_pairs`)
+    replaced by the pair walk, every call recorded."""
+
+    def __init__(self, eng):
+        self.eng, self.grouped, self.rows = eng, [], []
+
+    def __enter__(self):
+        from tools import fn_prefill_kernels as PK
+        self.PK, self.real = PK, PK.moe_grouped
+
+        def moe_grouped(x, ids, bank, rows=64, clamp=None):
+            self.grouped.append({"rows": x.shape[0], "dtype": ids.dtype, "items": rows, "clamp": clamp, "layer": bank[1]})
+            return _pair_walk(self.eng, x, ids, bank[1], clamp)
+
+        def expert_pairs(z, idx, li, grouped=False):
+            self.rows.append({"rows": z.shape[0], "layer": li, "grouped": grouped})
+            return _pair_walk(self.eng, z, idx, li, self.eng.cfg.swiglu_limit)
+        PK.moe_grouped = moe_grouped
+        self.eng.expert_pairs = expert_pairs
+        return self
+
+    def __exit__(self, *exc):
+        self.PK.moe_grouped = self.real
+        del self.eng.expert_pairs
+
+
+def _banked(warps=None, experts_min=None):
+    """The tiny model (fp32) with a kernel bank on every MoE layer (a stand-in the patched kernels read), built with the
+    device's MoE warps and EXPERTS_MIN as given."""
+    old = (E.moe_warps, E.EXPERTS_MIN)
+    if warps is not None:
+        E.moe_warps = lambda device: warps
+    if experts_min is not None:
+        E.EXPERTS_MIN = experts_min
+    try:
+        cfg = tiny_config()
+        W, tables = random_weights(cfg)
+        eng = E.Hy4FlashEngine(cfg, W, tables, dtype=torch.float32, max_len=512)
+    finally:
+        E.moe_warps, E.EXPERTS_MIN = old
+    eng.banks = {li: ("bank", li) for li in range(cfg.num_hidden_layers) if not cfg.is_dense_mlp(li)}
+    return eng
+
+
+def test_a_chunks_experts_are_one_grouped_call():
+    """SPD-321: on a kernel bank a 300-row chunk's routed experts are one call of the shared prefill kernel a MoE layer,
+    with all its rows, int32 ids, items of GROUP_ROWS and the model's SwiGLU limit as the clamp; the row kernels' loop
+    (HY4_PREFILL_EXPERTS=rows) gives the same logits."""
+    eng = _banked()
+    toks = torch.randint(4, 60, (300,), generator=torch.Generator().manual_seed(23))
+    with _Kernels(eng) as k:
+        eng.prefill_experts = "group"
+        a = eng.prefill(toks, eng.new_state(), head="all")
+        calls, k.grouped = k.grouped, []
+        assert not k.rows, k.rows[:2]
+        assert sorted(c["layer"] for c in calls) == sorted(eng.banks), calls
+        assert all(c["rows"] == 300 and c["dtype"] == torch.int32 and c["items"] == E.GROUP_ROWS
+                   and c["clamp"] == eng.cfg.swiglu_limit for c in calls), calls
+        eng.prefill_experts = "rows"
+        b = eng.prefill(toks, eng.new_state(), head="all")
+        assert not k.grouped and [r["rows"] for r in k.rows] == [256, 44] * len(eng.banks), k.rows
+    assert torch.equal(a, b), (a - b).abs().max()
+    return f"{len(calls)} MoE layers: one call each of 300 rows, clamp {eng.cfg.swiglu_limit}; the row loop's logits equal"
+
+
+def test_below_the_crossover_the_row_kernels_run():
+    """SPD-321: at the prefill kernel's warp split a chunk below EXPERTS_MIN rows takes the row kernels, a chunk at or
+    above it the prefill kernel."""
+    eng = _banked(warps=E.GROUP_WARPS, experts_min=64)
+    assert eng.experts_min == 64
+    toks = torch.randint(4, 60, (300,), generator=torch.Generator().manual_seed(29))
+    with _Kernels(eng) as k:
+        eng.prefill(toks[:40], eng.new_state(), head=None)
+        assert not k.grouped and [r["rows"] for r in k.rows] == [40] * len(eng.banks), (k.grouped[:1], k.rows)
+        k.rows = []
+        eng.prefill(toks, eng.new_state(), head=None)
+        assert not k.rows and [c["rows"] for c in k.grouped] == [300] * len(eng.banks), (k.rows[:1], k.grouped)
+    return "40 rows on the row kernels, 300 on the prefill kernel (EXPERTS_MIN 64)"
+
+
+def test_another_warp_count_takes_one_kernel_at_every_size():
+    """SPD-321: where the row kernels split K over another warp count (their bits differ from the prefill kernel's),
+    every row count takes the prefill kernel, whatever EXPERTS_MIN says; so does a device without the row kernels."""
+    out = []
+    toks = torch.randint(4, 60, (40,), generator=torch.Generator().manual_seed(31))
+    # 8 warps; and the CPU's GPU adapter, which has no MoE launch shape at all
+    for label, eng in (("8 warps", _banked(warps=8, experts_min=64)), ("no launch shape", _banked(experts_min=64))):
+        assert eng.experts_min == 0, (label, eng.experts_min)
+        with _Kernels(eng) as k:
+            eng.prefill(toks, eng.new_state(), head=None)
+            assert not k.rows and [c["rows"] for c in k.grouped] == [40] * len(eng.banks), (label, k.rows[:1])
+        out.append(f"{label}: 40 rows on the prefill kernel")
+    return "; ".join(out)
+
+
+class _CountingTable:
+    """A table whose reads are logged (layer, ids) before they run."""
+
+    def __init__(self, t, li, log):
+        self.t, self.li, self.log = t, li, log
+
+    def gather(self, ids, dtype=torch.bfloat16, **kw):
+        self.log.append(("read", self.li, int(ids.numel())))
+        return self.t.gather(ids, dtype=dtype, **kw)
+
+    def __getattr__(self, k):
+        return getattr(self.t, k)
+
+
+class _NowReader:
+    """An executor that runs a job when it is handed over (the order of the log is the order of the hand-overs)."""
+
+    def submit(self, fn, *args):
+        from concurrent.futures import Future
+        f = Future()
+        f.set_result(fn(*args))
+        return f
+
+
+def test_a_chunk_asks_for_its_table_rows_before_the_layers():
+    """SPD-319: with counting tables every Engram table's ids are handed to the reader before layer 0 runs, and no
+    layer starts a read; the chunk's logits are the ones it gives without the counting."""
+    cfg, ref, eng = tiny(torch.bfloat16)
+    want = eng.prefill(PROMPT, eng.new_state(), head="all")
+    log, real, reader = [], dict(eng.tables), getattr(eng, "_reader", None)
+    eng.tables = {li: _CountingTable(t, li, log) for li, t in real.items()}
+    eng._reader = _NowReader()
+    eng.attention_chunk = lambda x, li, st, slots: (log.append(("layer", li)), E.Hy4FlashEngine.attention_chunk(eng, x, li, st, slots))[1]
+    try:
+        got = eng.prefill(PROMPT, eng.new_state(), head="all")
+    finally:
+        eng.tables, eng._reader = real, reader
+        del eng.attention_chunk
+    first_layer = log.index(("layer", 0))
+    reads = [i for i, e in enumerate(log) if e[0] == "read"]
+    assert sorted({log[i][1] for i in reads}) == sorted(real), log
+    assert reads and max(reads) < first_layer, log[:12]
+    assert torch.equal(got, want)
+    return f"{len(reads)} reads of {len(real)} tables, all before layer 0; the logits unchanged"
+
+
+def test_a_big_miss_list_goes_in_slices():
+    """SPD-319: a cold reader with a kernel queue given 1,000 missed ids submits 4 slices of at most 256 and returns the
+    rows the parent's read returns."""
+    import tempfile
+    import numpy as np
+    from engine.models.flashnext.ple import DirectRows
+    from engine.models.hy4_flash.table import BatchRows
+    rows, row_bytes = 5000, 124
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "rows.bin")
+        with open(path, "wb") as f:
+            f.write(np.random.default_rng(3).integers(0, 256, rows * row_bytes + 4096, dtype=np.uint8).tobytes())
+        r = BatchRows(path, 64, row_bytes, rows, 1 << 20)
+        own = r._ctx
+        try:
+            sent = []
+            r._ctx = object()                                     # a kernel queue, as on Linux
+            r._submit = lambda ids: (sent.append(int(ids.size)), ids)[1]
+            r._collect = lambda job: DirectRows._read(r, job)
+            ids = np.random.default_rng(4).choice(rows, 1000, replace=False).astype(np.int64)
+            got = r._read(ids)
+            want = DirectRows._read(r, ids)
+        finally:
+            r._ctx = own
+            r.close()
+    assert sent == [256, 256, 256, 232], sent
+    assert np.array_equal(got, want)
+    return "1,000 ids in submits of 256, 256, 256, 232: the parent's rows"
+
+
+def _grams(eng, st, toks: torch.Tensor) -> torch.Tensor:
+    """A chunk's n-grams after the state's last tokens (forward_chunk's own)."""
+    n, hist = eng.cfg.engram_max_ngram_size, st.hist.cpu()
+    full, k = torch.cat((hist, toks)), hist.shape[0]
+    return torch.stack([full[k - j: k - j + toks.shape[0]] for j in range(n)], dim=-1)
+
+
+def test_two_states_interleaved_keep_their_own_rows():
+    """SPD-319: two chunks' table jobs handed over together and taken in the other order each give the rows a lone
+    read gives; and two states' chunks prefilled in turn equal each one's lone prefill."""
+    cfg, ref, eng = tiny(torch.bfloat16)
+    g = torch.Generator().manual_seed(37)
+    ta, tb = torch.randint(4, 60, (30,), generator=g), torch.randint(4, 60, (30,), generator=g)
+    sa, sb = eng.new_state(), eng.new_state()
+    ga, gb = _grams(eng, sa, ta), _grams(eng, sb, tb)
+    ja, jb = eng._engram_reads(ga), eng._engram_reads(gb)
+    for li in reversed(eng._elayers):
+        assert torch.equal(eng._engram_take(li, jb[li]), eng.engram_rows(li, eng.hashes[li].ids(gb))), li
+        assert torch.equal(eng._engram_take(li, ja[li]), eng.engram_rows(li, eng.hashes[li].ids(ga))), li
+    lone = []
+    for t in (ta, tb):
+        st = eng.new_state()
+        with _small_chunks():
+            lone.append(eng.prefill(t, st, head="all"))
+    got = [[], []]
+    with _small_chunks():
+        for i in range(0, 30, E.PREFILL_CHUNK):
+            for k, (t, st) in enumerate(((ta, sa), (tb, sb))):
+                got[k].append(eng.head(eng.forward_chunk(t[i:i + E.PREFILL_CHUNK], st)))
+    assert torch.equal(torch.cat(got[0]), lone[0]) and torch.equal(torch.cat(got[1]), lone[1])
+    return f"{len(eng._elayers)} tables' jobs crossed; two states' chunks of {E.PREFILL_CHUNK} in turn equal their lone prefills"
 
 
 def test_capacity_is_checked():

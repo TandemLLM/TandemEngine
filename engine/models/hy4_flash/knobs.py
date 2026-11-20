@@ -10,9 +10,10 @@ KNOBS: dict[str, tuple] = {
     # the row pass and the draft as captured CUDA graphs (1: the plain pass's operations replayed, the same bits) or
     # launched one by one (0)
     'HY4_GRAPHS': ('1', 'engine/models/hy4_flash/serving.py'),
-    # a prompt's routed experts on the kernels that decode an expert's tiles once for up to 8 of its pairs (1, the
-    # default: the same bits a pair as the pair kernels, and on the 3.56 pack the first token of a 3,565-token chat
-    # came after 19.1 to 24.2 s against 27.0 to 29.5 s), or on the pair kernels (0)
+    # where a prompt's routed experts run on the row kernels (HY4_PREFILL_EXPERTS rows, or a chunk below its
+    # EXPERTS_MIN): the kernels that decode an expert's tiles once for up to 8 of its pairs (1, the default: the same
+    # bits a pair as the pair kernels, and on the 3.56 pack the first token of a 3,565-token chat came after 19.1 to
+    # 24.2 s against 27.0 to 29.5 s), or the pair kernels (0)
     'HY4_PREFILL_GROUPED': ('1', 'engine/models/hy4_flash/serving.py'),
     # debugging: the row pass's sums in plain torch, one item a call, instead of the family's kernel (other bits;
     # the kernel is the one served path)
@@ -26,4 +27,8 @@ KNOBS: dict[str, tuple] = {
     # rounds on any server, and a first request's slow rounds do not send the class to the plain step; without a
     # price file for the pack on this device, or at 0, the cut learns its prices as served
     'HY4_DRAFT_FREEZE': ('1', 'engine/models/hy4_flash/serving.py'),
+    # SPD-321: a prompt chunk's routed experts on the shared prefill kernel, one call a chunk (group), or on the row
+    # kernels in launches of 256 rows (rows: the path before, the A/B arm and the way back); HY4_PREFILL_GROUPED
+    # picks the row kernels' form wherever they run
+    'HY4_PREFILL_EXPERTS': ('group', 'engine/models/hy4_flash/serving.py'),
 }

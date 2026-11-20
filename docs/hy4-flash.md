@@ -38,7 +38,7 @@ One chat at a time. This family builds no side slots yet, so the Setup Guide cap
 
 The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
 
-Reading a prompt is slow. The prompt pass runs a chunk's routed experts on the grouped kernels, which decode an expert's tiles once for up to 8 of its pairs (`QWEN38_HY4_PREFILL_GROUPED=1`, the default; `0` keeps the pair kernels). On `hy4-3.56`, one request at a time on an idle box, the first token of a 3,565-token chat came after 19.1 to 24.2 s with them against 27.0 to 29.5 s on the pair kernels, and that of a 31,852-token prompt after 176.0 to 187.6 s against 253.2 to 256.4 s. The answers were the same bytes in all six pairs, the drafter kept the same tokens, and decode ran at 22.5 to 23.0 tok/s plain on both. On 8,192 rows of real text the two kernels gave equal last-row logits, head inputs and state, and equal expert outputs in all 41 MoE layers. A 262,144-token prompt took 1,735 s (151 tok/s) in the bare engine, on an older row path.
+Reading a prompt is slow. The prompt pass runs a chunk's routed experts on the shared prefill expert kernel (`QWEN38_HY4_PREFILL_EXPERTS=group`, the default). With `rows` they run on the family's row kernels, in their grouped form, which decodes an expert's tiles once for up to 8 of its pairs (`QWEN38_HY4_PREFILL_GROUPED=1`, the default; `0` keeps the pair kernels). The row kernels' two forms were measured before the shared kernel came in: on `hy4-3.56`, one request at a time on an idle box, the first token of a 3,565-token chat came after 19.1 to 24.2 s grouped against 27.0 to 29.5 s on the pair kernels, and that of a 31,852-token prompt after 176.0 to 187.6 s against 253.2 to 256.4 s. The answers were the same bytes in all six pairs, the drafter kept the same tokens, and decode ran at 22.5 to 23.0 tok/s plain on both. On 8,192 rows of real text the two kernels gave equal last-row logits, head inputs and state, and equal expert outputs in all 41 MoE layers. A 262,144-token prompt took 1,735 s (151 tok/s) in the bare engine, on an older row path.
 
 A chat keeps its state between turns in the same caches as on other models. Anchors, prefix snapshots in the state store, the disk tier and the session spill give back the state a cold prefill writes, bit for bit. A turn that resumes at the end of the last answer, at the end of the last prompt or from a session snapshot passes a weaker test, as on every model: it must write the same greedy tokens (`docs/exactness.md`). Here is how the caches fit this model:
 
@@ -83,7 +83,7 @@ Both packs ran in one session on 2026-11-20, on an idle box with the full 262,14
 | `hy4-3.56` | 22.63, 23.00 | 27.81, 28.37 | 2.26 | 27.0 to 31.5 s | 95 to 105 s, 147 to 165 s |
 | `hy4-3.08` | 23.78, 24.12 | 32.08, 33.02 | 2.53 | 23.6 to 29.6 s | 87 to 93 s, 138 to 144 s |
 
-In every run the drafted text equals the plain text. The two packs write different answers to the prompt, and why a round of `hy4-3.08` keeps more tokens on it was not isolated. These runs read the prompt on the pair kernels; the grouped kernels, the default since, shorten the first token (above) and leave decode as it was.
+In every run the drafted text equals the plain text. The two packs write different answers to the prompt, and why a round of `hy4-3.08` keeps more tokens on it was not isolated. These runs read the prompt on the pair kernels, the default when they were measured; the prompt path has changed since (above), and decode does not depend on it.
 
 ## License
 
@@ -97,3 +97,5 @@ The weights are Tencent's, under the Tencent Hy License, Version 1.0, which each
 - Structured output, parallel tool calls, and tool calls beyond the one call and its follow-up.
 - Quality past 2,048 tokens, task-level checks, and any comparison with Tencent's own stack or its FP8 release.
 - The free memory a start needs: the profiles' figures come from arithmetic.
+- The prompt pass on the shared prefill expert kernel (SPD-321, `QWEN38_HY4_PREFILL_EXPERTS=group`, the default; `rows` is the path before): its bits against the row kernels on every MoE layer of both packs (`tools/hy4_check.py --only experts-equal`), its first-token time and its prefill rate. Gate 0 compared it on 2 of the 41 layers of `hy4-3.56` only.
+- The prompt pass's table reader (SPD-319: one thread, the rows before the layers, a read in one-submit slices of 256): its rows against the reads it replaces on both packs (`tools/hy4_check.py --only table-rows`), the read part of a chunk and its rate.

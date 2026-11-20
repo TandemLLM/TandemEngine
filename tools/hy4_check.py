@@ -10,6 +10,13 @@
   dfly         the same continuation in drafted rounds (the DFly2 head, the best token a depth as a chain
                block): equal tokens, tokens a second, kept tokens a round (--dfly)
   fit          a prompt of --fit tokens: seconds, the state's bytes, the device's memory before and after
+  prefill-digest  (--only) the prompt pass's record: digests of the last row's logits, the last chunk's head inputs
+               and the state, for every expert path of --digest-arms (all equal), against a recorded file
+  experts-equal  (--only) every MoE layer's routed experts on the pair, grouped and shared prefill kernels, on real
+               inputs of --digest-text, cut row counts: equal pair outputs and combined rows (SPD-321)
+  experts-crossover  (--only) the three paths' ms at 16 to 1,024 rows and the EXPERTS_MIN they give (SPD-321)
+  table-rows   (--only) the last chunk's table rows: the sliced reader against the threads it replaces, the prompt
+               pass's reader job against `engram_rows`, its reads a second (SPD-319)
 
 The prompt is synthetic unless --text names a file the pack's tokenizer reads. For a tiny rehearsal pack whose
 config names no draft targets, --dfly-layers and --mask-id give them.
@@ -518,6 +525,243 @@ def dfly_source(W: dict, src: str, device) -> int:
     return n
 
 
+def _sha(t: torch.Tensor) -> str:
+    """sha256 of a tensor's bytes as stored, its shape included."""
+    import hashlib
+    t = t.detach().contiguous().cpu()
+    return hashlib.sha256(repr(tuple(t.shape)).encode() + t.view(torch.uint8).numpy().tobytes()).hexdigest()
+
+
+ESSAY_ASK = ("Write a detailed essay of at least 700 words that explains the text above to a newcomer. "
+             "Use plain prose paragraphs only: no lists, no tables, no headings, no code.")
+
+
+def prefill_digest(a, eng, cfg, say) -> bool:
+    """SPD-317 (the prefill design's S0.2): Hy4's record of the prompt pass. For each prompt (--digest-text: its first
+    --digest-rows token ids raw, in the engine's chunks; --digest-chat: a chat request, the pack's template, thinking
+    off) and each arm of --digest-arms: the sha256 of the last row's logits, of every head input of the last chunk,
+    and of the state after it (lat_all, ik_all, win_all, hist, gk_all up to the length). Every arm of a prompt must give
+    the same digests; --digest-out writes them, --digest-against compares them with a file recorded before."""
+    import hashlib
+    from tools.hy4_prefill_profile import set_arm
+    prompts = []
+    if a.digest_text:
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+        ids = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids[:a.digest_rows]
+        if len(ids) < a.digest_rows:
+            raise SystemExit(f"--digest-text holds {len(ids)} tokens, --digest-rows asks for {a.digest_rows}")
+        prompts.append(("text", ids))
+    if a.digest_chat:
+        ids, _ = chat_ids(a.pack, open(a.digest_chat).read(), ESSAY_ASK)
+        prompts.append(("chat", ids))
+    if not prompts:
+        raise SystemExit("prefill-digest: --digest-text or --digest-chat")
+    rr, out, ok = cfg.index_kpool, {}, True
+    for name, ids in prompts:
+        per = {}
+        for arm in a.digest_arms.split(","):
+            set_arm(eng, arm)
+            st = eng.new_state(len(ids) + 64)
+            eng.prefill(torch.tensor(ids), st, head=None)
+            sync(a.device)
+            n = st.length
+            d = {"logits_last": _sha(eng.head(eng.prompt_hidden[-1:])), "head_inputs_last_chunk": _sha(eng.prompt_hidden),
+                 "lat_all": _sha(st.lat_all[:, :n]), "ik_all": _sha(st.ik_all[:, :n]), "win_all": _sha(st.win_all),
+                 "hist": _sha(st.hist), "gk_all": _sha(st.gk_all[:, :n // rr])}
+            per[arm] = d
+            say("prefill_digest", prompt=name, arm=arm, rows=n, last_chunk_rows=int(eng.prompt_hidden.shape[0]),
+                ids_sha256=hashlib.sha256(json.dumps(ids).encode()).hexdigest(), **d)
+            del st
+        arms = list(per)
+        same = all(per[x] == per[arms[0]] for x in arms)
+        ok = ok and same
+        say("prefill_digest_arms", prompt=name, arms=arms, equal=same,
+            differing={x: sorted(k for k in per[x] if per[x][k] != per[arms[0]][k]) for x in arms[1:]})
+        out[name] = per[arms[0]]
+    if a.digest_out:
+        with open(a.digest_out, "w") as f:
+            json.dump({"pack": a.pack, "digests": out}, f, indent=1, sort_keys=True)
+    if a.digest_against:
+        want = json.load(open(a.digest_against))["digests"]
+        for name, d in out.items():
+            w = want.get(name)
+            bad = None if w is None else sorted(k for k in set(w) | set(d) if w.get(k) != d.get(k))
+            ok = ok and w is not None and not bad
+            say("prefill_digest_against", prompt=name, recorded=w is not None, equal=w is not None and not bad, differing=bad)
+    return ok
+
+
+def moe_inputs(a, eng) -> list:
+    """The routed experts' real inputs of every MoE layer and chunk of --digest-text's first --digest-rows token ids, as
+    the prompt pass hands them to `_experts_chunk` on the row kernels' grouped form (gate 0's baseline):
+    [(chunk, layer, z, idx, wts)] on the device."""
+    from tokenizers import Tokenizer
+    from tools.hy4_prefill_profile import set_arm
+    if not a.digest_text:
+        raise SystemExit("experts-equal / experts-crossover: --digest-text (the prompt whose routing is used)")
+    tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+    ids = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids[:a.digest_rows]
+    got, real, chunk = [], eng._experts_chunk, [0]
+
+    def spy(z, idx, wts, li):
+        if li == min(eng.banks):
+            chunk[0] += 1
+        got.append((chunk[0], li, z.clone(), idx.clone(), wts.clone()))
+        return real(z, idx, wts, li)
+    set_arm(eng, "grouped")
+    eng._experts_chunk = spy
+    try:
+        eng.prefill(torch.tensor(ids), eng.new_state(len(ids) + 64), head=None)
+    finally:
+        del eng._experts_chunk
+    sync(a.device)
+    return got
+
+
+def _expert_paths(eng, z, idx, wts, li, items=(32, 64)) -> dict:
+    """One layer's routed experts on the three paths, (pair outputs fp32 before the combine, combined rows) each: the
+    pair kernels and the grouped row kernels in EXPERT_SUB launches (the prompt pass's loop), the shared prefill kernel
+    with the clamp, one call, at items of 32 and 64."""
+    from engine.models.hy4_flash import engine as E_
+    from tools import fn_prefill_kernels as PK
+    B, out = E_.EXPERT_SUB, {}
+    for name, gr in (("pair", False), ("grouped", True)):
+        yd = torch.cat([eng.expert_pairs(z[i:i + B], idx[i:i + B], li, grouped=gr) for i in range(0, z.shape[0], B)])
+        out[name] = (yd, torch.cat([eng.combine(yd[i * idx.shape[1]:(i + B) * idx.shape[1]], idx[i:i + B], wts[i:i + B])
+                                    for i in range(0, z.shape[0], B)]))
+    for it in items:
+        yd = PK.moe_grouped(z.contiguous(), idx.to(torch.int32).contiguous(), eng.banks[li], rows=it, clamp=eng.cfg.swiglu_limit)
+        out[f"group{it}"] = (yd, eng.combine(yd, idx, wts))
+    return out
+
+
+def experts_equal(a, eng, cfg, say) -> bool:
+    """SPD-321 (the prefill design's D3): every MoE layer's routed experts on the three paths, on real inputs and
+    routing of every chunk of --digest-text, cut to 1, 17, 255, 257, 4,095 and 4,096 rows: torch.equal on the pair
+    outputs before the combine and on the combined rows, against the pair kernels. The first unequal layer and row are
+    named."""
+    caps = moe_inputs(a, eng)
+    k = cfg.num_experts_per_tok
+    layers, bad = 0, []
+    for c, li, z, idx, wts in caps:
+        ok_layer = True
+        for n in (1, 17, 255, 257, 4095, 4096):
+            if n > z.shape[0]:
+                continue
+            paths = _expert_paths(eng, z[:n], idx[:n], wts[:n], li)
+            base_yd, base_y = paths["pair"]
+            for name, (yd, y) in paths.items():
+                if name == "pair":
+                    continue
+                eq_yd, eq_y = torch.equal(yd, base_yd), torch.equal(y, base_y)
+                if not (eq_yd and eq_y):
+                    ok_layer = False
+                    rows_yd = (yd != base_yd).any(dim=-1).nonzero()
+                    rows_y = (y != base_y).any(dim=-1).nonzero()
+                    bad.append({"chunk": c, "layer": li, "rows": n, "path": name, "pairs_equal": eq_yd, "combined_equal": eq_y,
+                                "first_pair": int(rows_yd[0]) if rows_yd.numel() else None,
+                                "first_row": int(rows_y[0]) if rows_y.numel() else (int(rows_yd[0]) // k if rows_yd.numel() else None),
+                                "max_abs": float((y.float() - base_y.float()).abs().max())})
+            del paths
+        layers += 1
+        say("experts_equal_layer", chunk=c, layer=li, rows=int(z.shape[0]), equal=ok_layer)
+    say("experts_equal", layer_chunks=layers, unequal=len(bad), first=bad[0] if bad else None, all_equal=not bad,
+        paths=["pair", "grouped", "group32", "group64"], row_counts=[1, 17, 255, 257, 4095, 4096])
+    return not bad
+
+
+def experts_crossover(a, eng, cfg, say) -> None:
+    """SPD-321 (the prefill design's D6): ms of the three paths at 16 to 1,024 rows of the last chunk's real inputs,
+    summed over every MoE layer (median of 5 after 2 warm-ups, a device sync around each), and EXPERTS_MIN: the
+    smallest count from which the shared prefill kernel beats the faster row-kernel form at every larger count
+    (tools/prefill_crossover.py's rule)."""
+    from tools.prefill_crossover import crossover
+    caps = moe_inputs(a, eng)
+    last = max(c for c, *_ in caps)
+    caps = [x for x in caps if x[0] == last]
+    from engine.models.hy4_flash import engine as E_
+    from tools import fn_prefill_kernels as PK
+    B, table = E_.EXPERT_SUB, {}
+
+    def timed(fn) -> float:
+        ts = []
+        for r in range(7):
+            sync(a.device)
+            t0 = time.perf_counter()
+            fn()
+            sync(a.device)
+            if r >= 2:
+                ts.append(time.perf_counter() - t0)
+        return 1e3 * sorted(ts)[len(ts) // 2]
+    for n in (16, 32, 64, 128, 256, 512, 1024):
+        ms = {"pair": 0.0, "grouped": 0.0, "group": 0.0}
+        for _, li, z, idx, wts in caps:
+            zn, xn, wn = z[:n], idx[:n], wts[:n]
+            for name, gr in (("pair", False), ("grouped", True)):
+                ms[name] += timed(lambda: torch.cat([eng.combine(eng.expert_pairs(zn[i:i + B], xn[i:i + B], li, grouped=gr), xn[i:i + B], wn[i:i + B])
+                                                     for i in range(0, n, B)]))
+            ms["group"] += timed(lambda: eng.combine(PK.moe_grouped(zn.contiguous(), xn.to(torch.int32).contiguous(), eng.banks[li],
+                                                                    rows=E_.GROUP_ROWS, clamp=cfg.swiglu_limit), xn, wn))
+        table[n] = {k: round(v, 2) for k, v in ms.items()}
+        say("experts_crossover_rows", rows=n, layers=len(caps), **table[n])
+    best = crossover({n: {"v2": min(t["pair"], t["grouped"]), "unpack": t["group"]} for n, t in table.items()})
+    say("experts_crossover", experts_min=best, table=table, rule="the smallest count from which group beats min(pair, grouped) at every larger one")
+
+
+def table_rows(a, eng, cfg, say) -> bool:
+    """SPD-319 (the prefill design's S2 device check): the last chunk's table ids of --digest-text's first --digest-rows
+    token ids, each table on a cold cache: the sliced one-submit read against the 16-thread read it replaces (equal packed
+    rows, equal decoded rows), and the prompt pass's reader job (`_engram_read`) against `engram_rows`, with its rate
+    (blocks read over the job's seconds; the line is 200k reads/s)."""
+    import numpy as np
+    from tokenizers import Tokenizer
+    from engine.models.flashnext.ple import DirectRows
+    from engine.models.hy4_flash import engine as E_
+    from engine.models.hy4_flash.table import decode_rows
+    from tools.hy4_prefill_profile import reset_tables
+    if not a.digest_text:
+        raise SystemExit("table-rows: --digest-text")
+    tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+    ids = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids[:a.digest_rows]
+    C, n = E_.PREFILL_CHUNK, cfg.engram_max_ngram_size
+    last = (len(ids) - 1) // C * C
+    full = torch.tensor([cfg.engram_pad_id] * max(n - 1 - last, 0) + ids[max(last - (n - 1), 0):], dtype=torch.int64)
+    k, T = n - 1, len(ids) - last
+    grams = torch.stack([full[k - j: k - j + T] for j in range(n)], dim=-1)
+    ok = True
+    for li in sorted(eng.tables):
+        t = eng.tables[li]
+        if t.direct is None:
+            say("table_rows", layer=li, skipped="not a cold table")
+            continue
+        lid = eng.hashes[li].ids(grams)
+        uniq = np.unique(lid.reshape(-1).numpy().astype(np.int64))
+        reset_tables(eng)
+        t0 = time.perf_counter()
+        old = DirectRows._read(t.direct, uniq)
+        t_old = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        new = t.direct._read(uniq)
+        t_new = time.perf_counter() - t0
+        u = torch.from_numpy(uniq)
+        dec = lambda p: decode_rows(torch.from_numpy(p), t.head_of(u), t.bias, t.K, t.codebook("cpu"), t.dim)  # noqa: E731
+        eq_packed, eq_decoded = bool(np.array_equal(old, new)), bool(torch.equal(dec(old), dec(new)))
+        reset_tables(eng)
+        b0 = t.direct.stats["blocks_read"]
+        t0 = time.perf_counter()
+        job = eng._engram_read(li, lid)
+        t_job = time.perf_counter() - t0
+        reads = t.direct.stats["blocks_read"] - b0
+        reset_tables(eng)
+        eq_job = bool(torch.equal(job.reshape(*lid.shape, -1), eng.engram_rows(li, lid).cpu()))
+        ok = ok and eq_packed and eq_decoded and eq_job
+        say("table_rows", layer=li, ids=int(lid.numel()), unique=int(uniq.size), packed_equal=eq_packed, decoded_equal=eq_decoded,
+            job_equal=eq_job, threads_reads_s=round(uniq.size / t_old), sliced_reads_s=round(uniq.size / t_new),
+            job_s=round(t_job, 3), job_blocks_read=int(reads), job_reads_s=round(reads / t_job) if t_job else None)
+    return ok
+
+
 def profile(a, eng, cfg, ids, say) -> None:
     """One decode step and one 6-row block taken apart: exclusive wall time a part, launched one by one with a
     device sync around every part (so the parts add up; a graph's replay of the same pass is given beside them)."""
@@ -676,7 +920,16 @@ def main() -> int:
     ap.add_argument("--prose", help="a text file: a chat request to answer it in prose, decode rates from token 50 on")
     ap.add_argument("--answer", type=int, default=600)
     ap.add_argument("--profile", action="store_true", help="one decode step and one drafted round taken apart by part")
-    ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit)")
+    ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit,"
+                                   "prefill-digest,experts-equal,experts-crossover,table-rows)")
+    ap.add_argument("--digest-text", help="prefill-digest: a text file, its first --digest-rows token ids raw")
+    ap.add_argument("--digest-rows", type=int, default=8192)
+    ap.add_argument("--digest-chat", help="prefill-digest: a text file, as a chat request (the essay ask, thinking off)")
+    ap.add_argument("--digest-arms", default="grouped", help="prefill-digest: comma list of the expert paths (pair, grouped, group)")
+    ap.add_argument("--prefill-experts", default="group", choices=("group", "rows"),
+                    help="the prompt's experts on the shared prefill kernel (group) or the row kernels (rows; --grouped picks their form)")
+    ap.add_argument("--digest-out", help="prefill-digest: write the digests to this JSON file")
+    ap.add_argument("--digest-against", help="prefill-digest: compare with a JSON file --digest-out wrote")
     ap.add_argument("--need-gib", type=float, default=0.0, help="refuse to load below this MemAvailable")
     ap.add_argument("--cache-chunk", type=int, default=512)
     ap.add_argument("--skip-tolerance", action="store_true")
@@ -712,6 +965,7 @@ def main() -> int:
         cfg = pack.cfg
     eng = Hy4FlashEngine(cfg, W, tables, device=a.device, max_len=a.max_len, banks=banks, cuts=cuts)
     eng.prefill_grouped = a.grouped
+    eng.prefill_experts = a.prefill_experts
     say("load", timing=timing, weights_gib=round(pack.resident_bytes() / (1 << 30), 3), banks=len(banks), mem=mem())
 
     g = torch.Generator().manual_seed(7)
@@ -854,6 +1108,14 @@ def main() -> int:
             agree_steps=round((got[cut:].argmax(-1) == rw[cut:].argmax(-1)).float().mean().item(), 4),
             fused=bool(getattr(eng, "fused", False)), banks=len(getattr(eng, "banks", {})))
 
+    if only is not None and "prefill-digest" in only:
+        res["ok"] = prefill_digest(a, eng, cfg, say) and res["ok"]
+    if banks and only is not None and "experts-equal" in only:
+        res["ok"] = experts_equal(a, eng, cfg, say) and res["ok"]
+    if banks and only is not None and "experts-crossover" in only:
+        experts_crossover(a, eng, cfg, say)
+    if only is not None and "table-rows" in only:
+        res["ok"] = table_rows(a, eng, cfg, say) and res["ok"]
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
     if a.prices_at and want("prices"):

@@ -70,6 +70,13 @@ ENG-411: the kernel sources moved out of the modules into csrc/ files, the compi
   * no family's fingerprint, on the bytes or through any SAME_ROWS variant, is 0.15.0's;
   * the 27B's v2 with SAME_ROWS is GOLDEN_V2's of this tree.
 
+SPD-321: tools/fn_prefill_kernels.py's `moe_grouped` takes an optional clamp that no caller but Hy4-flash passes (no
+kernel source changes), with an entry:
+
+  * a fingerprint of Flash-Next, Flint and LFM2.5, and of every other family that reads the file but Hy4-flash, with the
+    entry reads the bytes before the argument and equals the tree before's, and each family's tier adopts that tree's
+    files once.
+
 Run: python tests/test_fp_same_rows.py
 """
 
@@ -339,6 +346,68 @@ def test_ops225_no_model_adopts_the_files_before_it():
     assert not v3.startswith(FP4_BEFORE_OPS225["27b"]), v3
     return ", ".join(out)
 
+
+
+#: SPD-321: tools/fn_prefill_kernels.py with the optional clamp, and its edits as (bytes now, bytes before); undone
+#: in a copy of the tree they give the bytes SAME_ROWS names as replaced (the tree before the argument)
+PREFILL = "tools/fn_prefill_kernels.py"
+CLAMP_EDITS = (
+    ("def moe_grouped(x: torch.Tensor, ids: torch.Tensor, bank, rows: int = GROUP_ROWS, clamp: float | None = None) -> torch.Tensor:",
+     "def moe_grouped(x: torch.Tensor, ids: torch.Tensor, bank, rows: int = GROUP_ROWS) -> torch.Tensor:"),
+    ("    input, as `fn_kernels.moe_experts` returns it). `clamp` (a SwiGLU limit): the gate|up products clamped\n"
+     "    in place between the two GEMMs, the gate to at most `clamp`, the up to [-clamp, clamp]; None, the\n"
+     "    call every caller made before the argument.\"\"\"",
+     "    input, as `fn_kernels.moe_experts` returns it).\"\"\""),
+    ("        if x.is_cuda and clamp is None:\n", "        if x.is_cuda:\n"),
+    ("        return moe_grouped_reference(x, ids, bank, clamp=clamp)\n", "        return moe_grouped_reference(x, ids, bank)\n"),
+    ("    if clamp is not None:\n        ygu[:, :bank.I].clamp_(max=clamp)\n        ygu[:, bank.I:].clamp_(min=-clamp, max=clamp)\n", ""),
+    ("def moe_grouped_reference(x: torch.Tensor, ids: torch.Tensor, bank, clamp: float | None = None) -> torch.Tensor:",
+     "def moe_grouped_reference(x: torch.Tensor, ids: torch.Tensor, bank) -> torch.Tensor:"),
+    ("bf16(bf16(silu(g)) u)); `clamp`\n    as `moe_grouped`'s, on the bf16 gate and up before the activation.\"\"\"",
+     "bf16(bf16(silu(g)) u)).\"\"\""),
+    ("        if clamp is not None:\n            g, u = g.clamp(max=clamp), u.clamp(min=-clamp, max=clamp)\n", ""),
+)
+
+
+def test_flash_next_flint_and_lfm25_adopt_the_files_before_the_clamp_argument():
+    """SPD-321: with the entry a fingerprint of Flash-Next, Flint and LFM2.5, and of every other family whose manifest
+    reads fn_prefill_kernels.py but Hy4-flash (whose own files changed with it), reads the kernel's replaced bytes and
+    equals the tree before's; without it, it differs. Each family's legacy list holds the tree before's fingerprint,
+    and its tier adopts those files once."""
+    from engine.models import REGISTRY
+    now = _sha(os.path.join(ROOT, PREFILL))
+    assert (PREFILL, now) in mf.SAME_ROWS, "SAME_ROWS names another fn_prefill_kernels.py: update it"
+    replaced = mf.SAME_ROWS[(PREFILL, now)]
+    d = tempfile.mkdtemp(prefix="qse-clamp-")
+    try:
+        new, old = _code(os.path.join(d, "new")), _code(os.path.join(d, "old"))
+        for a, b in CLAMP_EDITS:
+            _edit(os.path.join(old, PREFILL), a, b)
+        assert _sha(os.path.join(old, PREFILL)) == replaced, "the clamp's edits undone are not the bytes the entry replaced"
+        same = {(PREFILL, now): replaced}
+        t = _tree(d, "box", mtime=1.7e9)
+        holders = [n for n in sorted(REGISTRY) if n != "hy_v4_flash"
+                   and PREFILL in {os.path.relpath(p, new) for p in mf.files(new, REGISTRY[n].manifest_of())}]
+        assert {"qwen4_exp", "flint", "lfm2_moe"} <= set(holders), holders
+        out = []
+        for name in holders:
+            m, label = REGISTRY[name].manifest_of(), name
+            assert mf.fingerprint(new, m, {}) != mf.fingerprint(old, m, {}), name
+            assert mf.fingerprint(new, m, {}, same=same) == mf.fingerprint(old, m, {}), name
+            with Env(t, added=True):
+                extra = diskcache.fingerprint_extra(_args(t))
+                fp_old, fp_new = mf.fingerprint(old, m, extra), mf.fingerprint(new, m, extra)
+                leg = diskcache.legacy_fingerprints(new, m, _args(t), tree=t)
+            assert fp_old != fp_new and fp_old in leg, (name, "the tree before is not in the legacy list")
+            tier = os.path.join(d, "tier-" + name)
+            os.makedirs(tier)
+            also = dc.equivalents(tier, fp_new, leg, formula=mf.adoption())
+            assert fp_old in also, (name, also)
+            assert dc.equivalents(tier, fp_new, ["anything"], formula=mf.adoption()) == also, (name, "once")
+            out.append(f"{label} {fp_new[:12]} adopts {fp_old[:12]}")
+        return "; ".join(out)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_eng411_no_model_adopts_a_0_15_0_file():
