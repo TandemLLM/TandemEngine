@@ -251,6 +251,9 @@ def test_the_price_class_follows_the_context():
         if was is not None:
             os.environ["QSE_WEIGHTS"] = was
     assert os.path.isfile(os.path.join(root, "ops", "prices", "hy4-flash", "hy4-3.08.dgx-spark.json"))
+    # the limits a start without its own takes: the 3.08 pack at 262,144 tokens holds 63.9 GiB, 8.66 more at 3.5 bits
+    from engine.models.hy4_flash.serving import memory_limits
+    assert memory_limits(63.9) == (76.0, 83.0) and memory_limits(63.9 + 8.66) == (85.0, 92.0)
     return f"dense below {k} rows: class 0; then the next 4,096 x 2^k, up to 262,144; the frozen cut is priced in all {len(PRICE_CLASSES)}"
 
 

@@ -17,6 +17,7 @@ recurrent state's. A verify block writes neither: its rows sit in scratch buffer
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 
@@ -398,6 +399,19 @@ def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print)
     return MTPTreeDrafter(srv, head, cut, ng, freeze=freeze)
 
 
+#: the server's own default ceiling and peak, GiB (server/app.py --mem-ceiling-gib, --mem-peak-gib)
+SERVER_LIMITS = (70.0, 77.0)
+
+
+def memory_limits(held_gib: float) -> tuple[float, float]:
+    """(ceiling, peak) in GiB for an engine that holds `held_gib` on the device after its load (weights and the
+    window's state): 12 GiB over it for the allocator's reserve and the caches (measured on the 3.08 pack at
+    262,144 tokens: 64.0 allocated, 73.8 reserved, a 70 GiB ceiling shed a cache), and 7 more during a prefill
+    (the server's workspace at 262,144 tokens)."""
+    ceiling = float(math.ceil(held_gib + 12.0))
+    return ceiling, ceiling + 7.0
+
+
 def serve(a, ctx) -> dict:
     """Tencent's Hy4-flash from an EXL3 pack for the server (`--model <dir>`, the registry's `serve`). Text only:
     the vision tower is not served yet. Plain decode on the row path; with `--drafter` other than none the DFly2
@@ -414,6 +428,13 @@ def serve(a, ctx) -> dict:
     except ValueError as e:
         ctx.log(f"[server] Hy4-flash: {e}; the tokenizer is served as it is (no tool calls, no reasoning split)")
     srv, info = build(a.model, a.max_len, tok, mark=ctx.mark, log=ctx.log)
+    # the server's default limits are another model's (70 and 77 GiB): a start that names none takes this pack's,
+    # from what the weights and the window's state hold on the device
+    if (info["device"] == "cuda" and getattr(a, "mem_ceiling_gib", None) == SERVER_LIMITS[0]
+            and getattr(a, "mem_peak_gib", None) == SERVER_LIMITS[1]):
+        a.mem_ceiling_gib, a.mem_peak_gib = memory_limits(torch.cuda.memory_allocated() / (1 << 30))
+        ctx.log(f"[server] Hy4-flash: memory ceiling {a.mem_ceiling_gib:g} GiB, peak {a.mem_peak_gib:g} GiB "
+                f"(the pack and a {a.max_len:,}-token window hold {torch.cuda.memory_allocated() / (1 << 30):.1f} GiB)")
     drafter = None
     if a.drafter != "none" and _S.get("HY4_DFLY") == "1":
         if not info["dfly"]:

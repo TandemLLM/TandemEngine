@@ -227,18 +227,23 @@ def prices(a, eng, cfg, ids, say) -> None:
         step = 1e3 * (time.perf_counter() - t0)
         at = C + 1
         commit = max(step - chain[1], 0.0)
+        # the file's prices: a block plus 0.3 ms for its commit (0.17 measured; the one step timed here carries a
+        # first read of its table rows), never falling with more rows; the plain step the 1-row block plus 1.0 ms
+        # (the commit and a step's cold table rows); the priors a frozen cut needs, when given
         mono, last = {}, 0.0
         for M in range(1, N + 1):
-            last = max(last, chain[M] + commit)
+            last = max(last, chain[M] + 0.3)
             mono[str(M)] = round(last, 2)
-        doc[str(cls)] = {"chain": mono, "plain": {"1": round(step, 2)}}
+        doc[str(cls)] = {"chain": mono, "plain": {"1": round(chain[1] + 1.0, 2)}}
+        if a.prices_spec:
+            doc[str(cls)].update(spec={"1": float(a.prices_spec)}, prime={"1": 0.001}, draft={"1": float(a.prices_draft)})
         say("prices", context=C, price_class=cls, chain_ms={k: round(v, 2) for k, v in chain.items()}, plain_step_ms=round(step, 2),
             commit_ms=round(commit, 2))
     step_ms = None
     c0 = doc[str(srv.price_class(ctxs[0]))]["chain"]
     if N > 1:
         step_ms = round((c0[str(N)] - c0["1"]) / (N - 1), 2)
-    doc["step_ms"] = step_ms
+    doc["step_ms"] = 7.0 if step_ms is None else max(step_ms, 1.0)
     doc["measured"] = a.prices_note
     if a.prices_out:
         with open(a.prices_out, "w") as f:
@@ -656,6 +661,8 @@ def main() -> int:
     ap.add_argument("--prices-rows", type=int, default=8)
     ap.add_argument("--prices-out", default="", help="the price file to write")
     ap.add_argument("--prices-note", default="", help="the file's `measured` line")
+    ap.add_argument("--prices-spec", type=float, default=0.0, help="a drafted round's ms a token, as the file's `spec` prior (0: none)")
+    ap.add_argument("--prices-draft", type=float, default=11.0, help="the draft's ms, as the file's `draft` prior (with --prices-spec)")
     ap.add_argument("--dfly-cut", default="", help="with --prose --dfly: drafted runs that verify the chain only while its path probability stays at each of these values")
     ap.add_argument("--dfly-dump", default="", help="with --prose --dfly: a few rounds' draft inputs and outputs into this folder")
     ap.add_argument("--dfly-dump-at", default="0,40,80,120,160,200,240,280")
