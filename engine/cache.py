@@ -2469,6 +2469,7 @@ class ResidentPrefix:
         self.taint = None if taint is None else int(taint)
         self.owner = owner
         self.capturing = False
+        self.last_n = 0                    # SRV-907: its last prompt's length is not known here
         self.stats[count] += 1
 
     def adopt_anchor(self, eng, b: int):
@@ -2738,6 +2739,7 @@ class ResidentPrefix:
             self.anchors[b] = buf
         self.tokens = list(self.pin_tokens)
         self.valid = r
+        self.last_n = 0                    # SRV-907: the pinned head is no last prompt
         self.taint = self.pin_taint
         self.stats["pin_hits"] += 1
         return True
@@ -3076,6 +3078,7 @@ class ResidentPrefix:
         self.valid = base + ra
         self.owner = back_owner
         self.taint = back_taint
+        self.last_n = 0                    # SRV-907: the parked conversation's last prompt is not known
         if back_end is not None:
             self._adopt_parked_end(eng, back_end, back_regions)
         self._trim_pool()
