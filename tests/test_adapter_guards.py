@@ -93,8 +93,11 @@ from engine.models import REGISTRY  # noqa: E402
 # are rebuilt once
 # #174: a draft sync is not written onto pages given back (engine/drafters/dflash2.py, engine/kvpool.py). The
 # stored rows are the same; the move rides SRV-885's, which no release carries yet (one rebuild for both)
+# SRV-905, SRV-907: the conversation cache on one lane (engine/cache.py: a chat's next turn is no guest of its own
+# rows, the head mark, the guest's store entry) moves the whole-tree half; the arithmetic half holds, and the 27B's
+# and Flash-Next's resident prefix and store reproduce byte for byte (tests/test_resident_pinned.py)
 GOLDEN_V2 = ("7c6b4c314c5f6cf7f086c9208b0ac4f74198984a8093d1d41a82a71e9ca0d6f5",
-             "42ea37125c89666b43bdeae29fa1232e6b7de5e40ea93c4d18ec457ead2e3f1a")
+             "325d5b6ad4745269ec94a3e51fd1a84a790f68b91d4a8c9b2910c6ea7e443681")
 GOLDEN_FP4 = {
     # SPD-201 (2026-10-24): the speed setup's knobs default on, so every family's fingerprint moved once;
     # SPD-215: Flash-Next's joint pass row-wise and grouped experts by default (its two adapters again);
@@ -199,13 +202,16 @@ GOLDEN_FP4 = {
     # rows; engine/models/hy4_flash/engine.py, table.py): hy_v4_flash
     # SPD-323, SPD-325: the prompt pass on fixed-order kernels behind HY4_PREFILL_V2 (off; engine.py, kernels.py, knobs.py, and
     # tools/fn_seq_kernels.py with its sources joining through the block select): hy_v4_flash
-    "qwen4_exp": "8814f8aef5064f448a48d8de2cce1261fcced597b24b0239e1ee6890885fc2e4",
-    "nemotron_h": "748cf77d5397146906bf7eb352e09154a0019e7fb5789e7fc98a425b09fdf3b6",
-    "lfm2_moe": "6445f5bda811ddef922e55466e9da85afb34d9b78daf4bcf0c313b3a13d5f747",
-    "qwen3_5_moe": "c7672b436c95859cd36d82fd716c67c1e1df14ca9af3c7aa5906b8b182629279",
-    "flint": "ade2cb91ef2dd650be81670a0ecb4b5fc3b91359d3e3f0707a10f4a3bea702b1",
-    # Hy4-flash: a new family (its first golden)
-    "hy_v4_flash": "fa0a2847ed2f1e9c1a7b663b033f831ab3b60fa853ba1252ee2b56aa430ae498",
+    # SPD-311, SPD-327: Hy4-flash's row kernels grouped and its prompt pass on fixed-order kernels by default (knobs.py),
+    # ENG-485 its lanes (engine.py), and ENG-512 flashnext/ple.py in its manifest: hy_v4_flash. ENG-512's gap on Ornith
+    # too (its pack index reads ple.py's safetensors_index): qwen3_5_moe. One rebuild with SPD-321's move
+    "qwen4_exp": "12cd38b79e24220638d0b1a3aaa9fd29781e7457a28b2264404f2c0b4877a802",
+    "nemotron_h": "81d0d5f57bceb5b496cef3b2f5e4587ab3de986b015632d11a118b2ce4d258e3",
+    "lfm2_moe": "b4e4a64045d8a65cdcfbbe7c9d26c065d743b15b13cf9d0624612ab70d10425e",
+    "qwen3_5_moe": "d6acb7f9cc633e2e051124444e7f75fc92b816600b909f365570852245a925f7",
+    "flint": "b282e37d1f5d4acf22ba31b64e7f7056c408c453646ed11814b049398e0e0c8f",
+    # Hy4-flash: a new family (its first golden), then the moves above
+    "hy_v4_flash": "f54e0407bcf1795a159bafc1ad8f5f68fbab28d3c9703959e87678901cfda323",
 }
 #: adapters the refactor may move once (the coordinator's OK, 2026-10-22): Flint's knobs leave the shared
 #: table and its kernels take the generic launch option
@@ -546,8 +552,8 @@ def test_family_knobs_live_in_their_package():
 #: SRV-905, SRV-907: the conversation cache's capabilities (engine/models/adapter.py `Capabilities`) and the
 #: family packages that set them. The shared caching code (engine/cache.py, server/app.py) takes their branches
 #: only for these; every other family's caching is pinned byte for byte (tests/test_resident_pinned.py)
-CACHE_CAPS = {"chat_first": {"hy4_flash"}, "head_mark": {"hy4_flash"},
-              "solo": {"hy4_flash"}}            # INTERIM (SRV-907): solo goes when the family has side slots
+# ENG-485: Hy4-flash builds side slots, so no family sets the interim `solo` (SRV-907) any more
+CACHE_CAPS = {"chat_first": {"hy4_flash"}, "head_mark": {"hy4_flash"}, "solo": set()}
 
 
 def test_the_cache_capabilities_are_their_families():

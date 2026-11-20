@@ -133,6 +133,7 @@ kernels:
       - tests/gpu/test_skinny_gpu.py
   - paths: ['engine/models/flashnext/**', 'tools/fn_*kernels*.py', 'tools/fn_pf_hc.py', 'tools/csrc/fn_*/**']
     tests:
+      - tests/gpu/test_fn_moe_grouped_pin_gpu.py
       - tests/gpu/test_fn_kernels_gpu.py
       - tests/gpu/test_fn_prefill_kernels_gpu.py
       - tests/gpu/test_fn_seq_kernels_gpu.py
@@ -200,3 +201,5 @@ kernels:
     tests:
       - tests/gpu/test_hy4_vdense_gpu.py
       - tests/gpu/test_hy4_prefill_grouped_gpu.py
+      - tests/gpu/test_hy4_mla_rows_gpu.py
+      - tests/gpu/test_fn_moe_grouped_pin_gpu.py
