@@ -355,7 +355,7 @@ def test_the_packs_limits_reach_the_cache_policy():
 
 _E32 = []
 #: a family's capabilities -> the resident prefix's arguments, as server/app.py `_load_caches` passes them
-CAPS_ARGS = (("chat_first", "chat_first"), ("head_mark", "guest_store"))
+CAPS_ARGS = (("chat_first", "chat_first"), ("head_mark", "guest_store"), ("solo", "solo"))
 
 
 def serving32(max_len: int = 512) -> Hy4FlashServing:
@@ -769,6 +769,28 @@ def test_the_marks_and_the_mark_of_every_other_family_are_as_before():
     short = torch.tensor([OPEN, SYSTEM] + tokens(100, 97) + [END, OPEN, USER, 9, END])
     with _marks(types.SimpleNamespace(caps=Hy4FlashServing.caps)):
         assert app._grid_mark(None, short, None) is None          # a head under 256 rows: no mark
+
+
+def test_interim_a_second_chat_the_store_remembers_takes_the_lane():
+    """INTERIM (SRV-907, `Capabilities.solo`; this test goes with the capability when the family builds side
+    slots). On one lane a second chat ran as a guest of the first: its first turn (short) kept a session snapshot,
+    and its next turn with thinking on holds only its last prompt, so it was a guest again and read itself
+    again every turn. Now a conversation the store remembers takes the lane: the first chat is parked with its
+    end, not cut, and comes back from the park at its end."""
+    store = cache.StateStore(BIG, chunk=CH)
+    with _prompt_end():
+        res, eng = _prefix(park_bytes=BIG), serving32()
+        ca1, _ = _turn(eng, res, tokens(60, 100), 150, "A", store=store)
+        b1 = tokens(30, 101)
+        cb1, tb1 = _turn(eng, res, b1, 4, "B", store=store)
+        assert tb1["guest"] and store.holds("B") and not store.holds("C"), tb1
+        b2 = b1 + [_other(cb1[30])] + tokens(8, 102)
+        assert len(b2) < 0.25 * res.valid
+        _, tb2 = _turn(eng, res, b2, 3, "B", store=store)
+        assert not tb2["guest"] and res.owner == "B" and res.stats["parks"] == 1, (tb2, res.stats["parks"])
+        _, ta2 = _turn(eng, res, ca1 + tokens(4, 103), 2, "A", store=store)
+    assert (ta2["kind"], ta2["reused"]) == ("end", len(ca1) - 1), ta2
+    return f"the second chat took the lane; the first came back from the park at its end ({len(ca1) - 1})"
 
 
 if __name__ == "__main__":

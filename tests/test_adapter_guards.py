@@ -538,7 +538,8 @@ def test_family_knobs_live_in_their_package():
 #: SRV-905, SRV-907: the conversation cache's capabilities (engine/models/adapter.py `Capabilities`) and the
 #: family packages that set them. The shared caching code (engine/cache.py, server/app.py) takes their branches
 #: only for these; every other family's caching is pinned byte for byte (tests/test_resident_pinned.py)
-CACHE_CAPS = {"chat_first": {"hy4_flash"}, "head_mark": {"hy4_flash"}}
+CACHE_CAPS = {"chat_first": {"hy4_flash"}, "head_mark": {"hy4_flash"},
+              "solo": {"hy4_flash"}}            # INTERIM (SRV-907): solo goes when the family has side slots
 
 
 def test_the_cache_capabilities_are_their_families():

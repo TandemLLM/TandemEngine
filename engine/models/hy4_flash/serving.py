@@ -116,6 +116,9 @@ class Hy4FlashServing:
     # prompt without a plan is marked where its first user turn starts, so a repeated head is read once
     # (SRV-905, server/app.py `_head_mark`)
     caps = dataclasses.replace(caps, chat_first=True, head_mark=True)
+    # INTERIM (SRV-907): a second chat the store remembers takes the one lane (`Capabilities.solo`); delete this
+    # line with the capability in the commit that builds this family's side slots
+    caps = dataclasses.replace(caps, solo=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)

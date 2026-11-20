@@ -1460,6 +1460,14 @@ class StateStore:
             self._evict_locked(nbytes)
         return True
 
+    def holds(self, conv_id: str | None) -> bool:
+        """Whether an entry of one conversation is stored (`drop_session`'s lookup, read only). INTERIM
+        (SRV-907): read by `_prefill` for a resident prefix with `solo` only."""
+        if not conv_id:
+            return False
+        with self.lock:
+            return any(e.conv_id == conv_id for e in self._d.values())
+
     def drop_session(self, conv_id: str | None) -> int:
         """Forget every entry of one conversation -- its compaction has started, and the history
         those entries are keyed by will not be sent again. Returns the bytes given back."""
@@ -1828,7 +1836,7 @@ class ResidentPrefix:
                  guest_max: int = 16384, guest_frac: float = 0.25,
                  pin_bytes: int = 0, pin_anchors: int = 8, park_bytes: int = 0,
                  park_anchors: int = 4, mem: "Budget | None" = None, end: bool = False,
-                 chat_first: bool = False, guest_store: bool = False):
+                 chat_first: bool = False, guest_store: bool = False, solo: bool = False):
         self.budget = int(budget_bytes)
         self.chunk = int(chunk)
         self.tail = max(1, int(tail))
@@ -1887,6 +1895,9 @@ class ResidentPrefix:
         self.last_n = 0
         # SRV-905 (`guest_store`): a guest that resumes from the store keeps the end; it stores its own head
         self.guest_store = bool(guest_store)
+        # INTERIM (SRV-907, a family's `Capabilities.solo`; goes when the family builds side slots): one lane,
+        # a conversation the store remembers takes it from another one (`_prefill`)
+        self.solo = bool(solo)
         # the end of the last generation (`keep_end`): its line `at`, the hidden spans below it
         # and the drafter's mark; its state in `_end_bufs`, allocated once and reused
         self.end_on = bool(end)
@@ -3700,6 +3711,12 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
     if res is not None:
         # SRV-907: the request holds the whole last prompt in place, so it goes on with the conversation
         continues = res.chat_first and 0 < res.last_n <= c
+        if (res.solo and not own and conv_id is not None and conv_id != res.owner and store is not None
+                and store.holds(conv_id)):
+            # INTERIM (SRV-907, `solo`; deleted with the capability when the family builds side slots): on
+            # one lane a second chat the store remembers takes the lane, as a side slot would give it one;
+            # the conversation in place is parked or written to the NVMe first (`begin`), never cut
+            stay = True
         # decided before any row is written: a guest's stash must hold the rows as they are now
         res.begin(eng, drafter, keys, start, c, kind, session=conv_id, compacting=compacting,
                   scratch=scratch, reach=reach, stay=stay, continues=continues, own=own)

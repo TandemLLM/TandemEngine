@@ -14035,7 +14035,9 @@ def _load_caches(a, eng, tok, drafter, rcache) -> dict:
                                      # SRV-907: the guest test knows the conversation's next turn
                                      chat_first=bool(getattr(getattr(eng, "caps", None), "chat_first", False)),
                                      # SRV-905: a guest resumes from the store's heads and keeps the chat's end
-                                     guest_store=bool(getattr(getattr(eng, "caps", None), "head_mark", False)))
+                                     guest_store=bool(getattr(getattr(eng, "caps", None), "head_mark", False)),
+                                     # INTERIM (SRV-907): goes with Capabilities.solo when the family has side slots
+                                     solo=bool(getattr(getattr(eng, "caps", None), "solo", False)))
                 if resident_on else None)
     if store is not None:
         mem.register("store", store.shed)
