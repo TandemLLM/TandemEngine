@@ -689,7 +689,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_SETUP_ENV_FILE` | `ops/serve.env, server/remote/overlay.py, server/setup/doctor.py` |
 | `QSE_SETUP_MODE` | `ops/start.sh` |
 | `QSE_SIDE_GRAPHS` | `ops/serve.env, server/app.py` |
-| `QSE_SIDE_MAX_LEN` | `ops/profiles/_flashnext.env, ops/serve.env, server/app.py` and 2 more |
+| `QSE_SIDE_MAX_LEN` | `ops/profiles/_flashnext.env, ops/profiles/_hy4.env, ops/serve.env` and 3 more |
 | `QSE_SIDE_RESIDENT_GB` | `server/app.py` |
 | `QSE_SIDE_SLOT_CONST_GB` | `ops/serve.env, server/app.py` |
 | `QSE_SSH_PORT` | `ops/serve.env, server/pairing/hostkey.py, server/remote/overlay.py` |
