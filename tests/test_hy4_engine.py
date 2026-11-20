@@ -252,10 +252,11 @@ def _pair_walk(eng, z, idx, li, lim):
 
 class _Kernels:
     """The shared prefill kernel (tools/fn_prefill_kernels.moe_grouped) and the engine's row kernels (`expert_pairs`)
-    replaced by the pair walk, every call recorded."""
+    replaced by the pair walk, every call recorded. `inline`: whether the device has the prefill kernel's own inline
+    kernels (the stand-in has them unless a test says not)."""
 
-    def __init__(self, eng):
-        self.eng, self.grouped, self.rows = eng, [], []
+    def __init__(self, eng, inline=True):
+        self.eng, self.grouped, self.rows, self.inline = eng, [], [], inline
 
     def __enter__(self):
         from tools import fn_prefill_kernels as PK
@@ -270,11 +271,13 @@ class _Kernels:
             return _pair_walk(self.eng, z, idx, li, self.eng.cfg.swiglu_limit)
         PK.moe_grouped = moe_grouped
         self.eng.expert_pairs = expert_pairs
+        self.eng._group_ok = self.inline
         return self
 
     def __exit__(self, *exc):
         self.PK.moe_grouped = self.real
         del self.eng.expert_pairs
+        del self.eng._group_ok
 
 
 def _banked(warps=None, experts_min=None):
@@ -344,6 +347,48 @@ def test_another_warp_count_takes_one_kernel_at_every_size():
             assert not k.rows and [c["rows"] for c in k.grouped] == [40] * len(eng.banks), (label, k.rows[:1])
         out.append(f"{label}: 40 rows on the prefill kernel")
     return "; ".join(out)
+
+
+def test_without_the_inline_kernels_group_takes_the_row_kernels():
+    """The prefill review (SPD-321): "group" is taken only where the shared prefill kernel has its inline kernels. Without
+    them `moe_grouped` walks its torch reference a pair at a time, so the chunk takes the row kernels; the CPU has none."""
+    eng = _banked()
+    assert eng._group_inline(torch.device("cpu")) is False
+    del eng._group_ok
+    toks = torch.randint(4, 60, (300,), generator=torch.Generator().manual_seed(37))
+    with _Kernels(eng, inline=False) as k:
+        eng.prefill_experts = "group"
+        eng.prefill(toks, eng.new_state(), head=None)
+        assert not k.grouped and [r["rows"] for r in k.rows] == [256, 44] * len(eng.banks), (k.grouped[:1], k.rows)
+    return "no inline kernels: 300 rows on the row kernels (256 + 44 a MoE layer), none on the prefill kernel"
+
+
+def test_the_prefill_checks_assert_their_counts():
+    """The prefill review: tools/hy4_check.py's prefill modes fail when they did not check everything they were asked to
+    (a MoE layer of a chunk, a row count, a timed size) and every --only name is one a check answers to."""
+    import re
+    from tools import hy4_check as HC
+    src = open(HC.__file__).read()
+    names = set(re.findall(r'want\("([a-z0-9-]+)"\)', src)) | set(re.findall(r'"([a-z0-9-]+)" in only', src))
+    assert names == set(HC.ONLY), (sorted(names ^ set(HC.ONLY)))
+
+    class Eng:
+        banks = {3: "b", 5: "b"}
+    z = torch.zeros(4096, 2)
+    full = [(c, li, z, None, None) for c in (1, 2) for li in (3, 5)]
+    lines, real = [], (HC.moe_inputs, HC._expert_paths)
+    same = {"pair": (torch.zeros(1), torch.zeros(1)), "grouped": (torch.zeros(1), torch.zeros(1))}
+    try:
+        HC._expert_paths = lambda *a, **k: dict(same)
+        for caps, want in ((full, True), (full[:-1], False), ([(c, li, z[:300], None, None) for c, li, *_ in full], False)):
+            HC.moe_inputs = lambda a, eng, _c=caps: _c
+            got = HC.experts_equal(None, Eng(), type("C", (), {"num_experts_per_tok": 2})(), lambda *a, **k: lines.append(k))
+            assert got is want, (len(caps), lines[-1])
+    finally:
+        HC.moe_inputs, HC._expert_paths = real
+    last = lines[-1]
+    assert last["row_counts_not_reached"] == [4095, 4096] and last["counts_ok"] is False, last
+    return "experts-equal: all layers and counts pass; a missing layer or an unreached row count fails; every --only name known"
 
 
 class _CountingTable:

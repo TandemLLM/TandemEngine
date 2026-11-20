@@ -1352,6 +1352,16 @@ class Hy4FlashEngine(Hy4FlashRef):
         routed = self.lin(routed, self.w(p + "routed_expert_up_proj.weight"))
         return self.rms(routed + self.dense(x, p + "shared_experts."), self.w(p + "combine_output_norm.weight"))
 
+    def _group_inline(self, device) -> bool:
+        """The prefill review (SPD-321): "group" only where the shared prefill kernel has its own inline kernels on this
+        device. Without them `moe_grouped` walks its torch reference a pair at a time, far slower than the row kernels,
+        so the chunk takes the row kernels there. Asked once an engine."""
+        ok = getattr(self, "_group_ok", None)
+        if ok is None:
+            from tools import gpu as _gpu
+            ok = self._group_ok = bool(torch.device(device).type == "cuda" and _gpu.profile(device).inline("fn_prefill_kernels"))
+        return ok
+
     def _experts_chunk(self, z: torch.Tensor, idx: torch.Tensor, wts: torch.Tensor, li: int) -> torch.Tensor:
         """A prompt chunk's routed experts on the layer's kernel bank, combined -> [T, latent]. "group" at `experts_min`
         rows or more: one call of the shared prefill kernel for the whole chunk (an expert's tiles decoded once an item
@@ -1359,7 +1369,7 @@ class Hy4FlashEngine(Hy4FlashRef):
         launches. Otherwise the row kernels in EXPERT_SUB launches, grouped by HY4_PREFILL_GROUPED. By the code both
         apply the same products in the same order a pair (tools/hy4_check.py --only experts-equal compares every MoE
         layer on the device)."""
-        if self.prefill_experts == "group" and z.shape[0] >= self.experts_min:
+        if self.prefill_experts == "group" and z.shape[0] >= self.experts_min and self._group_inline(z.device):
             from tools import fn_prefill_kernels as PK
             ids = idx.to(torch.int32).contiguous()
             yd = PK.moe_grouped(z.contiguous(), ids, self.banks[li], rows=GROUP_ROWS, clamp=self.cfg.swiglu_limit)

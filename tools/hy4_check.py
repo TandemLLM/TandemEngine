@@ -550,6 +550,11 @@ ESSAY_ASK = ("Write a detailed essay of at least 700 words that explains the tex
              "Use plain prose paragraphs only: no lists, no tables, no headings, no code.")
 
 
+#: every name --only takes
+ONLY = frozenset(("self", "experts", "tolerance", "decode", "dfly", "caches", "prose", "profile", "fit", "quality", "prices",
+                  "accept", "prefill-digest", "experts-equal", "experts-crossover", "table-rows", "v2-micro", "v2-cuts"))
+
+
 def prefill_digest(a, eng, cfg, say) -> bool:
     """SPD-317 (the prefill design's S0.2): Hy4's record of the prompt pass. For each prompt (--digest-text: its first
     --digest-rows token ids raw, in the engine's chunks; --digest-chat: a chat request, the pack's template, thinking
@@ -657,12 +662,13 @@ def experts_equal(a, eng, cfg, say) -> bool:
     named."""
     caps = moe_inputs(a, eng)
     k = cfg.num_experts_per_tok
-    layers, bad = 0, []
+    layers, bad, counts = 0, [], {n: 0 for n in (1, 17, 255, 257, 4095, 4096)}
     for c, li, z, idx, wts in caps:
         ok_layer = True
-        for n in (1, 17, 255, 257, 4095, 4096):
+        for n in counts:
             if n > z.shape[0]:
                 continue
+            counts[n] += 1
             paths = _expert_paths(eng, z[:n], idx[:n], wts[:n], li)
             base_yd, base_y = paths["pair"]
             for name, (yd, y) in paths.items():
@@ -680,12 +686,18 @@ def experts_equal(a, eng, cfg, say) -> bool:
             del paths
         layers += 1
         say("experts_equal_layer", chunk=c, layer=li, rows=int(z.shape[0]), equal=ok_layer)
-    say("experts_equal", layer_chunks=layers, unequal=len(bad), first=bad[0] if bad else None, all_equal=not bad,
-        paths=["pair", "grouped", "group32", "group64"], row_counts=[1, 17, 255, 257, 4095, 4096])
-    return not bad
+    # the prefill review: no silent skips. Every MoE layer of every chunk is checked, and every row count on at least one
+    chunks = len({c for c, *_ in caps})
+    want_layers = chunks * len(eng.banks)
+    missing = sorted(n for n, m in counts.items() if not m)
+    counted = layers > 0 and layers == want_layers and not missing
+    say("experts_equal", layer_chunks=layers, want_layer_chunks=want_layers, chunks=chunks, per_row_count=counts,
+        row_counts_not_reached=missing, counts_ok=counted, unequal=len(bad), first=bad[0] if bad else None, all_equal=not bad,
+        paths=["pair", "grouped", "group32", "group64"])
+    return counted and not bad
 
 
-def experts_crossover(a, eng, cfg, say) -> None:
+def experts_crossover(a, eng, cfg, say) -> bool:
     """SPD-321 (the prefill design's D6): ms of the three paths at 16 to 1,024 rows of the last chunk's real inputs,
     summed over every MoE layer (median of 5 after 2 warm-ups, a device sync around each), and EXPERTS_MIN: the
     smallest count from which the shared prefill kernel beats the faster row-kernel form at every larger count
@@ -720,7 +732,13 @@ def experts_crossover(a, eng, cfg, say) -> None:
         table[n] = {k: round(v, 2) for k, v in ms.items()}
         say("experts_crossover_rows", rows=n, layers=len(caps), **table[n])
     best = crossover({n: {"v2": min(t["pair"], t["grouped"]), "unpack": t["group"]} for n, t in table.items()})
-    say("experts_crossover", experts_min=best, table=table, rule="the smallest count from which group beats min(pair, grouped) at every larger one")
+    # the prefill review: every row count timed, each over every MoE layer of the last chunk
+    rows_cut = [n for n in table if n > min(int(z.shape[0]) for _, _, z, _, _ in caps)]
+    counted = len(caps) == len(eng.banks) > 0 and len(table) == 7 and not rows_cut
+    say("experts_crossover", experts_min=best, table=table, layers=len(caps), want_layers=len(eng.banks),
+        rows_past_the_chunk=rows_cut, counts_ok=counted,
+        rule="the smallest count from which group beats min(pair, grouped) at every larger one")
+    return counted
 
 
 def table_rows(a, eng, cfg, say) -> bool:
@@ -743,12 +761,15 @@ def table_rows(a, eng, cfg, say) -> bool:
     full = torch.tensor([cfg.engram_pad_id] * max(n - 1 - last, 0) + ids[max(last - (n - 1), 0):], dtype=torch.int64)
     k, T = n - 1, len(ids) - last
     grams = torch.stack([full[k - j: k - j + T] for j in range(n)], dim=-1)
-    ok = True
+    ok, checked = True, 0
     for li in sorted(eng.tables):
         t = eng.tables[li]
         if t.direct is None:
-            say("table_rows", layer=li, skipped="not a cold table")
+            # the prefill review: no silent skips; the check is for the cold reader (QWEN38_HY4_TABLE=cold)
+            say("table_rows", layer=li, skipped="not a cold table", passed=False)
+            ok = False
             continue
+        checked += 1
         lid = eng.hashes[li].ids(grams)
         uniq = np.unique(lid.reshape(-1).numpy().astype(np.int64))
         reset_tables(eng)
@@ -773,7 +794,9 @@ def table_rows(a, eng, cfg, say) -> bool:
         say("table_rows", layer=li, ids=int(lid.numel()), unique=int(uniq.size), packed_equal=eq_packed, decoded_equal=eq_decoded,
             job_equal=eq_job, threads_reads_s=round(uniq.size / t_old), sliced_reads_s=round(uniq.size / t_new),
             job_s=round(t_job, 3), job_blocks_read=int(reads), job_reads_s=round(reads / t_job) if t_job else None)
-    return ok
+    counted = checked > 0 and checked == len(eng.tables)
+    say("table_rows_counts", tables=len(eng.tables), checked=checked, counts_ok=counted)
+    return ok and counted
 
 
 #: SPD-323: `mla_rows` against its torch reference: max |diff| / max |ref| (the kernel's weights are rounded to bf16
@@ -798,7 +821,8 @@ def v2_micro(a, eng, cfg, say) -> bool:
     win = next(li for li in range(20, cfg.num_hidden_layers) if cfg.layer_types[li] != SPARSE)
     spa = next(li for li in range(20, cfg.num_hidden_layers) if cfg.layer_types[li] == SPARSE)
     ok = True
-    for ctx in (int(c) for c in a.micro_ctx.split(",")):
+    ctxs, ran = [int(c) for c in a.micro_ctx.split(",")], {"hc": 0, "mla": 0}
+    for ctx in ctxs:
         if len(text) < ctx:
             raise SystemExit(f"--digest-text holds {len(text)} tokens, --micro-ctx asks for {ctx}")
         got, real, hcs = {}, eng._mla, {}
@@ -840,6 +864,7 @@ def v2_micro(a, eng, cfg, say) -> bool:
                      for i in range(0, h.shape[0], 512)]
             same = all(torch.equal(torch.cat([p_[k] for p_ in parts]), whole[k]) for k in range(3))
             ms_hc = sorted(ts)[len(ts) // 2]
+            ran["hc"] += 1
             ok = ok and same
             say("v2_micro_hc", context=ctx, layer=win, rows=int(h.shape[0]), ms=round(ms_hc, 2), pass_ms=6.0, passed=ms_hc <= 6.0,
                 sub_batches_of_512_equal=same)
@@ -863,12 +888,16 @@ def v2_micro(a, eng, cfg, say) -> bool:
                         for j in (0, 17, qa.shape[0] // 2, qa.shape[0] - 1))
             sparse = cfg.layer_types[li] == SPARSE
             line, kill = (80.0, 150.0) if sparse else (25.0, 50.0)
+            ran["mla"] += 1
             ok = ok and rel < MLA_REL and alone and ms <= kill
             say("v2_micro_mla", context=ctx, layer=li, layer_kind="sparse" if sparse else "window", rows=int(qa.shape[0]),
                 keys_mean=round(float(ctl[:, 1].float().mean()), 1), ms=round(ms, 2), pass_ms=line, kill_ms=kill,
                 passed=ms <= line, killed=ms > kill, rel_vs_reference=rel, within=rel < MLA_REL, row_alone_equal=alone,
                 launch={"HB": K_.MLA_HB, "BN": K_.MLA_BN, "warps": K_.MLA_WARPS, "stages": K_.MLA_STAGES})
-    return ok
+    # the prefill review: no silent skips; a hyper-connection and two attention layers at every context
+    want = {"hc": len(ctxs), "mla": 2 * len(ctxs)}
+    say("v2_micro_counts", ran=ran, want=want, counts_ok=ran == want)
+    return ok and ran == want
 
 
 def v2_cuts(a, eng, cfg, say) -> bool:
@@ -1141,6 +1170,10 @@ def main() -> int:
         return 1
     long = (ids * (deep // max(len(ids), 1) + 1))[:deep]
     only = set(a.only.split(",")) if a.only else None
+    if only is not None and only - ONLY:
+        # the prefill review: an --only name no check answers to would run nothing and pass
+        say("only_refused", unknown=sorted(only - ONLY), known=sorted(ONLY))
+        return 1
 
     def want(name):
         return only is None or name in only
@@ -1264,12 +1297,17 @@ def main() -> int:
             agree_steps=round((got[cut:].argmax(-1) == rw[cut:].argmax(-1)).float().mean().item(), 4),
             fused=bool(getattr(eng, "fused", False)), banks=len(getattr(eng, "banks", {})))
 
+    for m in ("experts-equal", "experts-crossover", "v2-micro"):
+        if not banks and only is not None and m in only:
+            # the prefill review: a check asked for that cannot run fails, never passes by not running
+            say("check_refused", check=m, why="the engine built no expert banks")
+            res["ok"] = False
     if only is not None and "prefill-digest" in only:
         res["ok"] = prefill_digest(a, eng, cfg, say) and res["ok"]
     if banks and only is not None and "experts-equal" in only:
         res["ok"] = experts_equal(a, eng, cfg, say) and res["ok"]
     if banks and only is not None and "experts-crossover" in only:
-        experts_crossover(a, eng, cfg, say)
+        res["ok"] = experts_crossover(a, eng, cfg, say) and res["ok"]
     if only is not None and "table-rows" in only:
         res["ok"] = table_rows(a, eng, cfg, say) and res["ok"]
     if banks and only is not None and "v2-micro" in only:
