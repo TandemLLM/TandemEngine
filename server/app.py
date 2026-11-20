@@ -7519,11 +7519,16 @@ def build_prompt(body: dict, client: "thinking_mod.Client | None" = None, *, cou
         # changes what the model is asked for rather than cutting it off part-way.
         # The client's effort word, in whichever shape it came, as the word the template knows
         # (it raises on any other, so `high`, `none` and the like used to be a 500).
-        if client.template_effort:
-            kwargs["reasoning_effort"] = client.template_effort
-        elif kwargs.get("reasoning_effort") not in thinking_mod.TEMPLATE_WORDS:
+        # SRV-899: the words come from the family's spec (`ReasoningSpec.effort`); the default spec is the shared
+        # template words (`thinking_mod.TEMPLATE_WORDS`), each its own word. A family with a default of its own
+        # renders that level's word where the client sent none, in place of the server's default word
+        eff = _spec().reasoning.effort
+        word = eff.word(client.effort)
+        if word:
+            kwargs["reasoning_effort"] = word
+        elif kwargs.get("reasoning_effort") not in dict(eff.words):
             kwargs.pop("reasoning_effort", None)
-        effort = STATE.get("reasoning_effort")
+        effort = eff.word(eff.default) if eff.default else STATE.get("reasoning_effort")
         if effort:
             kwargs.setdefault("reasoning_effort", effort)
         # W17: a trailing partial answer is continued, not closed and answered again
@@ -11280,6 +11285,15 @@ class Handler(BaseHTTPRequestHandler):
             # A client that asked for a budget, in any shape, gets its reasoning closed early
             # enough to leave the answer its reserve of the output limit: the limit never ends
             # its turn inside the block. A request that asked for none is served as before.
+            # SRV-899: a family's own default level (`ReasoningSpec.effort.default`) caps a request that nobody else
+            # decided: no client budget, no plan that decides the effort, no --think-budget. It closes with
+            # ThinkBudget's phrase, after the answer reserve below
+            default_cap = 0
+            eff = _spec().reasoning.effort
+            decides = plan is not None and plan.decides_effort
+            if eff.default and in_think and not budget and not client.asked and not decides:
+                default_cap = budget = int(_effort_caps().get(eff.default) or 0)
+                print(f"[think] {cid} server default {eff.default}: cap {budget}", flush=True)
             lowered = False
             if json_answer and in_think and not client.asked:
                 # SRV-169: a JSON answer gets the answer reserve as a client's budget does, so
@@ -11311,6 +11325,15 @@ class Handler(BaseHTTPRequestHandler):
                         "field": client.source, "kind": client.kind, "asked": client.budget,
                         "reserve": reserve, "max_tokens": max_new, "cap": cap,
                         "lowered": lowered}
+                budget = cap
+            if default_cap and in_think and not json_answer:
+                # the family's default cap leaves the answer its reserve, as a client's budget does; `lowered`
+                # stays as it is, so the close is ThinkBudget's own
+                closer = len(tok(ThinkBudget.PHRASE, add_special_tokens=False).input_ids)
+                cap, reserve = thinking_mod.with_reserve(
+                    budget, max_new, STATE.get("answer_reserve", thinking_mod.AUTO), closer)
+                print(f"[think] {cid} server default: answer reserve {reserve} of {max_new} -> cap {cap}",
+                      flush=True)
                 budget = cap
             # The cap in force -- the router's for the turn's effort level, the client's, or
             # the reserve's -- closes with the monitor's hidden close (SP1), so ThinkBudget gets
@@ -13516,6 +13539,16 @@ def conductor_root(a) -> str | None:
     return val
 
 
+def _effort_default_note(a) -> None:
+    """SRV-899: a family with a default effort level of its own says once at start that --reasoning-effort's word is
+    not the one it renders (its `off` still turns thinking off for a request that says nothing)."""
+    eff = _spec().reasoning.effort
+    if eff.default and a.reasoning_effort and a.reasoning_effort != eff.default:
+        cap = int(_effort_caps().get(eff.default) or 0)
+        print(f"[server] --reasoning-effort {a.reasoning_effort} is not used: this model's default is "
+              f"{eff.default} (cap {cap or 'none'}); a request's own effort is served as asked", flush=True)
+
+
 def _thinking_default(a) -> None:
     """SRV-477: `--reasoning-effort none|off` is a server default of thinking off
     (`a.thinking_default`); the template gets no effort word then."""
@@ -13861,6 +13894,7 @@ def _load(a) -> None:
                          if a.prompt_token_cache > 0 else None)
     _serving_state(a, eng, tok, drafter, cfg_eos, rcache, device=m["device"], spec=_arch_of(a.model).spec,
                    **m["serving"], **caches)
+    _effort_default_note(a)
     led.mark("caches")
     print(f"[server] {m['describe']} loaded in {time.time() - t0:.1f}s", flush=True)
     # one warm request, so the first measured one is not paying for Triton autotuning; a drafter

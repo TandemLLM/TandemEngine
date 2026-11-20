@@ -125,6 +125,60 @@ def test_thinking_off_renders_by_the_spec():
     return repr(own_off[-40:])
 
 
+def _one(spec, extra: dict, default="xhigh", think_budget=0, limit=32768):
+    """One request through the handler with the fake engine and `spec` in force (tests/test_effort_table.py's
+    harness): the template's `reasoning_effort` argument, the budget the loop got, the log."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import test_effort_table as table
+    seen = table._start(spec, default)
+    app.STATE["think_budget"] = think_budget
+    tok = app.STATE["tok"]
+    body = dict(extra, messages=[{"role": "user", "content": "Say hi."}], max_tokens=limit, stream=False)
+    out = io.StringIO()
+    req = table._Req(body)
+    with contextlib.redirect_stdout(out):
+        req.do_POST()
+    kw = tok.calls[0]["kwargs"] if tok.calls else {}
+    return kw.get("reasoning_effort"), (seen[0]["budget"] if seen else None), out.getvalue()
+
+
+def test_a_family_default_renders_its_word_and_caps_what_nobody_decided():
+    """SRV-899: a family whose spec has a default level of its own renders that level's word where the client sent
+    none, in place of --reasoning-effort's, and caps the request at the level's cap with the answer reserve. An
+    explicit word, a number, thinking off and --think-budget each leave the default cap out (the plan that decides
+    the effort: tests/test_client_budgets.py)."""
+    from engine.spec import ThinkBudget
+    words = (("low", "w-low"), ("medium", "w-medium"), ("high", "w-high"), ("xhigh", "w-xhigh"))
+    spec = ServeSpec(reasoning=ReasoningSpec(effort=EffortSpec(words=words, default="medium")))
+    th = app.thinking_mod
+    word, budget, log = _one(spec, {})
+    assert word == "w-medium" and budget == 8192, (word, budget)
+    assert "server default medium: cap 8192" in log and "server default: answer reserve" in log, log
+    closer = len(app.STATE["tok"](ThinkBudget.PHRASE, add_special_tokens=False).input_ids)
+    word, budget, log = _one(spec, {}, limit=4000)
+    assert budget == th.with_reserve(8192, 4000, th.AUTO, closer)[0] < 8192, budget
+    # an explicit word: its own word and its own cap (xhigh: none, then the client's reserve)
+    word, budget, log = _one(spec, {"reasoning_effort": "xhigh"})
+    assert word == "w-xhigh" and budget == th.with_reserve(0, 32768, th.AUTO, closer)[0], (word, budget)
+    assert "server default" not in log and "client budget" in log
+    word, budget, log = _one(spec, {"reasoning_effort": "high"})
+    assert word == "w-high" and budget == 16384 and "server default" not in log, (word, budget)
+    # a number: the default's word, the number's cap
+    word, budget, log = _one(spec, {"max_reasoning_tokens": 512})
+    assert word == "w-medium" and budget == 512 and "server default" not in log, (word, budget)
+    # thinking off, by the client and by the server's default
+    for extra, default in (({"chat_template_kwargs": {"enable_thinking": False}}, "xhigh"), ({}, "off")):
+        word, budget, log = _one(spec, extra, default=default)
+        assert not budget and "server default" not in log, (extra, default, budget)
+    # --think-budget is the operator's: it wins
+    word, budget, log = _one(spec, {}, think_budget=300)
+    assert budget == 300 and "server default" not in log, budget
+    # the default spec: no default of its own, the server's word, no cap
+    word, budget, log = _one(None, {})
+    assert word == "xhigh" and not budget and "server default" not in log, (word, budget)
+
+
 def test_thinking_off_adds_the_spec_line_before_the_conversation():
     """SRV-697: a spec with an off line has it before the conversation (after the client's system messages)
     with thinking off, and nowhere with thinking on; a spec without one adds nothing."""

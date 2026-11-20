@@ -804,6 +804,19 @@ def table_under_a_plan(families=None) -> dict:
     return out
 
 
+def test_a_family_default_cap_yields_to_a_plan():
+    """SRV-899: a family's own default level caps a request nobody decided; a plan that decides the effort decides
+    it instead, and a plan that does not leaves the family's cap in force."""
+    from engine.models.adapter import EffortSpec, ReasoningSpec, ServeSpec
+    spec = ServeSpec(reasoning=ReasoningSpec(effort=EffortSpec(default="medium")))
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False}
+    _, loop, log, _ = _table_handler(spec, dict(body), _Conductor(None, decides=True), None)
+    assert "server default" not in log, log
+    _, loop, log, _ = _table_handler(spec, dict(body), _Conductor(None, decides=False), None)
+    assert "server default medium: cap 8192" in log, log
+    assert loop[0]["budget"] == thinking.with_reserve(8192, 160, thinking.AUTO, P)[0], loop[0]["budget"]
+
+
 def test_the_table_under_a_plan():
     """SRV-899: the effort table's rows under a conductor's plan are the pinned ones."""
     import test_effort_table as table
