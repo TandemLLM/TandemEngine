@@ -126,8 +126,9 @@ class DFlyHead:
             for _ in range(2):
                 self.run(st)
         torch.cuda.current_stream().wait_stream(s)
+        from engine.models.hy4_flash.engine import capture_args
         g = torch.cuda.CUDAGraph()
-        with capture_lock.LOCK, torch.cuda.graph(g):
+        with capture_lock.LOCK, torch.cuda.graph(g, **capture_args(st)):     # ENG-485: the slot's set
             self.run(st)
         torch.cuda.synchronize()
         return g

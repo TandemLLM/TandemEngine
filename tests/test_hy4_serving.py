@@ -115,7 +115,10 @@ def test_cost_and_cache_state():
     secs = s.cache_state().sections()
     assert list(secs) == [f"win.{li}" for li in c.window_layers] + ["engram.hist"]
     assert all(secs[f"win.{li}"] is s.st.win[li] for li in c.window_layers)        # the live tensors
-    assert [(n, ax) for n, _, ax in s.cache_state().views()] == [(f"{k}.{li}", 0) for li in c.sparse_layers for k in ("lat", "ik")]
+    # ENG-485: two whole tensors, row axis 1 (a paged buffer is found by its base address)
+    assert [(n, t.shape, ax) for n, t, ax in s.cache_state().views()] == [
+        ("lat", (len(c.sparse_layers), s.max_len, R), 1), ("ik", (len(c.sparse_layers), s.max_len, c.index_head_dim), 1)]
+    assert s.cache_state().views()[0][1] is s.st.lat_all and s.cache_state().views()[1][1] is s.st.ik_all
     assert manifest().arch == "hy_v4_flash" and s.memory_parts()["weights"] > 0
     return f"{cost.view_bytes_per_token} bytes a token in {len(c.sparse_layers)} sparse layers, {cost.section_bytes} bytes of rings"
 
