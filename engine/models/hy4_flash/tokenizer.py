@@ -17,8 +17,10 @@ the one place text and ids meet:
   apply_chat_template    the checkpoint's own template, untouched, so the prompt holds the model's real tags and
                          the wrapper around an earlier turn's calls. Thinking is the template's `reasoning_effort`:
                          `no_think` when the request turns thinking off (the template then closes the block in the
-                         prompt), `max` for the highest effort a client can ask for, else `high`, the template's
-                         default. The model card documents `high` and `no_think`; the template also takes `max`.
+                         prompt), else `high`, the template's default, for every effort word. The model card
+                         documents `high` and `no_think`. The template this pack carries also takes `max`, which
+                         has no budget of its own and thought for thousands of tokens on a short question, and
+                         Tencent's later template drops it, so no effort word reaches it.
 
 Everything else is the wrapped tokenizer's.
 """
@@ -31,7 +33,7 @@ TAGS = {f"<{slash}{name}>": f"<{slash}{name}{SUFFIX}>" for name in ("think", "to
 #: the wrapper around a turn's calls: written by the model and by the template, not part of the arg-key form
 WRAPPERS = (f"<tool_calls{SUFFIX}>", f"</tool_calls{SUFFIX}>")
 #: a request's effort word -> the template's
-EFFORT = {"xhigh": "max", "max": "max", "high": "high", "medium": "high", "low": "high", "no_think": "no_think"}
+EFFORT = {"xhigh": "high", "max": "high", "high": "high", "medium": "high", "low": "high", "no_think": "no_think"}
 
 
 def plain(text: str) -> str:

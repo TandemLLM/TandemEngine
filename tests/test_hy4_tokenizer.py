@@ -112,10 +112,10 @@ def test_the_effort_words():
     tok = Hy4Tokenizer(_Stand())
     assert effort_of({}) == "high" and effort_of({"enable_thinking": False, "reasoning_effort": "xhigh"}) == "no_think"
     assert [effort_of({"reasoning_effort": w}) for w in ("low", "medium", "high", "xhigh", "max", "no_think", "odd")] == \
-        ["high", "high", "high", "max", "max", "no_think", "high"]
+        ["high", "high", "high", "high", "high", "no_think", "high"]
     kw = tok.apply_chat_template([], enable_thinking=False, tools=TOOLS)
     assert kw == {"reasoning_effort": "no_think", "tools": TOOLS}
-    return "off -> no_think, xhigh -> max, anything else -> high; enable_thinking never reaches the template"
+    return "off -> no_think, every effort word (xhigh and max too) -> high; enable_thinking never reaches the template"
 
 
 def _real():
@@ -137,8 +137,8 @@ def test_the_real_template_thinking_on_and_off():
     assert opens_think(tok.decode(on[-8:])) and not opens_think(tok.decode(off[-8:]))
     assert tok("</think>", add_special_tokens=False).input_ids == [c]
     raw_on, raw_off = tok._tok.decode(on), tok._tok.decode(off)
-    assert "reasoning_effort:high" in raw_on and "reasoning_effort:no_think" in raw_off and "reasoning_effort:max" in mx
-    return f"on ends with {o}, off with {o} {c}; the effort line reads high, no_think and max"
+    assert "reasoning_effort:high" in raw_on and "reasoning_effort:no_think" in raw_off and "reasoning_effort:high" in mx and "reasoning_effort:max" not in mx
+    return f"on ends with {o}, off with {o} {c}; the effort line reads high (xhigh too) and no_think"
 
 
 def test_the_real_template_tools_and_a_call_round_trip():

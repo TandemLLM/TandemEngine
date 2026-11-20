@@ -6,7 +6,7 @@
   "max_output": 32768,
   "capabilities": {
     "thinking": true,
-    "tools": false,
+    "tools": true,
     "vision": false,
     "structured": false,
     "parallel_tool_calls": false

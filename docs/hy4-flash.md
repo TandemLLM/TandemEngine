@@ -40,17 +40,23 @@ The window is 262,144 tokens. Both packs ran at it through the server, and a run
 
 Reading a prompt is slow: about 140 tok/s through the server, so the first token of a 3,565-token prompt came after 24 to 31 s. A 262,144-token prompt took 1,735 s (151 tok/s) in the bare engine, on an older row path.
 
-Caches work, with three limits. The resident prefix, the state store, the disk tier and the session spill each give back the state a cold prefill writes, bit for bit. Anchors sit every 4,096 tokens, so the engine reads a repeated prompt shorter than that again in full. After a restore the first round drafts nothing, and drafting resumes on the next round.
+The caches restore exactly, but on a chat they save less than on other models. The state store, the disk tier and the session spill each give back the state a cold prefill writes, bit for bit. Four limits come with them:
 
-Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. That template knows three modes: `no_think`, `high` (its default) and `max`. Here is how the engine maps a request onto them:
+- With thinking on, the next turn of a chat reads the whole history again. The saved state holds the thinking tokens, and the next prompt leaves them out, so the two do not match. With thinking off, turn 2 of a short chat resumed 127 of its 150 prompt tokens.
+- The resident prefix keeps nothing between turns on this model. The server logs `end anchor not kept (guest)`.
+- Anchors sit every 4,096 tokens, so the engine reads a repeated prompt shorter than that again in full.
+- After a restore the first round drafts nothing, and drafting resumes on the next round.
+
+Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. The model has one thinking mode, the template's `high`, and the engine maps every request onto it or onto `no_think`:
 
 | request | template mode |
 |-|-|
-| `enable_thinking: false` | `no_think` |
-| effort `xhigh` or `max` | `max` |
-| any other effort, `low` and `medium` included | `high` |
+| `enable_thinking: false`, or effort `none` or `off` | `no_think` |
+| any effort from `low` to `max`, or none given | `high` |
 
-Tool calls use the model's own tags, which the tokenizer reads under the `argkey` form's names. A served tool call is not tested yet, so the model card says `tools: false`. A forced `tool_choice` (required or named) is not checked with these tags.
+The effort word still sets the server's reasoning cap: 1,024 tokens at `low`, 8,192 at `medium`, 16,384 at `high`, none at `xhigh` and `max`. At `high` a small question took 82 thinking tokens and the model stopped by itself. The template in these packs also takes a `max` mode, but that mode has no budget of its own: one chat turn in it thought for 7,759 tokens over 4 minutes. Tencent's later template drops `max`, and the engine never asks for it.
+
+Tool calls use the model's own tags, which the tokenizer reads under the `argkey` form's names. One served call passed on `hy4-3.56`: the answer ended with `finish_reason` `tool_calls` and one well-formed call, and the model answered the follow-up turn that carried the tool's result. That is one call and one follow-up, so the model card says `tools: true`, and `parallel_tool_calls` and `structured` stay false: neither is tested. A forced `tool_choice` (required or named) is not checked with these tags.
 
 Vision is not served. Each pack holds the tower at 5 bits, and the engine reads text only.
 
@@ -77,6 +83,6 @@ The weights are Tencent's, under the Tencent Hy License, Version 1.0, which each
 - The measured table's runs (`tools/parallel_card.py`, raw `/v1/completions`) on either pack.
 - `hy4-3.08` at the full window on an idle box, on the current build.
 - Thinking on: speed and how many drafted tokens a round keeps.
-- A served tool call, structured output, parallel tool calls.
+- Structured output, parallel tool calls, and tool calls beyond the one call and its follow-up.
 - Quality past 2,048 tokens, task-level checks, and any comparison with Tencent's own stack or its FP8 release.
 - The free memory a start needs: the profiles' figures come from arithmetic.
