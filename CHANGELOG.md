@@ -18,9 +18,10 @@ Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; 
 
 ### Caches
 
-- A Hy4-flash chat keeps its state between turns (SRV-907). Its next turn never runs as a guest of its own rows: with thinking on it resumes at the end of the last prompt, otherwise at the end of the last answer. The conductor's questions run as guests at any length and keep no session snapshot. A family turns this on with `Capabilities.chat_first`. For every other family, `tests/test_resident_pinned.py` records the caching on the tree before the change and compares it byte for byte after.
+- A Hy4-flash chat keeps its state between turns (SRV-907). A turn that holds its whole last prompt never runs as a guest of its own rows: with thinking on it resumes at the end of the last prompt, otherwise at the end of the last answer. The length of that prompt goes to the park and the NVMe with the rows. The conductor's questions run as guests at any length, keep no session snapshot and leave no rows behind, also when their client left. A family turns this on with `Capabilities.chat_first`. `tests/test_resident_pinned.py` checks that no other family's caching moves; its fixture is still to be recorded on the code before the change.
+- Hy4-flash's state store entries hold up to 0.25 GiB unless the start sets `--store-entry-gb`, and the first request's refresh of the residency limits keeps that. The `[drafter]` line counts the draft head's stale rounds (`stale=`).
 - A prompt without a conductor plan gets a grid mark where its first user turn starts, on a family that sets `Capabilities.head_mark` (SRV-905). The conductor's helper question on Hy4-flash reads its system turn once after a start instead of on every call. A guest that resumes from the state store keeps the chat's end anchor and stores its own head.
-- Interim, until Hy4-flash builds side slots: a second chat with an entry in the state store takes the one lane (`Capabilities.solo`). The first goes to the park or the NVMe when it is long enough for them, 4,096 tokens for the park; a shorter one keeps what the state store holds of it.
+- Interim, until Hy4-flash builds side slots: a second chat with an entry in the state store takes the one lane when the park or the NVMe can take the first (`Capabilities.solo`); otherwise it runs as a guest, as before.
 
 ## 0.16.0, 2026-11-18
 
