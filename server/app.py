@@ -508,7 +508,23 @@ def _wait_reason(me: dict) -> tuple[str, int]:
         return OWN_WAIT["shadow"], pos
     elif who.get("rank") == RANK_PREP:
         return OWN_WAIT["prepare"], pos
-    return "another request is running", pos
+    return ("another request is thinking" if _holder_thinks() else "another request is running"), pos
+
+
+def _holder_thinks() -> bool:
+    """SRV-899: on a family with one lane (its spec's `side_slots` False), whether a client's request holds the engine
+    inside its reasoning block: a waiter there waits for that thinking to end, with no other slot to take it. The
+    reason stays a fixed string, so the waiting line sends no new line while the thinking goes on."""
+    if _spec().side_slots:
+        return False
+    with QUEUE:
+        who = HOLDER["who"]
+    if who is None or who.get("own") or who.get("rec") is None:
+        return False
+    try:
+        return activity_mod.state_of(who["rec"]) == "thinking"
+    except Exception:                                              # noqa: BLE001
+        return False
 
 
 class Deadline:

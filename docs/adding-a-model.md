@@ -113,7 +113,7 @@ A family's `arch.py` registers its entry; `engine/models/__init__.py` imports ev
 
 | field | what it says | read by |
 |-|-|-|
-| `spec` | `ServeSpec(tool_format, reasoning)`: the form the model writes tool calls in (a name in `server/api/toolformats/`) and `ReasoningSpec(opens_itself)`, a model that writes its own `<think>` | the request loop, the conductor's checks, the forced-call constraint |
+| `spec` | `ServeSpec(tool_format, reasoning)`: the form the model writes tool calls in (a name in `server/api/toolformats/`) and `ReasoningSpec(opens_itself, effort)`: a model that writes its own `<think>`, and `EffortSpec(words, default)`, the word the template takes for each effort level and a default level of the family's own (leave it out when the template takes `low`, `medium` and `xhigh`) | the request loop, the conductor's checks, the forced-call constraint |
 | `shares`, `uses` | the package's files other families build on, and the other packages' files this family builds on | the guards: a manifest or an import across packages must be declared, and a change to a shared file moves exactly its dependents' fingerprints |
 | `hooks` | `EngineHooks(pdl, side_stream)`: launch options the family turns on in the shared kernels, which take them as plain arguments | the family's engine |
 | `default` | the family a server without a checkpoint directory serves (one family is) | the loader |

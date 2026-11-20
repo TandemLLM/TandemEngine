@@ -34,7 +34,7 @@ Each KL column compares a pack with the unquantized BF16 checkpoint (revision `d
 
 ## Limits
 
-One chat at a time. This family builds no side slots yet, so the Setup Guide caps the lanes at 1 and a second request waits in the queue. The state takes no KV pool pages, so the profiles run with the pool off.
+One chat at a time. This family builds no side slots yet, so the Setup Guide caps the lanes at 1 and a second request waits in the queue. While the request ahead is inside its reasoning block, the waiting line and the live view say "another request is thinking". The state takes no KV pool pages, so the profiles run with the pool off.
 
 The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
 
