@@ -15,6 +15,8 @@
   experts-equal  (--only) every MoE layer's routed experts on the pair, grouped and shared prefill kernels, on real
                inputs of --digest-text, cut row counts: equal pair outputs and combined rows (SPD-321)
   experts-crossover  (--only) the three paths' ms at 16 to 1,024 rows and the EXPERTS_MIN they give (SPD-321)
+  table-rows   (--only) the last chunk's table rows: the sliced reader against the threads it replaces, the prompt
+               pass's reader job against `engram_rows`, its reads a second (SPD-319)
 
 The prompt is synthetic unless --text names a file the pack's tokenizer reads. For a tiny rehearsal pack whose
 config names no draft targets, --dfly-layers and --mask-id give them.
@@ -707,6 +709,59 @@ def experts_crossover(a, eng, cfg, say) -> None:
     say("experts_crossover", experts_min=best, table=table, rule="the smallest count from which group beats min(pair, grouped) at every larger one")
 
 
+def table_rows(a, eng, cfg, say) -> bool:
+    """SPD-319 (the prefill design's S2 device check): the last chunk's table ids of --digest-text's first --digest-rows
+    token ids, each table on a cold cache: the sliced one-submit read against the 16-thread read it replaces (equal packed
+    rows, equal decoded rows), and the prompt pass's reader job (`_engram_read`) against `engram_rows`, with its rate
+    (blocks read over the job's seconds; the line is 200k reads/s)."""
+    import numpy as np
+    from tokenizers import Tokenizer
+    from engine.models.flashnext.ple import DirectRows
+    from engine.models.hy4_flash import engine as E_
+    from engine.models.hy4_flash.table import decode_rows
+    from tools.hy4_prefill_profile import reset_tables
+    if not a.digest_text:
+        raise SystemExit("table-rows: --digest-text")
+    tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+    ids = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids[:a.digest_rows]
+    C, n = E_.PREFILL_CHUNK, cfg.engram_max_ngram_size
+    last = (len(ids) - 1) // C * C
+    full = torch.tensor([cfg.engram_pad_id] * max(n - 1 - last, 0) + ids[max(last - (n - 1), 0):], dtype=torch.int64)
+    k, T = n - 1, len(ids) - last
+    grams = torch.stack([full[k - j: k - j + T] for j in range(n)], dim=-1)
+    ok = True
+    for li in sorted(eng.tables):
+        t = eng.tables[li]
+        if t.direct is None:
+            say("table_rows", layer=li, skipped="not a cold table")
+            continue
+        lid = eng.hashes[li].ids(grams)
+        uniq = np.unique(lid.reshape(-1).numpy().astype(np.int64))
+        reset_tables(eng)
+        t0 = time.perf_counter()
+        old = DirectRows._read(t.direct, uniq)
+        t_old = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        new = t.direct._read(uniq)
+        t_new = time.perf_counter() - t0
+        u = torch.from_numpy(uniq)
+        dec = lambda p: decode_rows(torch.from_numpy(p), t.head_of(u), t.bias, t.K, t.codebook("cpu"), t.dim)  # noqa: E731
+        eq_packed, eq_decoded = bool(np.array_equal(old, new)), bool(torch.equal(dec(old), dec(new)))
+        reset_tables(eng)
+        b0 = t.direct.stats["blocks_read"]
+        t0 = time.perf_counter()
+        job = eng._engram_read(li, lid)
+        t_job = time.perf_counter() - t0
+        reads = t.direct.stats["blocks_read"] - b0
+        reset_tables(eng)
+        eq_job = bool(torch.equal(job.reshape(*lid.shape, -1), eng.engram_rows(li, lid).cpu()))
+        ok = ok and eq_packed and eq_decoded and eq_job
+        say("table_rows", layer=li, ids=int(lid.numel()), unique=int(uniq.size), packed_equal=eq_packed, decoded_equal=eq_decoded,
+            job_equal=eq_job, threads_reads_s=round(uniq.size / t_old), sliced_reads_s=round(uniq.size / t_new),
+            job_s=round(t_job, 3), job_blocks_read=int(reads), job_reads_s=round(reads / t_job) if t_job else None)
+    return ok
+
+
 def profile(a, eng, cfg, ids, say) -> None:
     """One decode step and one 6-row block taken apart: exclusive wall time a part, launched one by one with a
     device sync around every part (so the parts add up; a graph's replay of the same pass is given beside them)."""
@@ -866,7 +921,7 @@ def main() -> int:
     ap.add_argument("--answer", type=int, default=600)
     ap.add_argument("--profile", action="store_true", help="one decode step and one drafted round taken apart by part")
     ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit,"
-                                   "prefill-digest,experts-equal,experts-crossover)")
+                                   "prefill-digest,experts-equal,experts-crossover,table-rows)")
     ap.add_argument("--digest-text", help="prefill-digest: a text file, its first --digest-rows token ids raw")
     ap.add_argument("--digest-rows", type=int, default=8192)
     ap.add_argument("--digest-chat", help="prefill-digest: a text file, as a chat request (the essay ask, thinking off)")
@@ -1059,6 +1114,8 @@ def main() -> int:
         res["ok"] = experts_equal(a, eng, cfg, say) and res["ok"]
     if banks and only is not None and "experts-crossover" in only:
         experts_crossover(a, eng, cfg, say)
+    if only is not None and "table-rows" in only:
+        res["ok"] = table_rows(a, eng, cfg, say) and res["ok"]
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
     if a.prices_at and want("prices"):

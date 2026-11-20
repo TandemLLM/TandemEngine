@@ -69,8 +69,9 @@ _AIO_DEPTH = 256
 class BatchRows(DirectRows):
     """`DirectRows` whose misses of one call go to the kernel in one submit (Linux AIO on the O_DIRECT file): a
     decode step's 10 to 16 missed rows a table wait for the device once, not for a thread each (measured on the
-    released tables: 16 rows in 0.27 ms against 1.6 ms). The same blocks, the same rows; without kernel AIO, or
-    past its queue depth, the parent's reads."""
+    released tables: 16 rows in 0.27 ms against 1.6 ms). The same blocks, the same rows; without kernel AIO the
+    parent's reads. A read past the queue's depth (a prompt chunk's misses) goes in slices of it, one submit each
+    (SPD-319); `begin`/`end` (a decode step's tables at once) still hand such a read to the parent."""
 
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
@@ -133,6 +134,9 @@ class BatchRows(DirectRows):
         return np.take_along_axis(raw, rel, axis=1).copy().view(np.int16)
 
     def _read(self, ids: np.ndarray) -> np.ndarray:
+        if self._ctx is not None and ids.size > _AIO_DEPTH:
+            # SPD-319: a prompt chunk's misses in slices of the queue's depth, one submit each (the same blocks and rows)
+            return np.concatenate([self._read(ids[i:i + _AIO_DEPTH]) for i in range(0, ids.size, _AIO_DEPTH)])
         job = self._submit(ids)
         return super()._read(ids) if job is None else self._collect(job)
 

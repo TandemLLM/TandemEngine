@@ -346,6 +346,115 @@ def test_another_warp_count_takes_one_kernel_at_every_size():
     return "; ".join(out)
 
 
+class _CountingTable:
+    """A table whose reads are logged (layer, ids) before they run."""
+
+    def __init__(self, t, li, log):
+        self.t, self.li, self.log = t, li, log
+
+    def gather(self, ids, dtype=torch.bfloat16, **kw):
+        self.log.append(("read", self.li, int(ids.numel())))
+        return self.t.gather(ids, dtype=dtype, **kw)
+
+    def __getattr__(self, k):
+        return getattr(self.t, k)
+
+
+class _NowReader:
+    """An executor that runs a job when it is handed over (the order of the log is the order of the hand-overs)."""
+
+    def submit(self, fn, *args):
+        from concurrent.futures import Future
+        f = Future()
+        f.set_result(fn(*args))
+        return f
+
+
+def test_a_chunk_asks_for_its_table_rows_before_the_layers():
+    """SPD-319: with counting tables every Engram table's ids are handed to the reader before layer 0 runs, and no
+    layer starts a read; the chunk's logits are the ones it gives without the counting."""
+    cfg, ref, eng = tiny(torch.bfloat16)
+    want = eng.prefill(PROMPT, eng.new_state(), head="all")
+    log, real, reader = [], dict(eng.tables), getattr(eng, "_reader", None)
+    eng.tables = {li: _CountingTable(t, li, log) for li, t in real.items()}
+    eng._reader = _NowReader()
+    eng.attention_chunk = lambda x, li, st, slots: (log.append(("layer", li)), E.Hy4FlashEngine.attention_chunk(eng, x, li, st, slots))[1]
+    try:
+        got = eng.prefill(PROMPT, eng.new_state(), head="all")
+    finally:
+        eng.tables, eng._reader = real, reader
+        del eng.attention_chunk
+    first_layer = log.index(("layer", 0))
+    reads = [i for i, e in enumerate(log) if e[0] == "read"]
+    assert sorted({log[i][1] for i in reads}) == sorted(real), log
+    assert reads and max(reads) < first_layer, log[:12]
+    assert torch.equal(got, want)
+    return f"{len(reads)} reads of {len(real)} tables, all before layer 0; the logits unchanged"
+
+
+def test_a_big_miss_list_goes_in_slices():
+    """SPD-319: a cold reader with a kernel queue given 1,000 missed ids submits 4 slices of at most 256 and returns the
+    rows the parent's read returns."""
+    import tempfile
+    import numpy as np
+    from engine.models.flashnext.ple import DirectRows
+    from engine.models.hy4_flash.table import BatchRows
+    rows, row_bytes = 5000, 124
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "rows.bin")
+        with open(path, "wb") as f:
+            f.write(np.random.default_rng(3).integers(0, 256, rows * row_bytes + 4096, dtype=np.uint8).tobytes())
+        r = BatchRows(path, 64, row_bytes, rows, 1 << 20)
+        own = r._ctx
+        try:
+            sent = []
+            r._ctx = object()                                     # a kernel queue, as on Linux
+            r._submit = lambda ids: (sent.append(int(ids.size)), ids)[1]
+            r._collect = lambda job: DirectRows._read(r, job)
+            ids = np.random.default_rng(4).choice(rows, 1000, replace=False).astype(np.int64)
+            got = r._read(ids)
+            want = DirectRows._read(r, ids)
+        finally:
+            r._ctx = own
+            r.close()
+    assert sent == [256, 256, 256, 232], sent
+    assert np.array_equal(got, want)
+    return "1,000 ids in submits of 256, 256, 256, 232: the parent's rows"
+
+
+def _grams(eng, st, toks: torch.Tensor) -> torch.Tensor:
+    """A chunk's n-grams after the state's last tokens (forward_chunk's own)."""
+    n, hist = eng.cfg.engram_max_ngram_size, st.hist.cpu()
+    full, k = torch.cat((hist, toks)), hist.shape[0]
+    return torch.stack([full[k - j: k - j + toks.shape[0]] for j in range(n)], dim=-1)
+
+
+def test_two_states_interleaved_keep_their_own_rows():
+    """SPD-319: two chunks' table jobs handed over together and taken in the other order each give the rows a lone
+    read gives; and two states' chunks prefilled in turn equal each one's lone prefill."""
+    cfg, ref, eng = tiny(torch.bfloat16)
+    g = torch.Generator().manual_seed(37)
+    ta, tb = torch.randint(4, 60, (30,), generator=g), torch.randint(4, 60, (30,), generator=g)
+    sa, sb = eng.new_state(), eng.new_state()
+    ga, gb = _grams(eng, sa, ta), _grams(eng, sb, tb)
+    ja, jb = eng._engram_reads(ga), eng._engram_reads(gb)
+    for li in reversed(eng._elayers):
+        assert torch.equal(eng._engram_take(li, jb[li]), eng.engram_rows(li, eng.hashes[li].ids(gb))), li
+        assert torch.equal(eng._engram_take(li, ja[li]), eng.engram_rows(li, eng.hashes[li].ids(ga))), li
+    lone = []
+    for t in (ta, tb):
+        st = eng.new_state()
+        with _small_chunks():
+            lone.append(eng.prefill(t, st, head="all"))
+    got = [[], []]
+    with _small_chunks():
+        for i in range(0, 30, E.PREFILL_CHUNK):
+            for k, (t, st) in enumerate(((ta, sa), (tb, sb))):
+                got[k].append(eng.head(eng.forward_chunk(t[i:i + E.PREFILL_CHUNK], st)))
+    assert torch.equal(torch.cat(got[0]), lone[0]) and torch.equal(torch.cat(got[1]), lone[1])
+    return f"{len(eng._elayers)} tables' jobs crossed; two states' chunks of {E.PREFILL_CHUNK} in turn equal their lone prefills"
+
+
 def test_capacity_is_checked():
     cfg, ref, eng = tiny()
     st = eng.new_state(12)

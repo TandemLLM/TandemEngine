@@ -195,6 +195,8 @@ GOLDEN_FP4 = {
     # SPD-321: tools/fn_prefill_kernels.py's optional clamp (no kernel source, the rows of every caller without it the
     # same; a SAME_ROWS entry adopts their files): qwen4_exp, nemotron_h, lfm2_moe, qwen3_5_moe, flint; and Hy4-flash's
     # prompt experts on that kernel: hy_v4_flash
+    # SPD-319: Hy4-flash's prompt pass reads its table rows on a reader thread, a long read in one-submit slices (the same
+    # rows; engine/models/hy4_flash/engine.py, table.py): hy_v4_flash
     "qwen4_exp": "8814f8aef5064f448a48d8de2cce1261fcced597b24b0239e1ee6890885fc2e4",
     "nemotron_h": "748cf77d5397146906bf7eb352e09154a0019e7fb5789e7fc98a425b09fdf3b6",
     "lfm2_moe": "6445f5bda811ddef922e55466e9da85afb34d9b78daf4bcf0c313b3a13d5f747",
