@@ -2916,7 +2916,7 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
                     on_prefill=None, mm=None, sup=None, compacting: bool = False, probe=None,
                     disk_tag: dict | None = None, pos_delta: int = 0, end_mm: bool = False,
                     scratch: bool = False, stay: bool = False, cold: bool = False,
-                    grid_mark: int | None = None):
+                    grid_mark: int | None = None, own: bool = False):
     """Yield token ids as they are decided, speculation included.
 
     Same loop as `engine.spec.generate_spec`, rewritten as a generator so a token reaches the
@@ -2968,6 +2968,9 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
 
     `grid_mark` (SPD-249): the row where the prompt's stable head ends (the conductor's notes at the
     head, `Plan.head_end`): the prefill's grid is cut there (engine/cache.py `Grid`).
+
+    `own` (SRV-907): the conductor's own question (`OWN_QUESTION_UA`), on a resident prefix whose family
+    sets `Capabilities.chat_first`: a guest of the conversation in place at any size.
 
     SRV-775: once the prompt is prefilled its workspace leaves the admission and the memory policy
     (`_par_prefilled`, by the record `on_prefill` carries: `Handler._prefill_watch`), and the record gets the
@@ -3062,7 +3065,7 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
                 resident=STATE.get("resident"), on_chunk=on_chunk, info=where,
                 key_ids=keys, mem=STATE.get("mem"),
                 compacting=compacting, disk=None if cold else _slot_disk(), disk_tag=disk_tag,
-                end_mm=end_mm, scratch=scratch, stay=stay, grid_mark=None if cold else grid_mark,
+                end_mm=end_mm, scratch=scratch, stay=stay, grid_mark=None if cold else grid_mark, own=own,
                 # FX5: the highest row this generation can write, for a guest's stash; the
                 # monitor's hidden tokens are not in `max_new`
                 reach=len(ctx) + int(max_new) + (GUEST_HIDDEN_ROWS if sup is not None else 0))
@@ -4187,7 +4190,7 @@ def _remember(*args, **kw) -> None:
 
 def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | None,
                    mm=None, hidden=(), delta: int = 0, served_hidden=None, cold: bool = False,
-                   learn: bool = True) -> None:
+                   learn: bool = True, own: bool = False) -> None:
     """After a turn: keep the state it ended in, and add its tokens to the suffix store.
 
     `learn` (SPD-151): False leaves the suffix store as it was (`suffix_learns`: a request that
@@ -4208,6 +4211,10 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
     row the block verified (the commit stops there, `_end_cut`) -- so what is snapshotted is the
     prefix that really was forwarded, and `generate_stream` publishes that very list rather than one rebuilt here. The next turn's prompt begins with all of it plus the chat template's own glue,
     so it resumes here and pays for the glue and the new message rather than for the conversation.
+
+    `own` (SRV-907): the conductor's own question. On a resident prefix with `chat_first` it keeps
+    neither a session snapshot (nobody asks for one again: each took 42 to 81 MiB of the store) nor an
+    end; when it was no guest, nothing of a conversation was in place, and its rows are given back.
     """
     eng, drafter = STATE["engine"], STATE["drafter"]
     if cold:
@@ -4216,10 +4223,11 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
         return
     store = STATE.get("state_store")
     committed = STATE.get("last_ctx") or []
+    own_q = bool(own) and bool(getattr(STATE.get("resident"), "chat_first", False))
     if mm is not None and len(committed) >= mm.n:
         # the state is keyed by the images' content, not by their placeholders
         committed = list(mm.key_ids) + list(committed[mm.n:])
-    if store is not None and STATE.get("session_cache") and eng.kv.length:
+    if store is not None and STATE.get("session_cache") and eng.kv.length and not own_q:
         # `StateStore.put` declines when the snapshot is longer than the tokens it is given, which
         # is exactly the abandoned-mid-block case above -- and, before phase 9, was also the
         # ordinary case, because the loop advances `pos` by the whole accepted path and appends to
@@ -4299,7 +4307,14 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
         # `declined_big` and `declined_short` in /v1/cache/stats count the same events, for when
         # nobody is reading the log.
     res = STATE.get("resident")
-    if res is not None and res.end_on and committed:
+    if own_q:
+        # SRV-907: a guest's stash puts the conversation back at the next request; rows of its own in
+        # place (it was no guest) are nobody's, as the warm-up's (`_warm_prefill`)
+        n_p = int(STATE.get("last_prompt_n") or 0)
+        if (getattr(res, "_stash", None) is None and n_p and int(res.valid) >= n_p
+                and res.tokens[:n_p] == [int(t) for t in committed[:n_p]]):
+            res.clear()
+    elif res is not None and res.end_on and committed:
         if mm is None and not delta:
             if getattr(res, "_stash", None) is not None and _guest_promotes(res, committed, conv_id):
                 # SPD-257: a chat that ran as a guest on a side slot is the slot's conversation from here
@@ -11451,6 +11466,8 @@ class Handler(BaseHTTPRequestHandler):
                     kw["pos_delta"], kw["end_mm"] = comp["record"].delta, True
                 if stay:
                     kw["stay"] = True                  # ENG-371: never a guest of the resident
+                if me.get("own") and getattr(STATE.get("resident"), "chat_first", False):
+                    kw["own"] = True                   # SRV-907: the conductor's question, a guest at any size
                 mark = _grid_mark(plan, prompt, mm)
                 if mark is not None:
                     kw["grid_mark"] = mark             # SPD-249: the head the chats share
@@ -11613,7 +11630,7 @@ class Handler(BaseHTTPRequestHandler):
                                   delta=comp["record"].delta if comp is not None else 0,
                                   served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
-                                  learn=getattr(rec, "learn_suffix", True))
+                                  learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")))
                         if rkey is not None and not ci and not (sup is not None and sup.acted) \
                                 and not mem_taken[0]:
                             rcache.put(rkey, ids, prompt_ids)
@@ -12262,7 +12279,7 @@ class Handler(BaseHTTPRequestHandler):
                           delta=comp["record"].delta if comp is not None else 0,
                           served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
-                                  learn=getattr(rec, "learn_suffix", True))
+                                  learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")))
                 if rkey is not None and not (sup is not None and sup.acted) and \
                         not mem_taken[0]:
                     rcache.put(rkey, ids, prompt_ids)
@@ -13969,7 +13986,9 @@ def _load_caches(a, eng, tok, drafter, rcache) -> dict:
                                      stash_bytes=int(a.resident_stash_gb * gib),
                                      guest_max=a.resident_guest_max, pin_bytes=pin,
                                      park_bytes=int(a.resident_park_gb * gib), mem=mem,
-                                     end=a.end_anchor == "on")
+                                     end=a.end_anchor == "on",
+                                     # SRV-907: the guest test knows the conversation's next turn
+                                     chat_first=bool(getattr(getattr(eng, "caps", None), "chat_first", False)))
                 if resident_on else None)
     if store is not None:
         mem.register("store", store.shed)
@@ -14324,7 +14343,8 @@ def _side_resident(a, tok):
     res = cache.ResidentPrefix(int(gb * gib), int(a.prefix_chunk), tail=a.resident_tail,
                                stash_bytes=int(float(SIDE_STASH_GB) * gib),
                                guest_max=a.resident_guest_max, guest_frac=1.0, pin_bytes=0,
-                               park_bytes=0, mem=mem, end=res0.end_on)
+                               park_bytes=0, mem=mem, end=res0.end_on,
+                               chat_first=bool(getattr(res0, "chat_first", False)))     # SRV-907, as slot 0's
     res.glue = glue_ids(tok)
     res.keeper = _keep_parent             # ENG-371: a parent's rows to the NVMe before they go
     if mem is not None:

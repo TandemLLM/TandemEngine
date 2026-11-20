@@ -245,6 +245,59 @@ def test_the_served_loop_drafts_and_writes_the_plain_text():
     return f"24 tokens twice, plain, chain and tree: the same text; {stats['chain']} / {stats['tree']}"
 
 
+def test_the_first_round_after_each_resume_drafts():
+    """SRV-907 (the conversation cache's design, test 10 and question 6.2.3): after a resume from each cache tier
+    (an anchor, the end of a generation, the last prompt's end, a session snapshot, a prefix snapshot) the prefill
+    forwards at least one row, which reads the picks again: the first round drafts, and `stale` stays 0."""
+    from engine import cache
+    cfg, eng, srv, _ = setup()
+    ch, big = 16, 1 << 30
+    res = cache.ResidentPrefix(big, ch, stash_bytes=big, end=True)
+    store = cache.StateStore(big, chunk=ch)
+    got = {}
+
+    def turn(ids, k):
+        info: dict = {}
+        lg, _, _ = cache.prefill(srv, None, list(ids), "cpu", chunk=ch, resident=res, store=store, checkpoint=True,
+                                 info=info, conv_id="A")
+        head = DFlyHead(srv)
+        head.reset()
+        t = int(lg.reshape(-1, lg.shape[-1])[-1].argmax())
+        head.launch(srv.last_streams(), [t])
+        tok, _ = head.read()
+        got[info.get("kind")] = (len(tok), head.stats["stale"])
+        out, pos = [], len(ids)
+        for i in range(k):
+            out.append(t)
+            if i == k - 1:
+                break
+            lg = srv.forward(torch.tensor([t]), start=pos)
+            pos += 1
+            t = int(lg.reshape(-1, lg.shape[-1])[-1].argmax())
+        ctx = list(ids) + out
+        store.put(ctx, cache.capture(srv), "A", kind="session")
+        res.keep_end(srv, None, ctx, len(ids), [])
+        return ctx
+
+    keep, cache.PROMPT_END = cache.PROMPT_END, True
+    try:
+        p1 = tokens(40, 7)
+        c1 = turn(p1, 20)
+        p2 = c1 + tokens(5, 8)                                   # the end of turn 1
+        c2 = turn(p2, 6)
+        turn(p2 + [5 if c2[len(p2)] != 5 else 6] + tokens(8, 9), 4)    # turn 2's prompt end
+        turn(p1[:35] + [5 if p1[35] != 5 else 6] + tokens(10, 10), 3)  # turn 1's anchor at 32
+        res.clear()
+        turn(c1 + tokens(3, 11), 3)                              # turn 1's session snapshot
+        res.clear()
+        turn(p1[:20] + [5 if p1[20] != 5 else 6] + tokens(4, 12), 2)    # turn 1's prefix snapshot at 16
+    finally:
+        cache.PROMPT_END = keep
+    assert {"end", "pend", "resident", "session", "prefix"} <= set(got), got
+    assert all(v == (3, 0) for k, v in got.items() if k is not None), got
+    return f"drafted positions and stale rounds by resume: {got}"
+
+
 if __name__ == "__main__":
     fails = 0
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

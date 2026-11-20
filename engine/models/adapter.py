@@ -40,6 +40,10 @@ class Capabilities:
     # ENG-E10: how the conductor's router fits this model (server/conductor/modelfit.py DEFAULTS
     # names the keys); None: the router as its documents say, written for Qwen3.8
     conductor: dict | None = None
+    # SRV-907: the guest test knows the conversation's own next turn and the server's own questions
+    # (engine/cache.py `ResidentPrefix(chat_first=True)`): a turn that holds the whole last prompt in place is
+    # never its guest, and the conductor's question is a guest at any size. False: the guest test by size alone
+    chat_first: bool = False
 
 
 @dataclass(frozen=True)

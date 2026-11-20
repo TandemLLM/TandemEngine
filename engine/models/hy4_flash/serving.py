@@ -16,6 +16,7 @@ recurrent state's. A verify block writes neither: its rows sit in scratch buffer
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import os
@@ -109,6 +110,10 @@ class Hy4FlashServing:
     # graphs (no side slots, no joint passes, no side lane); the shadow reader was validated on Qwen text
     caps = Capabilities(caches=True, side_slots=False, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=False,
                         side_lane=False, joint_plain=False)
+
+    # the conversation cache on one lane (SRV-907): a chat's next turn is never a guest of its own rows, and
+    # the conductor's question is a guest at any size (engine/cache.py `ResidentPrefix`, `chat_first`)
+    caps = dataclasses.replace(caps, chat_first=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)
