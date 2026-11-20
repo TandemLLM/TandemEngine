@@ -79,6 +79,24 @@ def moe_warps(device) -> int | None:
         return None
 
 
+def pick_positions(z: torch.Tensor, qg: torch.Tensor, groups: int, rr: int) -> torch.Tensor:
+    """SPD-323 (F3): a tile's group scores z fp32 [t, W] (column g: group g; each row's own group qg < W) -> the positions
+    each row reads, int32 [t, groups rr], ascending: its `groups - 1` best groups below its own (ties to the lower
+    group) and its own, last (the decode step's `_select`). The columns past a row's own group take -inf and its own
+    +inf; then the shared block select (tools/fn_seq_kernels.qsa_select: the best TOPK by a stable sort, ascending, 4
+    positions each) where the shapes are its own (groups of 4, TOPK of them), else the same selection in torch."""
+    from tools import fn_seq_kernels as SK
+    t, W = z.shape
+    g = torch.arange(W, device=z.device)
+    z = z.masked_fill(g[None, :] > qg[:, None], float("-inf")).masked_fill(g[None, :] == qg[:, None], float("inf"))
+    if rr == 4 and groups == SK.TOPK:
+        sel = torch.empty(t, 4 * groups + 3, dtype=torch.int32, device=z.device)
+        SK.qsa_select(z.contiguous(), torch.zeros(t, 3, dtype=torch.int32, device=z.device), sel)
+        return sel[:, :4 * groups]
+    top = topk_stable(z, groups)[1].sort(dim=-1).values
+    return (top.unsqueeze(-1) * rr + torch.arange(rr, device=z.device)).flatten(1).to(torch.int32)
+
+
 #: what torch's rms_norm adds under the root when no eps is given (the reference's Engram norms), for every float type
 ENGRAM_NORM_EPS = float(torch.finfo(torch.float32).eps)
 
@@ -215,6 +233,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         self.experts_min = EXPERTS_MIN if moe_warps(self.device) == GROUP_WARPS else 0
         #: SPD-319: the prompt pass's one table-row reader thread, made at the first chunk
         self._reader = None
+        #: SPD-323: the prompt pass on fixed-order kernels (serving sets it from HY4_PREFILL_V2): another record of the
+        #: prompt pass's bits; off, the pass before
+        self.prefill_v2 = False
         self.prompt_hidden = None
         self.stats = {"rows": 0, "blocks": 0, "prefill_rows": 0, "engram_rows": 0}
 
@@ -334,9 +355,11 @@ class Hy4FlashEngine(Hy4FlashRef):
             x = x + pre[:, k, None] * h[:, k]
         return self.rms_r(x.to(h.dtype), self.w("norm.weight"))
 
-    def engram_r(self, h: torch.Tensor, rows: torch.Tensor, li: int, live: torch.Tensor) -> torch.Tensor:
-        """`engram_apply` for a block's rows: h [M, S, H], rows [M, heads, head_dim]."""
+    def engram_r(self, h: torch.Tensor, rows: torch.Tensor, li: int, live: torch.Tensor, lin=None) -> torch.Tensor:
+        """`engram_apply` for a block's rows: h [M, S, H], rows [M, heads, head_dim]. `lin`: the projections' sums
+        (`linr`; the prompt pass on fixed-order kernels takes `_rows_mm`)."""
         cfg, p = self.cfg, f"layers.{li}.engram_layer."
+        linr = lin or self.linr
         M, H, d, nh = h.shape[0], cfg.hidden_size, cfg.engram_head_dim, cfg.engram_heads
         # the reference's norms here are nn.RMSNorm without an eps: torch then adds the fp32 epsilon whatever the
         # input's type (measured on BF16 input; not the BF16 epsilon of 2^-7, which moves a norm of small input)
@@ -345,22 +368,22 @@ class Hy4FlashEngine(Hy4FlashRef):
         emb = (self.rms_r(rows.reshape(M * nh, d), None, eps).view(M, nh, d) * hw).flatten(1)
         gates = []
         for k in range(cfg.hc_mult):
-            key = (self.linr(emb, self.w(f"{p}key_projs.{k}.weight")).to(self.dtype) + self.w(f"{p}key_projs.{k}.bias").to(self.dtype))
+            key = (linr(emb, self.w(f"{p}key_projs.{k}.weight")).to(self.dtype) + self.w(f"{p}key_projs.{k}.bias").to(self.dtype))
             key = self.rms_r(key, self.w(f"{p}norm_key.{k}.weight"), eps)
             query = self.rms_r(h[:, k].contiguous(), self.w(f"{p}norm_query.{k}.weight"), eps)
             g = self.mm(key.unsqueeze(1), query.unsqueeze(2)).view(M) * H ** -0.5
             g = g.abs().clamp_min(1e-6).sqrt() * g.sign()
             gates.append(g.sigmoid().to(self.dtype))
         gates = torch.stack(gates, dim=1).unsqueeze(-1)
-        value = self.linr(emb, self.w(p + "value_proj.weight")).to(self.dtype) + self.w(p + "value_proj.bias").to(self.dtype)
+        value = linr(emb, self.w(p + "value_proj.weight")).to(self.dtype) + self.w(p + "value_proj.bias").to(self.dtype)
         main = self.w(p + "unified_pre_gamma").to(self.dtype) * self.rms_r(value, None, eps)
         branch = torch.stack([self.w(f"{p}unified_per_hc_scales.{k}").to(self.dtype) * main for k in range(cfg.hc_mult)], dim=1)
         out = gates * main.unsqueeze(1) + branch
         return out.masked_fill(~live[:, None, None], 0.0)
 
-    def route_r(self, x: torch.Tensor, li: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def route_r(self, x: torch.Tensor, li: int, lin=None) -> tuple[torch.Tensor, torch.Tensor]:
         cfg, p = self.cfg, f"layers.{li}.mlp.gate."
-        scores = self.linr(x, self.w(p + "weight").float()).sigmoid()
+        scores = (lin or self.linr)(x, self.w(p + "weight").float()).sigmoid()
         idx = topk_stable(scores + self.w(p + "e_score_correction_bias").float(), cfg.num_experts_per_tok)[1]
         wts = scores.gather(1, idx)
         if cfg.norm_topk_prob:
@@ -886,8 +909,9 @@ class Hy4FlashEngine(Hy4FlashRef):
             return torch.cat(out)
         return self.head(self.prompt_hidden[-1:]) if head == "last" else None
 
-    def forward_chunk(self, tokens: torch.Tensor, st: Hy4EngState) -> torch.Tensor:
-        """`tokens` [T] appended to the state on batched operations -> the head's inputs [T, H]."""
+    def _chunk_begin(self, tokens: torch.Tensor, st: Hy4EngState) -> tuple:
+        """What a chunk's layers share: its slots, the rows that own an n-gram, the tokens with the state's last ones,
+        and its table rows handed to the reader -> (T, L0, slots, live, full, reads)."""
         cfg = self.cfg
         T, L0 = int(tokens.shape[0]), st.length
         if L0 + T > st.cap:
@@ -906,6 +930,24 @@ class Hy4FlashEngine(Hy4FlashRef):
         grams = torch.stack([full[n_ctx - j: n_ctx - j + T] for j in range(cfg.engram_max_ngram_size)], dim=-1) if self.hashes else None
         # every Engram layer's table rows read and decoded on the reader thread, in layer order, while the layers run
         reads = self._engram_reads(grams) if self.hashes else {}
+        return T, L0, slots, live, full, reads
+
+    def _chunk_end(self, st: Hy4EngState, T: int, L0: int, full: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
+        st.hist.copy_(full[-st.hist.shape[0]:])
+        st.length = L0 + T
+        st.picks_at = st.length if self.pick_layers else -1
+        st.btok, st.bparents = [], []
+        self.prompt_hidden = hidden
+        self.stats["prefill_rows"] += T
+        return self.prompt_hidden
+
+    def forward_chunk(self, tokens: torch.Tensor, st: Hy4EngState) -> torch.Tensor:
+        """`tokens` [T] appended to the state on batched operations -> the head's inputs [T, H]. With `prefill_v2` the
+        pass on fixed-order kernels (`_forward_chunk_v2`)."""
+        if self.prefill_v2:
+            return self._forward_chunk_v2(tokens, st)
+        cfg = self.cfg
+        T, L0, slots, live, full, reads = self._chunk_begin(tokens, st)
         h = self.embed(tokens).unsqueeze(1).expand(-1, cfg.hc_mult, -1).contiguous()
         for li in range(cfg.num_hidden_layers):
             p = f"layers.{li}."
@@ -919,13 +961,72 @@ class Hy4FlashEngine(Hy4FlashRef):
             x, post = self.hc(h, p + "hc_mlp_layer.hc_pre.")
             y = self.mlp_chunk(self.rms(x, self.w(p + "post_attention_layernorm.weight")), li)
             h = self.inject(h, y, post)
-        st.hist.copy_(full[-n_ctx:])
-        st.length = L0 + T
-        st.picks_at = st.length if self.pick_layers else -1
-        st.btok, st.bparents = [], []
-        self.prompt_hidden = self.final(h)
-        self.stats["prefill_rows"] += T
-        return self.prompt_hidden
+        return self._chunk_end(st, T, L0, full, self.final(h))
+
+    def _forward_chunk_v2(self, tokens: torch.Tensor, st: Hy4EngState) -> torch.Tensor:
+        """SPD-325 (F2): a chunk on the row pass's own layer body (`_run_fused`'s): the Engram rows, a hyper-connection
+        with the pending inject before it and the norm after it, attention (`_attention_chunk_v2`), the hyper-connection,
+        the MLP; the head form of the hyper-connection on every row at the end (the drafter reads every prompt row's
+        head input). On a device the row kernels (`K_.hc`, `K_.norm`, `K_.inject`) and `mm` with the rows on its tile
+        axis for the router and the Engram sums; the packed projections on `lin` and the experts on
+        `_experts_chunk`, as the pass before. Off the device the same body on the row pass's reference sums."""
+        cfg = self.cfg
+        T, L0, slots, live, full, reads = self._chunk_begin(tokens, st)
+        live = live.to(self.device)
+        h = self.embed(tokens).unsqueeze(1).expand(-1, cfg.hc_mult, -1).contiguous()
+        pend = None
+        for li in range(cfg.num_hidden_layers):
+            p = f"layers.{li}."
+            if li in self.hashes:
+                rows = self._engram_take(li, reads[li])
+                self.stats["engram_rows"] += rows.shape[0] * rows.shape[1]
+                if pend is not None:
+                    h, pend = self._inject_v2(h, pend), None
+                h = (h + self.engram_r(h, rows, li, live, lin=self._rows_mm)).contiguous()
+            x, post, h = self._hc_v2(h, pend, p + "hc_attn_layer.hc_pre.", self.w(p + "input_layernorm.weight"))
+            y = self._attention_chunk_v2(x, li, st, slots)
+            x, post, h = self._hc_v2(h, (y, post), p + "hc_mlp_layer.hc_pre.", self.w(p + "post_attention_layernorm.weight"))
+            pend = (self._mlp_chunk_v2(x, li), post)
+        return self._chunk_end(st, T, L0, full, self._final_v2(h, pend))
+
+    def _rows_mm(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """x [M, K] @ w^T for a plain weight [N, K] -> fp32 [M, N]: `linr`'s element sums, on a device with the rows on
+        `mm`'s tile axis (no 16-fold padding of one-row items)."""
+        if self.fused:
+            return K_.mm(x.unsqueeze(0), w.t().unsqueeze(0)).view(x.shape[0], w.shape[0])
+        return self.linr(x, w)
+
+    def _inject_v2(self, h: torch.Tensor, pend: tuple) -> torch.Tensor:
+        return K_.inject(h, pend[0], pend[1]) if self.fused else self.inject(h, pend[0], pend[1])
+
+    def _hc_v2(self, h: torch.Tensor, pend: tuple | None, pre: str, w_norm: torch.Tensor) -> tuple:
+        """A hyper-connection with the pending inject before it and the norm after it -> (normed mix, post gates, h)."""
+        cfg = self.cfg
+        if self.fused:
+            return K_.hc(h, pend, *self._hcw(pre), w_norm, cfg.rms_norm_eps, cfg.hc_eps, cfg.hc_magnitude)
+        if pend is not None:
+            h = self.inject(h, pend[0], pend[1])
+        x, post = self.hc_r(h, pre)
+        return self.rms_r(x, w_norm), post, h
+
+    def _final_v2(self, h: torch.Tensor, pend: tuple) -> torch.Tensor:
+        """The last inject and the head's hyper-connection and norm, on every row -> the head's inputs [T, H]."""
+        cfg = self.cfg
+        if self.fused:
+            return K_.hc(h, pend, self.w("hc_head.hc_head_fn"), self.w("hc_head.hc_head_base"), self.w("hc_head.hc_head_scale"),
+                         self.w("norm.weight"), cfg.rms_norm_eps, cfg.hc_eps, cfg.hc_magnitude, head=True)[0]
+        return self.final_r(self.inject(h, pend[0], pend[1]))
+
+    def _mlp_chunk_v2(self, x: torch.Tensor, li: int) -> torch.Tensor:
+        """`mlp_chunk` with the router's sums on `mm` (`route_r`) and the norms on the row kernel."""
+        p = f"layers.{li}.mlp."
+        if self.cfg.is_dense_mlp(li):
+            return self._norm_v2(self.dense(x, p), self.w(p + "post_fc2_norm.weight"))
+        idx, wts = self.route_r(x, li, lin=self._rows_mm)
+        z = self.lin(x, self.w(p + "routed_expert_down_proj.weight"))
+        routed = self._experts_chunk(z, idx, wts, li) if li in self.banks else self._experts_grouped(z, idx, wts, li)
+        routed = self.lin(routed, self.w(p + "routed_expert_up_proj.weight"))
+        return self._norm_v2(routed + self.dense(x, p + "shared_experts."), self.w(p + "combine_output_norm.weight"))
 
     def _engram_reads(self, grams: torch.Tensor) -> dict:
         """SPD-319: a chunk's n-grams [T, n] -> {Engram layer: (its ids' shape, the future of its rows)}: every layer's ids
@@ -1007,6 +1108,132 @@ class Hy4FlashEngine(Hy4FlashRef):
             st.win[li][slots[-Wn:] % Wn] = lat[-Wn:]
         y = (out * torch.sigmoid(gate).view(T, a.heads, a.v)).reshape(T, a.heads * a.v)
         return self.rms(self.lin(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
+
+    # ------------------------------------------------------------------------- the prompt pass on fixed-order kernels
+    def _norm_v2(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """The RMS norm of rows with its weight: the row kernel (`K_.norm`) on a device, the row pass's `rms_r` else."""
+        if self.fused:
+            return K_.norm(x.contiguous(), w, self.cfg.rms_norm_eps)
+        return self.rms_r(x, w)
+
+    def _heads_mm(self, a: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """a [T, heads, K] @ w [heads, K, N] -> fp32 [T, heads, N]: on a device `mm` with the rows on the product's tile
+        axis (an element is the sum the row pass's `attend_r` takes, without its 16-fold padding); else `mm` a row."""
+        T, H, Kk = a.shape
+        if self.fused:
+            return K_.mm(a.transpose(0, 1), w).transpose(0, 1)
+        return self.mm(a.reshape(T * H, 1, Kk), w).view(T, H, -1)
+
+    def _mla(self, qa: torch.Tensor, qr: torch.Tensor, lat: torch.Tensor, ctl: torch.Tensor, sel: torch.Tensor,
+             li: int) -> torch.Tensor:
+        """Every row of a chunk over its own keys (kernels.py `mla_rows`; its torch reference off the device)."""
+        a = self.cfg.attn(li)
+        sink = self.sinks[li].reshape(-1)
+        if self.fused:
+            return K_.mla_rows(qa.contiguous(), qr.contiguous(), lat, ctl, sel, sink, a.qk ** -0.5)
+        return K_.mla_rows_reference(qa, qr, lat, ctl, sel, sink, a.qk ** -0.5)
+
+    def _sparse_reads(self, x: torch.Tensor, qres: torch.Tensor, li: int, st: Hy4EngState, slots: torch.Tensor,
+                      cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """A sparse layer's read lists of a chunk's rows as `mla_rows` takes them: ctl int32 [T, 3] (base 0, the keys a
+        row reads, whether it reads its list) and sel int32 [T, index_topk] (the positions, ascending; the keys past a
+        row are the list's tail). The rule is each row's own: a row whose group is below `group_topk` reads every row
+        up to itself. SPD-323 (F3): the indexer on `mm` and `wsum_relu` (`_select`'s products) in tiles of up to 256
+        rows, over the groups closed before the tile's last row, then `pick_positions` (the shared block select)."""
+        cfg, dev = self.cfg, self.device
+        NS, rr, gt, T = cfg.index_topk, cfg.index_kpool, cfg.group_topk, slots.shape[0]
+        ctl = torch.zeros(T, 3, dtype=torch.int32, device=dev)
+        ctl[:, 1] = (slots + 1).to(torch.int32)
+        sel = torch.zeros(T, NS, dtype=torch.int32, device=dev)
+        qg = slots // rr
+        if int(qg[-1]) < gt:
+            return ctl, sel
+        p_ = f"layers.{li}.self_attn.compressed_indexer."
+        nh, D, rd = cfg.index_n_heads, cfg.index_head_dim, cfg.sparse_attn.rope
+        iq = self.lin(qres, self.w(p_ + "query_projection.weight"))
+        hw = self._rows_mm(x, self.w(p_ + "head_weight_projection.weight")).to(self.dtype)
+        qi = iq.view(T, nh, D)
+        qi = torch.cat((qi[..., :D - rd], rotate(qi[..., D - rd:], cos[:, None], sin[:, None])), dim=-1)
+        wsc = (hw.float() * (nh ** -0.5 * D ** -0.5)).contiguous()
+        # a tile's scores are [rows, heads, groups] fp32: at most 512 MiB of them (an element's bits do not depend on the
+        # tile: `mm` and `wsum_relu` compute every element alone)
+        tile = max(1, min(256, (1 << 29) // (nh * (int(qg[-1]) + 1) * 4)))
+        for i in range(0, T, tile):
+            qt = qg[i:i + tile]
+            G = int(qt[-1])
+            if G < gt:
+                continue
+            sc = self.mm(qi[i:i + tile], st.gk[li][:G].t().unsqueeze(0), 64)                    # [t, heads, G]
+            if self.fused and nh & (nh - 1) == 0:
+                logit = K_.wsum_relu(sc, wsc[i:i + tile])
+            else:
+                logit = self.mm(wsc[i:i + tile].unsqueeze(1), F.relu(sc)).view(-1, G)
+            pos = pick_positions(torch.cat((logit, torch.zeros_like(logit[:, :1])), dim=1), qt, gt, rr)
+            lst = qt >= gt
+            sel[i:i + tile] = torch.where(lst[:, None], pos, sel[i:i + tile])
+            ctl[i:i + tile, 1] = torch.where(lst, NS - (rr - 1) + slots[i:i + tile] % rr, slots[i:i + tile] + 1).to(torch.int32)
+            ctl[i:i + tile, 2] = lst.to(torch.int32)
+        return ctl, sel
+
+    def _index_chunk_v2(self, x: torch.Tensor, qres: torch.Tensor, li: int, st: Hy4EngState, slots: torch.Tensor) -> None:
+        """SPD-323 (F3): `_index_chunk` on the row kernels: the chunk's token keys by `mm` (rows on its tile axis) and the
+        row kernel's norm, the pooled key of every group the chunk closes by the row pass's `group_keys_r`, turned at
+        the group's first row."""
+        cfg, ip = self.cfg, f"layers.{li}.self_attn.compressed_indexer."
+        rr, D, rd = cfg.index_kpool, cfg.index_head_dim, cfg.sparse_attn.rope
+        tk = self._rows_mm(x, self.w(ip + "token_key_projection.weight")).to(self.dtype)
+        st.ik[li][slots] = self._norm_v2(tk, self.w(ip + "token_key_norm.weight"))
+        L0, L = int(slots[0]), int(slots[-1]) + 1
+        g0, g1 = L0 // rr, L // rr
+        if g1 <= g0:
+            return
+        gk = self.group_keys_r(st.ik[li][g0 * rr:g1 * rr].reshape(g1 - g0, rr, D), li)
+        first = torch.arange(g0, g1) * rr
+        cos, sin = self.rope(self.pos3(first + st.delta), SPARSE)
+        keys = torch.cat((gk[:, :D - rd], rotate(gk[:, D - rd:], cos, sin)), dim=-1)
+        st.ik[li][first.to(self.device) + rr - 1] = keys
+        st.gk[li][g0:g1] = keys
+
+    def _attention_chunk_v2(self, x: torch.Tensor, li: int, st: Hy4EngState, slots: torch.Tensor) -> torch.Tensor:
+        """SPD-323 (F1): a chunk's attention, both kinds on `mla_rows`. The projections as the pass before (`lin`), the
+        rotary by `rotate`, the norms on the row kernel; the query's absorbed key half by `mm` with the rows on the
+        tile axis. A sparse layer's latents go into the state first and every row reads its own keys there in place; a
+        window layer's rows read a buffer of the ring's last rows before the chunk and the chunk's own. The value
+        half by `mm`, then the gate, `o_proj` and its norm."""
+        cfg, dev = self.cfg, self.device
+        a, kind, p_ = cfg.attn(li), cfg.layer_types[li], f"layers.{li}.self_attn."
+        T, R, L0, Wn = x.shape[0], cfg.kv_lora_rank, st.length, cfg.sliding_window
+        gate = self.lin(x, self.w(p_ + "linear_gate.weight"))
+        qres = self._norm_v2(self.lin(x, self.w(p_ + "q_a_proj.weight")), self.w(p_ + "q_a_layernorm.weight"))
+        q = self.lin(qres, self.w(p_ + "q_b_proj.weight")).view(T, a.heads, a.qk)
+        ckv = self.lin(x, self.w(p_ + "kv_a_proj_with_mqa.weight"))
+        cos, sin = self.rope(self.pos3(slots.cpu() + st.delta), kind)
+        qr = rotate(q[..., a.nope:], cos[:, None], sin[:, None])
+        lat = torch.cat((self._norm_v2(ckv[:, :R], self.w(p_ + "kv_a_layernorm.weight")), rotate(ckv[:, R:], cos, sin)), dim=-1)
+        qa = self._heads_mm(q[..., :a.nope], self.wk[li]).to(self.dtype)
+        if kind == SPARSE:
+            st.lat[li][slots] = lat
+            self._index_chunk_v2(x, qres, li, st, slots)
+            ctl, sel = self._sparse_reads(x, qres, li, st, slots, cos, sin)
+            mix = self._mla(qa, qr, st.lat[li], ctl, sel, li)
+            if li in self.pick_layers:
+                # the last row's read list, for the draft head's layers
+                pi, L, NS = st.pick_layers.index(li), L0 + T, cfg.index_topk
+                pq = sel[-1, :NS].long() if int(ctl[-1, 2]) else self.ar(NS)
+                st.pick_q[pi].copy_(pq)
+                st.pick_ok[pi].copy_(pq <= L - 1)
+        else:
+            # the ring's Wn - 1 rows before the chunk (by position; those before row 0 are never read), then the chunk's
+            before = torch.arange(L0 - Wn + 1, L0, device=dev)
+            buf = torch.cat((st.win[li][before % Wn], lat))
+            i = torch.arange(T, device=dev)
+            n = (slots + 1).clamp(max=Wn)
+            ctl = torch.stack((i + (Wn - 1 - slots).clamp(min=0), n, torch.zeros_like(n)), dim=1).to(torch.int32).contiguous()
+            mix = self._mla(qa, qr, buf, ctl, torch.zeros(T, 1, dtype=torch.int32, device=dev), li)
+            st.win[li][slots[-Wn:] % Wn] = lat[-Wn:]
+        out = self._heads_mm(mix, self.wv[li]).to(self.dtype)
+        y = (out * torch.sigmoid(gate).view(T, a.heads, a.v)).reshape(T, a.heads * a.v)
+        return self._norm_v2(self.lin(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
 
     def attend_chunk(self, q: torch.Tensor, K: torch.Tensor, allowed: torch.Tensor, li: int, w: tuple | None = None) -> torch.Tensor:
         """q [t, heads, qk] over shared latents K [n, R + rope] with `allowed` [t, n] -> [t, heads, v]. `w`: another

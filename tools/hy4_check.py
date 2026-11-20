@@ -17,6 +17,10 @@
   experts-crossover  (--only) the three paths' ms at 16 to 1,024 rows and the EXPERTS_MIN they give (SPD-321)
   table-rows   (--only) the last chunk's table rows: the sliced reader against the threads it replaces, the prompt
                pass's reader job against `engram_rows`, its reads a second (SPD-319)
+  v2-micro     (--only) the prompt pass on fixed-order kernels: `mla_rows` on a window and a sparse layer's real inputs
+               at --micro-ctx (ms, against its reference, a row alone), one hyper-connection of 4,096 rows (SPD-323/325)
+  v2-cuts      (--only) the same pass with the trunk pinned row-invariant: one chunk, a cut, chunks of 257 and a
+               one-row tail give equal bits (SPD-323/325; --prefill-v2 turns the pass on for every other check)
 
 The prompt is synthetic unless --text names a file the pack's tokenizer reads. For a tiny rehearsal pack whose
 config names no draft targets, --dfly-layers and --mask-id give them.
@@ -111,6 +115,16 @@ def quality(a, eng, cfg, say) -> None:
                 stp = torch.cat([eng.prefill(torch.tensor(ids[:P0_]), st2, head="all")] + [eng.step(ids[i], st2, graphs=gs).clone() for i in range(P0_, L)])
                 d = (stp[P0_:] - got[P0_:L]).abs()
                 both = _kl(got[P0_:L], stp[P0_:])
+                # the design's next-token rule (docs/kernels.md: Flash-Next's): the prompt pass agrees with the decode
+                # steps at least as well as the steps agree with the reference, less one point, and never disagrees
+                # where both are sure (top-1 margin above 5 on both)
+                steps_ref = float(_kl(ref_of(r)[P0_:L], stp[P0_:])["top1"].float().mean())
+                margin = lambda x: (lambda v: v[:, 0] - v[:, 1])(x.float().topk(2, -1).values)  # noqa: E731
+                sure = int(((got[P0_:L].argmax(-1) != stp[P0_:].argmax(-1)) & (margin(got[P0_:L]) > 5) & (margin(stp[P0_:]) > 5)).sum())
+                prompt_steps = float(both["top1"].float().mean())
+                say("quality_next_token_rule", set=name, row=r, positions=L - P0_, prompt_vs_steps=round(prompt_steps, 5),
+                    steps_vs_reference=round(steps_ref, 5), sure_disagreements=sure,
+                    passed=prompt_steps >= steps_ref - 0.01 and sure == 0, prefill_v2=bool(getattr(eng, "prefill_v2", False)))
                 say("quality_steps_vs_prompt_pass", set=name, row=r, positions=L - P0_, logits_mean_abs=round(float(d.mean()), 5),
                     logits_max_abs=round(float(d.max()), 4), logit_scale=round(float(got[P0_:L].abs().mean()), 3),
                     top1_equal=round(float(both["top1"].float().mean()), 5), kl_prompt_to_steps=round(float(both["kl"].mean()), 5),
@@ -762,6 +776,145 @@ def table_rows(a, eng, cfg, say) -> bool:
     return ok
 
 
+#: SPD-323: `mla_rows` against its torch reference: max |diff| / max |ref| (the kernel's weights are rounded to bf16
+#: before the mix, the reference's are not: within two bf16 steps). This builder's bound, not the design's: the design's
+#: lines for the flip are its quality ones (chat2048 KL, `quality_next_token_rule`)
+MLA_REL = 1e-2
+
+
+def v2_micro(a, eng, cfg, say) -> bool:
+    """SPD-323 (the prefill design's F1 micro, question 3): `mla_rows` on one window and one sparse layer's real inputs
+    of the last 4,096-row chunk of --digest-text at each context of --micro-ctx: ms (median of 7 after 2), the
+    reference on 64 of its rows within MLA_REL, and a row alone equal to the same row in the chunk. Pass 80 ms a
+    sparse layer and 25 ms a window layer; kill above 150 and 50 (the fallback is then `attend_r` at M rows)."""
+    from tokenizers import Tokenizer
+    from engine.models.hy4_flash import kernels as K_
+    from engine.models.hy4_flash.config import SPARSE
+    from tools.hy4_prefill_profile import set_arm
+    if not a.digest_text:
+        raise SystemExit("v2-micro: --digest-text")
+    tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+    text = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids
+    win = next(li for li in range(20, cfg.num_hidden_layers) if cfg.layer_types[li] != SPARSE)
+    spa = next(li for li in range(20, cfg.num_hidden_layers) if cfg.layer_types[li] == SPARSE)
+    ok = True
+    for ctx in (int(c) for c in a.micro_ctx.split(",")):
+        if len(text) < ctx:
+            raise SystemExit(f"--digest-text holds {len(text)} tokens, --micro-ctx asks for {ctx}")
+        got, real, hcs = {}, eng._mla, {}
+        real_hc = getattr(eng, "_hc_v2", None)
+
+        def spy(qa, qr, lat, ctl, sel, li):
+            if li in (win, spa):
+                got[li] = (qa.clone(), qr.clone(), lat.clone(), ctl.clone(), sel.clone())
+            return real(qa, qr, lat, ctl, sel, li)
+
+        def spy_hc(h, pend, pre, w):
+            if pre == f"layers.{win}.hc_mlp_layer.hc_pre.":
+                hcs["x"] = (h.clone(), (pend[0].clone(), pend[1].clone()), pre, w)
+            return real_hc(h, pend, pre, w)
+        set_arm(eng, "v2")
+        eng._mla = spy
+        if real_hc is not None:
+            eng._hc_v2 = spy_hc
+        try:
+            eng.prefill(torch.tensor(text[:ctx]), eng.new_state(ctx + 64), head=None)
+        finally:
+            del eng._mla
+            if real_hc is not None:
+                del eng._hc_v2
+        if "x" in hcs:
+            # F2 (question 5): one hyper-connection of 4,096 rows on the row kernels, whole and in sub-batches of 512
+            h, pend, pre, w = hcs["x"]
+            c = cfg
+            args = (*eng._hcw(pre), w, c.rms_norm_eps, c.hc_eps, c.hc_magnitude)
+            ts = []
+            for r in range(9):
+                sync(a.device)
+                t0 = time.perf_counter()
+                whole = K_.hc(h, pend, *args)
+                sync(a.device)
+                if r >= 2:
+                    ts.append(1e3 * (time.perf_counter() - t0))
+            parts = [K_.hc(h[i:i + 512].contiguous(), (pend[0][i:i + 512].contiguous(), pend[1][i:i + 512].contiguous()), *args)
+                     for i in range(0, h.shape[0], 512)]
+            same = all(torch.equal(torch.cat([p_[k] for p_ in parts]), whole[k]) for k in range(3))
+            ms_hc = sorted(ts)[len(ts) // 2]
+            ok = ok and same
+            say("v2_micro_hc", context=ctx, layer=win, rows=int(h.shape[0]), ms=round(ms_hc, 2), pass_ms=6.0, passed=ms_hc <= 6.0,
+                sub_batches_of_512_equal=same)
+        for li in (win, spa):
+            qa, qr, lat, ctl, sel = got[li]
+            sink, scale = eng.sinks[li].reshape(-1), cfg.attn(li).qk ** -0.5
+            run = lambda: K_.mla_rows(qa, qr, lat, ctl, sel, sink, scale)  # noqa: E731
+            ts = []
+            for r in range(9):
+                sync(a.device)
+                t0 = time.perf_counter()
+                out = run()
+                sync(a.device)
+                if r >= 2:
+                    ts.append(1e3 * (time.perf_counter() - t0))
+            ms = sorted(ts)[len(ts) // 2]
+            rows = torch.linspace(0, qa.shape[0] - 1, 64).long().tolist()
+            ref = K_.mla_rows_reference(qa[rows], qr[rows], lat, ctl[rows].contiguous(), sel[rows], sink, scale)
+            rel = float((out[rows].float() - ref.float()).abs().max() / ref.float().abs().max())
+            alone = all(torch.equal(K_.mla_rows(qa[j:j + 1], qr[j:j + 1], lat, ctl[j:j + 1], sel[j:j + 1], sink, scale)[0], out[j])
+                        for j in (0, 17, qa.shape[0] // 2, qa.shape[0] - 1))
+            sparse = cfg.layer_types[li] == SPARSE
+            line, kill = (80.0, 150.0) if sparse else (25.0, 50.0)
+            ok = ok and rel < MLA_REL and alone and ms <= kill
+            say("v2_micro_mla", context=ctx, layer=li, kind="sparse" if sparse else "window", rows=int(qa.shape[0]),
+                keys_mean=round(float(ctl[:, 1].float().mean()), 1), ms=round(ms, 2), pass_ms=line, kill_ms=kill,
+                passed=ms <= line, killed=ms > kill, rel_vs_reference=rel, within=rel < MLA_REL, row_alone_equal=alone,
+                launch={"HB": K_.MLA_HB, "BN": K_.MLA_BN, "warps": K_.MLA_WARPS, "stages": K_.MLA_STAGES})
+    return ok
+
+
+def v2_cuts(a, eng, cfg, say) -> bool:
+    """SPD-323, SPD-325 (F1 to F3): a row's bits on the prompt pass on fixed-order kernels depend on its chunk only
+    through the trunk's projections. With those pinned to a row-invariant form (the row kernels, 32 rows at a time;
+    a plain weight on `linr`), the first 3,000 token ids of --digest-text as one chunk, as two chunks cut at 1,000, in
+    chunks of 257, and as 2,999 rows then one: every head input, the last row's logits and the state equal. (Without
+    the pin the trunk takes the library GEMM above 128 rows, whose bits follow the row count: the design's F4.)"""
+    from tokenizers import Tokenizer
+    from tools.hy4_prefill_profile import set_arm
+    if not a.digest_text:
+        raise SystemExit("v2-cuts: --digest-text")
+    tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+    ids = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids[:3000]
+    rr = cfg.index_kpool
+
+    def pinned(x, w):
+        x2 = x.reshape(-1, x.shape[-1])
+        if hasattr(w, "bf16_cached") and x2.dtype == torch.bfloat16:
+            y = torch.cat([eng.lin1(x2[i:i + 32], w) for i in range(0, x2.shape[0], 32)])
+        else:
+            y = eng.linr(x2, w if torch.is_tensor(w) else w.bf16_cached()).to(x.dtype)
+        return y.view(*x.shape[:-1], -1)
+    set_arm(eng, "v2")
+    eng.lin = pinned
+    runs = {}
+    try:
+        for name, cuts in (("one", [3000]), ("cut_1000", [1000, 2000]), ("chunks_257", [257] * 11 + [173]), ("tail_1", [2999, 1])):
+            st, hid, i = eng.new_state(3064), [], 0
+            for n in cuts:
+                hid.append(eng.forward_chunk(torch.tensor(ids[i:i + n]), st).clone())
+                i += n
+            sync(a.device)
+            L = st.length
+            runs[name] = {"head_inputs": _sha(torch.cat(hid)), "logits_last": _sha(eng.head(hid[-1][-1:])),
+                          "lat_all": _sha(st.lat_all[:, :L]), "ik_all": _sha(st.ik_all[:, :L]), "win_all": _sha(st.win_all),
+                          "hist": _sha(st.hist), "gk_all": _sha(st.gk_all[:, :L // rr])}
+    finally:
+        del eng.lin
+    base = runs["one"]
+    diff = {k: sorted(x for x in v if v[x] != base[x]) for k, v in runs.items() if k != "one"}
+    ok = not any(diff.values())
+    say("v2_cuts", rows=len(ids), equal=ok, differing=diff, trunk="row kernels, 32 rows a call (pinned)")
+    return ok
+
+
 def profile(a, eng, cfg, ids, say) -> None:
     """One decode step and one 6-row block taken apart: exclusive wall time a part, launched one by one with a
     device sync around every part (so the parts add up; a graph's replay of the same pass is given beside them)."""
@@ -921,11 +1074,13 @@ def main() -> int:
     ap.add_argument("--answer", type=int, default=600)
     ap.add_argument("--profile", action="store_true", help="one decode step and one drafted round taken apart by part")
     ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit,"
-                                   "prefill-digest,experts-equal,experts-crossover,table-rows)")
+                                   "prefill-digest,experts-equal,experts-crossover,table-rows,v2-micro,v2-cuts)")
+    ap.add_argument("--prefill-v2", action="store_true", help="the prompt pass on fixed-order kernels (HY4_PREFILL_V2=1)")
+    ap.add_argument("--micro-ctx", default="8192,32768", help="v2-micro: the contexts (rows of --digest-text) to time at")
     ap.add_argument("--digest-text", help="prefill-digest: a text file, its first --digest-rows token ids raw")
     ap.add_argument("--digest-rows", type=int, default=8192)
     ap.add_argument("--digest-chat", help="prefill-digest: a text file, as a chat request (the essay ask, thinking off)")
-    ap.add_argument("--digest-arms", default="grouped", help="prefill-digest: comma list of the expert paths (pair, grouped, group)")
+    ap.add_argument("--digest-arms", default="grouped", help="prefill-digest: comma list of the paths (pair, grouped, group, v2)")
     ap.add_argument("--prefill-experts", default="group", choices=("group", "rows"),
                     help="the prompt's experts on the shared prefill kernel (group) or the row kernels (rows; --grouped picks their form)")
     ap.add_argument("--digest-out", help="prefill-digest: write the digests to this JSON file")
@@ -966,6 +1121,7 @@ def main() -> int:
     eng = Hy4FlashEngine(cfg, W, tables, device=a.device, max_len=a.max_len, banks=banks, cuts=cuts)
     eng.prefill_grouped = a.grouped
     eng.prefill_experts = a.prefill_experts
+    eng.prefill_v2 = a.prefill_v2
     say("load", timing=timing, weights_gib=round(pack.resident_bytes() / (1 << 30), 3), banks=len(banks), mem=mem())
 
     g = torch.Generator().manual_seed(7)
@@ -1116,6 +1272,10 @@ def main() -> int:
         experts_crossover(a, eng, cfg, say)
     if only is not None and "table-rows" in only:
         res["ok"] = table_rows(a, eng, cfg, say) and res["ok"]
+    if banks and only is not None and "v2-micro" in only:
+        res["ok"] = v2_micro(a, eng, cfg, say) and res["ok"]
+    if only is not None and "v2-cuts" in only:
+        res["ok"] = v2_cuts(a, eng, cfg, say) and res["ok"]
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
     if a.prices_at and want("prices"):

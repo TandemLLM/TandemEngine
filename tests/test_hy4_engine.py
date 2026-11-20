@@ -455,6 +455,127 @@ def test_two_states_interleaved_keep_their_own_rows():
     return f"{len(eng._elayers)} tables' jobs crossed; two states' chunks of {E.PREFILL_CHUNK} in turn equal their lone prefills"
 
 
+def test_a_sparse_row_reads_by_its_own_position():
+    """SPD-323 (F1): on the prompt pass on fixed-order kernels, a chunk that crosses the row from which sparse layers
+    read lists (index_topk) gives every row the read list the decode step takes for that row, in every sparse layer:
+    the rows before the line every row up to theirs, the rows past it their groups' rows."""
+    cfg, ref, eng = tiny()
+    toks = PROMPT[:35]
+    lists, real = {}, eng._sparse_reads
+
+    def spy(x, qres, li, st, slots, cos, sin):
+        ctl, sel = real(x, qres, li, st, slots, cos, sin)
+        for t, p in enumerate(slots.tolist()):
+            base, n, lst = ctl[t].tolist()
+            lists[(li, p)] = sel[t, :n].tolist() if lst else list(range(base, base + n))
+        return ctl, sel
+    eng.prefill_v2, eng._sparse_reads = True, spy
+    try:
+        st = eng.new_state()
+        eng.prefill(toks[:5], st, head=None)
+        eng.prefill(toks[5:], st, head=None)          # rows 5 to 34: across row index_topk
+    finally:
+        eng.prefill_v2 = False
+        del eng._sparse_reads
+    want, cur, real_sel = {}, {}, eng._select
+
+    def spy_sel(li, st, iq, hw, cos, sin, c):
+        out = real_sel(li, st, iq, hw, cos, sin, c)
+        cur[li] = out[0].tolist()
+        return out
+    eng._select = spy_sel
+    try:
+        st = eng.new_state()
+        for p, t in enumerate(toks.tolist()):
+            cur.clear()
+            eng.step(int(t), st)
+            for li in cfg.sparse_layers:
+                want[(li, p)] = [q for q in cur[li] if q <= p] if li in cur else list(range(p + 1))
+    finally:
+        del eng._select
+    rows = sorted(k for k in lists if k[1] >= 5)
+    bad = [k for k in rows if lists[k] != want[k]]
+    assert not bad, [(k, lists[k], want[k]) for k in bad[:3]]
+    listed = sum(1 for k in rows if k[1] >= cfg.index_topk)
+    assert listed and any(k[1] < cfg.index_topk for k in rows), rows
+    return f"{len(rows)} (layer, row) read lists of a chunk across row {cfg.index_topk} equal the decode step's ({listed} lists)"
+
+
+class _v2:
+    """The prompt pass on fixed-order kernels (HY4_PREFILL_V2) for a block of the test."""
+
+    def __init__(self, eng):
+        self.eng = eng
+
+    def __enter__(self):
+        self.eng.prefill_v2 = True
+
+    def __exit__(self, *exc):
+        self.eng.prefill_v2 = False
+
+
+def test_v2_matches_the_reference():
+    """SPD-325 (F2): the prompt pass on fixed-order kernels against the reference forward, in one chunk and in chunks
+    of 7 (attention 5 rows at a time, read lists 3), within the fp32 bound of the pass before."""
+    cfg, ref, eng = tiny()
+    want = ref.forward(PROMPT, Hy4State())
+    with _v2(eng):
+        got = eng.prefill(PROMPT, eng.new_state(), head="all")
+        with _small_chunks():
+            got2 = eng.prefill(PROMPT, eng.new_state(), head="all")
+    err, err2 = (got - want).abs().max().item(), (got2 - want).abs().max().item()
+    assert err < BOUND and err2 < BOUND, (err, err2)
+    # and the state it leaves is the one decode steps continue
+    st = eng.new_state()
+    with _v2(eng), _small_chunks():
+        eng.prefill(PROMPT[:19], st, head=None)
+    steps = torch.cat([eng.step(int(t), st) for t in PROMPT[19:]])
+    err3 = (steps - want[19:]).abs().max().item()
+    assert err3 < BOUND, err3
+    return f"45 rows: one chunk {err:.1e}, chunks of 7 {err2:.1e}; 19 prompt rows then 26 steps {err3:.1e}"
+
+
+def test_every_prompt_rows_head_input_is_kept():
+    """SPD-325 (F2): `prompt_hidden` holds the head input of every row of the last chunk, one row a token (the shared
+    drafter's sync reads them all), and its last row gives the prompt's last logits; on both passes."""
+    cfg, ref, eng = tiny()
+    out = []
+    for v2 in (False, True):
+        eng.prefill_v2 = v2
+        try:
+            lg = eng.prefill(PROMPT, eng.new_state(), head="last")
+            assert eng.prompt_hidden.shape == (PROMPT.shape[0], cfg.hidden_size), eng.prompt_hidden.shape
+            assert torch.equal(eng.head(eng.prompt_hidden[-1:]), lg)
+            with _small_chunks():
+                eng.prefill(PROMPT, eng.new_state(), head=None)
+            assert eng.prompt_hidden.shape == (PROMPT.shape[0] % 7 or 7, cfg.hidden_size), eng.prompt_hidden.shape
+        finally:
+            eng.prefill_v2 = False
+        out.append(f"{'v2' if v2 else 'before'}: {PROMPT.shape[0]} rows, then the last chunk's {PROMPT.shape[0] % 7 or 7}")
+    return "; ".join(out)
+
+
+def test_the_block_select_gives_the_stable_sorts_groups():
+    """SPD-323 (F3): at the packs' shapes (groups of 4, 512 read) the shared block select with a row's own group at +inf
+    and the groups past it at -inf (`pick_positions`, its torch form on the CPU, `qsa_select_torch`) reads the 511
+    best closed groups by the stable sort (`topk_stable`, ties to the lower group), ascending, then the row's own:
+    the decode step's list, ties included."""
+    from engine.models.flashnext.ref import topk_stable
+    g = torch.Generator().manual_seed(41)
+    n = 0
+    for G in (600, 2000):
+        logit = torch.randint(0, 40, (6, G + 1), generator=g).float() / 7          # many ties
+        qg = torch.tensor([G, G - 1, G - 5, 511, 512, (G + 512) // 2])
+        got = E.pick_positions(logit, qg, 512, 4)
+        for r in range(6):
+            q = int(qg[r])
+            top = topk_stable(logit[r, :q], 511)[1].sort().values
+            want = (torch.cat((top, torch.tensor([q]))).unsqueeze(-1) * 4 + torch.arange(4)).flatten()
+            assert torch.equal(got[r].long(), want), (G, r)
+            n += 1
+    return f"{n} rows over 600 and 2,000 groups with tied scores: the stable sort's 511 groups and the own group"
+
+
 def test_capacity_is_checked():
     cfg, ref, eng = tiny()
     st = eng.new_state(12)

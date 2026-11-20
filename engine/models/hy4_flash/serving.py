@@ -356,6 +356,7 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
     eng.prefill_experts = _S.get("HY4_PREFILL_EXPERTS")
     if eng.prefill_experts not in ("group", "rows"):
         raise ValueError(f"QWEN38_HY4_PREFILL_EXPERTS={eng.prefill_experts!r}: group or rows")
+    eng.prefill_v2 = _S.get("HY4_PREFILL_V2") == "1"
     srv = Hy4FlashServing(eng, max_len)
     mark("engine")
     res = None

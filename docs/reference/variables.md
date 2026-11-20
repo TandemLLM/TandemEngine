@@ -367,6 +367,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QWEN38_HY4_GRAPHS` | `1` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_PREFILL_EXPERTS` | `group` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_PREFILL_GROUPED` | `1` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_PREFILL_V2` | `0` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_ROW_TORCH` | `0` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_TABLE` | `cold` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_TABLE_CACHE_GB` | `2` | `engine/models/hy4_flash/serving.py` |

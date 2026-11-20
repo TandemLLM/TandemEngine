@@ -257,6 +257,18 @@ def test_the_price_class_follows_the_context():
     return f"dense below {k} rows: class 0; then the next 4,096 x 2^k, up to 262,144; the frozen cut is priced in all {len(PRICE_CLASSES)}"
 
 
+def test_the_caches_give_a_cold_read_on_the_v2_prompt_pass():
+    """SPD-323, SPD-325: on the prompt pass on fixed-order kernels (HY4_PREFILL_V2) the resident prefix, the disk tier
+    after a restart and the session spill each give back what a cold prompt read on that pass writes, bit for bit."""
+    serving()
+    _E[0].prefill_v2 = True
+    try:
+        return "; ".join(f() for f in (test_the_resident_prefix_resumes_exactly, test_the_disk_tier_round_trips_after_a_restart,
+                                        test_the_session_spill_round_trips))
+    finally:
+        _E[0].prefill_v2 = False
+
+
 def test_the_fingerprint_covers_the_kernels_the_family_compiles():
     # the packed value half is built on tools/fn_kernels' source (compiled in): a change there, in the EXL3
     # helpers it reads or in the family's own kernel moves this family's fingerprint
