@@ -230,6 +230,27 @@ def test_the_price_class_follows_the_context():
     assert frozen and all(cut.draft.get(c, 0) > 0 and pm.prior(6, "chain", c) > pm.prior(1, "chain", c) > 0
                           and cut.spec_ms(c) < cut.plain_ms(c) for c in PRICE_CLASSES), cut.draft
     assert priced_cut(PriceModel(), siblings=False, freeze=True)[1] is False          # no file: the cut learns
+    # the profile that names the price file: the family's running one, else the pack's own bit rate, else its folder
+    import json
+    from engine.models.hy4_flash.serving import profile_of
+    was = os.environ.pop("QSE_WEIGHTS", None)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            pack = os.path.join(d, "somewhere")
+            os.makedirs(pack)
+            assert profile_of(pack) == "hy4-somewhere"
+            with open(os.path.join(pack, "config.json"), "w") as f:
+                json.dump({"quantization_config": {"bits": 3.08}}, f)
+            assert profile_of(pack) == "hy4-3.08"
+            os.environ["QSE_WEIGHTS"] = "flashnext-3.05"
+            assert profile_of(pack) == "hy4-3.08"                      # another model's profile is not this pack's
+            os.environ["QSE_WEIGHTS"] = "hy4-custom"
+            assert profile_of(pack) == "hy4-custom"
+    finally:
+        os.environ.pop("QSE_WEIGHTS", None)
+        if was is not None:
+            os.environ["QSE_WEIGHTS"] = was
+    assert os.path.isfile(os.path.join(root, "ops", "prices", "hy4-flash", "hy4-3.08.dgx-spark.json"))
     return f"dense below {k} rows: class 0; then the next 4,096 x 2^k, up to 262,144; the frozen cut is priced in all {len(PRICE_CLASSES)}"
 
 

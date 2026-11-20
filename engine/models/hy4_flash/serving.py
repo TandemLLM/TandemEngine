@@ -16,6 +16,7 @@ recurrent state's. A verify block writes neither: its rows sit in scratch buffer
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
@@ -312,8 +313,20 @@ def _tensors(o) -> list:
 
 
 def profile_of(path: str) -> str:
-    """The weight profile a pack is served as: the running one (QSE_WEIGHTS), else hy4-<dir>."""
-    return os.environ.get("QSE_WEIGHTS") or "hy4-" + os.path.basename(os.path.normpath(path))
+    """The weight profile a pack is served as (it names the pack's price file): the running one when it is one of
+    this family's (QSE_WEIGHTS=hy4-...), else the pack's own bit rate (`quantization_config.bits`: hy4-3.08), else
+    hy4-<dir>. A start that sets no profile, or runs under another model's, still finds the pack's prices."""
+    env = os.environ.get("QSE_WEIGHTS") or ""
+    if env.startswith("hy4-"):
+        return env
+    try:
+        with open(os.path.join(path, "config.json")) as f:
+            bits = (json.load(f).get("quantization_config") or {}).get("bits")
+        if bits is not None:
+            return f"hy4-{float(bits):g}"
+    except (OSError, ValueError, TypeError):
+        pass
+    return "hy4-" + os.path.basename(os.path.normpath(path))
 
 
 def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print, device: str | None = None, check: bool = True):
