@@ -19,6 +19,8 @@ conductor's plan are the pair test `test_the_table_under_a_plan` in tests/test_c
 Run:  python tests/test_effort_table.py
       python tests/test_effort_table.py --write FILE [--made-on ENGINE_COMMIT] [--tandemapp COMMIT] [--with-plan]
       python tests/test_effort_table.py --families qwen3_5,lfm2_moe     (check those families' rows only)
+      python tests/test_effort_table.py --fixture FILE                   (check against another fixture)
+Each check prints one line a family: the rows it compared and the pinned rows it skipped.
 `--write` writes this tree's rows; `--with-plan` adds the plan rows (it needs TandemApp at TANDEMAPP_SRC).
 """
 
@@ -203,17 +205,33 @@ def _load() -> dict:
         return json.load(fh)
 
 
-def _diff(want: dict, got: dict, only=None) -> list[str]:
-    bad = []
+def _check(want: dict, got: dict, families) -> tuple[list[str], dict]:
+    """Every pinned row of `families` against this tree's row, and every row this tree serves for them that is not
+    pinned. Returns (what differs, {family: [compared, skipped]}); a skipped row is a pinned row of a family not
+    checked."""
+    bad, counts = [], {}
     for k in sorted(want):
-        if only is not None and k.split("|", 1)[0] not in only:
+        fam = k.split("|", 1)[0]
+        c = counts.setdefault(fam, [0, 0])
+        if fam not in families:
+            c[1] += 1
             continue
+        c[0] += 1
         if k not in got:
-            bad.append(f"{k}: not served on this tree")
+            bad.append(f"{k}: pinned, not served on this tree")
         elif got[k] != want[k]:
             fields = sorted(f for f in set(want[k]) | set(got[k]) if want[k].get(f) != got[k].get(f))
             bad.append(f"{k}: " + "; ".join(f"{f} {want[k].get(f)!r} -> {got[k].get(f)!r}" for f in fields))
-    return bad
+    for k in sorted(got):
+        if k.split("|", 1)[0] in families and k not in want:
+            bad.append(f"{k}: served on this tree, not pinned")
+    return bad, counts
+
+
+def _say(kind: str, counts: dict) -> None:
+    """One line a family: the rows a check compared and the pinned rows it skipped."""
+    for fam in sorted(counts):
+        print(f"  [{kind}] {fam}: {counts[fam][0]} rows compared, {counts[fam][1]} skipped", flush=True)
 
 
 #: --families: the families a check reads (the others' rows are not compared)
@@ -227,7 +245,8 @@ def test_the_table_without_a_plan():
     missing = sorted(only - pinned)
     assert not missing, f"no pinned rows for {missing}: write them (--write) on the tree they record"
     got = rows(sorted(only))
-    bad = _diff(want, got, only)
+    bad, counts = _check(want, got, only)
+    _say("table", counts)
     assert not bad, f"{len(bad)} rows moved:\n" + "\n".join(bad[:40])
     return f"{sum(1 for k in want if k.split('|', 1)[0] in only)} rows, {len(only)} families"
 
@@ -244,7 +263,8 @@ def test_the_real_hy4_template():
     if ONLY is not None and "hy_v4_flash" not in ONLY:
         return "not checked (--families)"
     assert pinned, "no pinned real-template rows: write them (--write with HY4_TOKENIZER set)"
-    bad = _diff(pinned, got)
+    bad, counts = _check(pinned, got, {"hy_v4_flash"})
+    _say("real", counts)
     assert not bad, f"{len(bad)} rows moved:\n" + "\n".join(bad[:40])
     return f"{len(got)} rows on the pack's template"
 
@@ -277,6 +297,7 @@ if __name__ == "__main__":
             return val
         return default
 
+    FIXTURE = opt("--fixture", FIXTURE)
     fams = opt("--families")
     fams = set(fams.split(",")) if fams else None
     target = opt("--write")

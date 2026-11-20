@@ -823,8 +823,10 @@ def test_the_table_under_a_plan():
     with open(table.FIXTURE) as fh:
         want = json.load(fh).get("plan_rows") or {}
     assert want, "no pinned plan rows: write them (python tests/test_effort_table.py --write FILE --with-plan)"
-    got = table_under_a_plan(sorted({k.split("|", 1)[0] for k in want}))
-    bad = table._diff(want, got)
+    families = sorted({k.split("|", 1)[0] for k in want})
+    got = table_under_a_plan(families)
+    bad, counts = table._check(want, got, set(families))
+    table._say("plan", counts)
     assert not bad, f"{len(bad)} rows moved:\n" + "\n".join(bad[:40])
     return f"{len(want)} rows"
 
