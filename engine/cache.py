@@ -3714,8 +3714,10 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
         if (res.solo and not own and conv_id is not None and conv_id != res.owner and store is not None
                 and store.holds(conv_id)):
             # INTERIM (SRV-907, `solo`; deleted with the capability when the family builds side slots): on
-            # one lane a second chat the store remembers takes the lane, as a side slot would give it one;
-            # the conversation in place is parked or written to the NVMe first (`begin`), never cut
+            # one lane a second chat the store remembers takes the lane, as a side slot would give it one.
+            # The conversation in place goes to the park or the NVMe first when it is long enough for them
+            # (`begin`: the park takes a chunk or more, the spill its `min_tokens`); a shorter one keeps only
+            # what the store holds of it
             stay = True
         # decided before any row is written: a guest's stash must hold the rows as they are now
         res.begin(eng, drafter, keys, start, c, kind, session=conv_id, compacting=compacting,

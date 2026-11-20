@@ -40,12 +40,16 @@ The window is 262,144 tokens. Both packs ran at it through the server, and a run
 
 Reading a prompt is slow: about 140 tok/s through the server, so the first token of a 3,565-token prompt came after 23.6 to 31.5 s. A 262,144-token prompt took 1,735 s (151 tok/s) in the bare engine, on an older row path.
 
-The caches restore exactly, but on a chat they save less than on other models. The state store, the disk tier and the session spill each give back the state a cold prefill writes, bit for bit. Four limits come with them:
+A chat keeps its state between turns in the same caches as on other models. Anchors, prefix snapshots in the state store, the disk tier and the session spill give back the state a cold prefill writes, bit for bit. A turn that resumes at the end of the last answer, at the end of the last prompt or from a session snapshot passes a weaker test, as on every model: it must write the same greedy tokens (`docs/exactness.md`). Here is how the caches fit this model:
 
-- With thinking on, the next turn of a chat reads the whole history again. The saved state holds the thinking tokens, and the next prompt leaves them out, so the two do not match. With thinking off, turn 2 of a short chat resumed 127 of its 150 prompt tokens.
-- The resident prefix keeps nothing between turns on this model. The server logs `end anchor not kept (guest)`.
-- Anchors sit every 4,096 tokens, so the engine reads a repeated prompt shorter than that again in full.
+- A turn that holds the chat's whole last prompt never runs as a guest. A guest is a short request served over a chat's rows, which go back afterwards, and it keeps nothing. With thinking on and no tools the template drops the last answer's reasoning, so the next prompt holds only the last prompt. That turn resumes at the end of the last prompt and reads the last answer and the new message. With thinking off, or with tools when the client sends the reasoning back, a turn resumes at the end of the last answer and reads only the new message.
+- The conductor's own questions run as guests of the chat at any length. They keep no session snapshot, and the chat keeps its end.
+- The engine cuts a prompt without a conductor plan where its first user turn starts, when its system turn holds at least 256 tokens. The state store keeps the state at that row, and the next prompt with the same system turn resumes there. The conductor's helper question now reads its 2,345-token head once after a start, not on every call. Past that row anchors sit every 4,096 tokens, and the disk tier keeps only the anchors before it.
+- The end of the last prompt lives in the lane only. A chat with thinking on and no tools that loses the lane reads itself again once when it comes back, from its first user turn on.
+- Until this family builds side slots, two chats share the one lane. A chat with an entry in the state store takes the lane, and the chat in place goes to the park or to the NVMe. A chat under 4,096 tokens is too short for both. Its next turn then resumes from its session snapshot in the state store when the prompt holds the last answer, and otherwise reads the chat again. This rule goes away with the side slots.
 - After a restore the first round drafts nothing, and drafting resumes on the next round.
+
+None of these resumes has run on the device yet, on either pack.
 
 Hy4-flash needs its chat template. It always opens with a system turn that carries `reasoning_effort:<mode>`. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. For now the engine uses one thinking mode, the template's `high`, and maps every request onto it or onto `no_think`. This effort handling is being moved onto the engine's shared effort policy, so the table below describes this build only:
 
