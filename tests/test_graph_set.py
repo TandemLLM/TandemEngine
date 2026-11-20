@@ -7,7 +7,8 @@ unreleasable), every capture since the start still alive; MemAvailable was 9 GiB
 `memory is full`. Nothing ever reset a slot's lazily captured graphs.
 
   * a graph set leases its capture stream at its first capture and keeps it for its life; a drop resets every graph
-    in it and leaves the counting of the reset to its caller, after the allocator gave the pools back;
+    in it and leaves the counting of the reset to its caller, after the allocator gave the pools back; ENG-485: its
+    one shared memory pool is made when first asked, kept until a drop and made anew after it;
   * every capture in engine/models/flashnext/engine.py names a real stream (`capture_stream`); a state without a set
     captures on torch's stream as before; a decode capture that fails leaves the capture stream and the state as
     they were, its graph kept for its slot's drop;
@@ -96,6 +97,29 @@ def test_a_set_keeps_its_one_stream_and_a_drop_resets_every_graph():
         assert not gs.dropped and gs.t_used > 0
         assert gs.stream() is s and len(made) == 1 and gs.holding
     return "one stream for the slot's life; a drop resets each graph once and counts nothing itself"
+
+
+def test_a_graph_set_keeps_one_pool_until_a_drop():
+    """ENG-485: `pool()` gives one memory pool for the slot's captures, the same handle until a drop, a new one after
+    it; a set that is never asked makes none (a family that does not opt in captures as before)."""
+    made = []
+    real = torch.cuda.graph_pool_handle
+    torch.cuda.graph_pool_handle = lambda: made.append(object()) or made[-1]
+    try:
+        with _streams():
+            idle, gs = GraphSet(), GraphSet()
+            idle.stream()
+            p = gs.pool()
+            assert gs.pool() is p and gs.pool() is p and len(made) == 1
+            gs.stream()
+            assert gs.drop([]) == 0
+            q = gs.pool()
+            assert q is not p and gs.pool() is q and len(made) == 2
+            idle.drop([])
+            assert len(made) == 2 and idle._pool is None, "a set that never asked makes none"
+    finally:
+        torch.cuda.graph_pool_handle = real
+    return "one handle until a drop, a new one after; none unasked"
 
 
 def test_lru_puts_the_oldest_round_first_and_skips_sets_without_graphs():
