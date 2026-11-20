@@ -34,6 +34,8 @@ KNOBS: dict[str, tuple] = {
     # SPD-323, SPD-325: the prompt pass on fixed-order kernels (1): attention on `mla_rows`, the hyper-connections, norms
     # and small sums on the row kernels, the indexer on `mm` and the shared block select: its own bits. By construction a
     # row's bits depend on its chunk only through the trunk's projections (tools/hy4_check.py --only v2-cuts checks it), and
-    # a one-row forward past row 0 is still a decode step. 0: the pass before. One knob for the flip, kept as the way back
-    'HY4_PREFILL_V2': ('0', 'engine/models/hy4_flash/serving.py'),
+    # a one-row forward past row 0 is still a decode step. On by default (SPD-327): on the 3.56 pack a 3,565-token chat's
+    # first token after 4.9 to 6.6 s against 13.3 to 13.7 s, the cache tiers equal to a cold read, chat2048 KL 0.1015
+    # against 0.1009. 0: the pass before, kept as the way back
+    'HY4_PREFILL_V2': ('1', 'engine/models/hy4_flash/serving.py'),
 }
