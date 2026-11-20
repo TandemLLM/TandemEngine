@@ -10,6 +10,8 @@
   dfly         the same continuation in drafted rounds (the DFly2 head, the best token a depth as a chain
                block): equal tokens, tokens a second, kept tokens a round (--dfly)
   fit          a prompt of --fit tokens: seconds, the state's bytes, the device's memory before and after
+  prefill-digest  (--only) the prompt pass's record: digests of the last row's logits, the last chunk's head inputs
+               and the state, for every expert path of --digest-arms (all equal), against a recorded file
 
 The prompt is synthetic unless --text names a file the pack's tokenizer reads. For a tiny rehearsal pack whose
 config names no draft targets, --dfly-layers and --mask-id give them.
@@ -518,6 +520,73 @@ def dfly_source(W: dict, src: str, device) -> int:
     return n
 
 
+def _sha(t: torch.Tensor) -> str:
+    """sha256 of a tensor's bytes as stored, its shape included."""
+    import hashlib
+    t = t.detach().contiguous().cpu()
+    return hashlib.sha256(repr(tuple(t.shape)).encode() + t.view(torch.uint8).numpy().tobytes()).hexdigest()
+
+
+ESSAY_ASK = ("Write a detailed essay of at least 700 words that explains the text above to a newcomer. "
+             "Use plain prose paragraphs only: no lists, no tables, no headings, no code.")
+
+
+def prefill_digest(a, eng, cfg, say) -> bool:
+    """SPD-317 (the prefill design's S0.2): Hy4's record of the prompt pass. For each prompt (--digest-text: its first
+    --digest-rows token ids raw, in the engine's chunks; --digest-chat: a chat request, the pack's template, thinking
+    off) and each arm of --digest-arms: the sha256 of the last row's logits, of every head input of the last chunk,
+    and of the state after it (lat_all, ik_all, win_all, hist, gk_all up to the length). Every arm of a prompt must give
+    the same digests; --digest-out writes them, --digest-against compares them with a file recorded before."""
+    import hashlib
+    from tools.hy4_prefill_profile import set_arm
+    prompts = []
+    if a.digest_text:
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+        ids = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids[:a.digest_rows]
+        if len(ids) < a.digest_rows:
+            raise SystemExit(f"--digest-text holds {len(ids)} tokens, --digest-rows asks for {a.digest_rows}")
+        prompts.append(("text", ids))
+    if a.digest_chat:
+        ids, _ = chat_ids(a.pack, open(a.digest_chat).read(), ESSAY_ASK)
+        prompts.append(("chat", ids))
+    if not prompts:
+        raise SystemExit("prefill-digest: --digest-text or --digest-chat")
+    rr, out, ok = cfg.index_kpool, {}, True
+    for name, ids in prompts:
+        per = {}
+        for arm in a.digest_arms.split(","):
+            set_arm(eng, arm)
+            st = eng.new_state(len(ids) + 64)
+            eng.prefill(torch.tensor(ids), st, head=None)
+            sync(a.device)
+            n = st.length
+            d = {"logits_last": _sha(eng.head(eng.prompt_hidden[-1:])), "head_inputs_last_chunk": _sha(eng.prompt_hidden),
+                 "lat_all": _sha(st.lat_all[:, :n]), "ik_all": _sha(st.ik_all[:, :n]), "win_all": _sha(st.win_all),
+                 "hist": _sha(st.hist), "gk_all": _sha(st.gk_all[:, :n // rr])}
+            per[arm] = d
+            say("prefill_digest", prompt=name, arm=arm, rows=n, last_chunk_rows=int(eng.prompt_hidden.shape[0]),
+                ids_sha256=hashlib.sha256(json.dumps(ids).encode()).hexdigest(), **d)
+            del st
+        arms = list(per)
+        same = all(per[x] == per[arms[0]] for x in arms)
+        ok = ok and same
+        say("prefill_digest_arms", prompt=name, arms=arms, equal=same,
+            differing={x: sorted(k for k in per[x] if per[x][k] != per[arms[0]][k]) for x in arms[1:]})
+        out[name] = per[arms[0]]
+    if a.digest_out:
+        with open(a.digest_out, "w") as f:
+            json.dump({"pack": a.pack, "digests": out}, f, indent=1, sort_keys=True)
+    if a.digest_against:
+        want = json.load(open(a.digest_against))["digests"]
+        for name, d in out.items():
+            w = want.get(name)
+            bad = None if w is None else sorted(k for k in set(w) | set(d) if w.get(k) != d.get(k))
+            ok = ok and w is not None and not bad
+            say("prefill_digest_against", prompt=name, recorded=w is not None, equal=w is not None and not bad, differing=bad)
+    return ok
+
+
 def profile(a, eng, cfg, ids, say) -> None:
     """One decode step and one 6-row block taken apart: exclusive wall time a part, launched one by one with a
     device sync around every part (so the parts add up; a graph's replay of the same pass is given beside them)."""
@@ -676,7 +745,14 @@ def main() -> int:
     ap.add_argument("--prose", help="a text file: a chat request to answer it in prose, decode rates from token 50 on")
     ap.add_argument("--answer", type=int, default=600)
     ap.add_argument("--profile", action="store_true", help="one decode step and one drafted round taken apart by part")
-    ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit)")
+    ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit,"
+                                   "prefill-digest)")
+    ap.add_argument("--digest-text", help="prefill-digest: a text file, its first --digest-rows token ids raw")
+    ap.add_argument("--digest-rows", type=int, default=8192)
+    ap.add_argument("--digest-chat", help="prefill-digest: a text file, as a chat request (the essay ask, thinking off)")
+    ap.add_argument("--digest-arms", default="grouped", help="prefill-digest: comma list of the expert paths (pair, grouped)")
+    ap.add_argument("--digest-out", help="prefill-digest: write the digests to this JSON file")
+    ap.add_argument("--digest-against", help="prefill-digest: compare with a JSON file --digest-out wrote")
     ap.add_argument("--need-gib", type=float, default=0.0, help="refuse to load below this MemAvailable")
     ap.add_argument("--cache-chunk", type=int, default=512)
     ap.add_argument("--skip-tolerance", action="store_true")
@@ -854,6 +930,8 @@ def main() -> int:
             agree_steps=round((got[cut:].argmax(-1) == rw[cut:].argmax(-1)).float().mean().item(), 4),
             fused=bool(getattr(eng, "fused", False)), banks=len(getattr(eng, "banks", {})))
 
+    if only is not None and "prefill-digest" in only:
+        res["ok"] = prefill_digest(a, eng, cfg, say) and res["ok"]
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
     if a.prices_at and want("prices"):

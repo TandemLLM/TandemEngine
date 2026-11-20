@@ -1,6 +1,7 @@
 """The Hy4-flash engine on a tiny random model, on the CPU: the row path and the prefill against the
 reference forward, a verify block's rows against the decode step's (bit for bit), trees, commit of a moved
-path, rollback, and the rings, groups and read lists past their first wrap."""
+path, rollback, and the rings, groups and read lists past their first wrap. The tiny byte gate (SPD-317) holds the
+bytes of a fixed script against a host's recorded digests (tests/byte_pins.py)."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from engine.models.hy4_flash import engine as E  # noqa: E402
 from engine.models.hy4_flash.ref import Hy4FlashRef, Hy4State  # noqa: E402
 from tests.hy4_tiny import random_weights, tiny_config  # noqa: E402
@@ -189,6 +191,46 @@ def test_bf16_engram_rows_follow_the_reference_norm():
     d = ((step - full).abs().mean() / full.abs().mean()).item()
     assert d < 0.05, d
     return f"rows of rms 0.05: the row form against the reference's {rel:.4f}; a step against the prompt pass's row {d:.4f} of the mean logit size"
+
+
+def byte_gate_run(eng=None) -> dict:
+    """SPD-317 (S0.5): one fixed script on the tiny model in BF16, every logit and every stored tensor as a digest: a
+    120-row prompt in chunks of 16, six decode steps, a tree block with a wrong branch, its commit and one more step."""
+    from byte_pins import digest
+    if eng is None:
+        cfg = tiny_config()
+        W, tables = random_weights(cfg)
+        eng = E.Hy4FlashEngine(cfg, W, tables, dtype=torch.bfloat16, max_len=256)
+    g = torch.Generator().manual_seed(17)
+    toks = torch.randint(4, 60, (140,), generator=g)
+    st = eng.new_state()
+    out = {}
+    old = E.PREFILL_CHUNK
+    E.PREFILL_CHUNK = 16
+    try:
+        out["prefill"] = eng.prefill(toks[:120], st, head="all")
+    finally:
+        E.PREFILL_CHUNK = old
+    out["prompt_hidden"] = eng.prompt_hidden
+    for i in range(6):
+        out[f"step{i}"] = eng.step(int(toks[120 + i]), st)
+    t = toks[126:130].tolist()
+    lg, hid = eng.rows([t[0], (t[1] + 1) % 64, t[2], t[1], t[2]], [-1, 0, 1, 0, 3], st)
+    out["tree"], out["tree_hidden"] = lg, hid
+    eng.commit(st, [0, 3, 4])
+    out["after_commit"] = eng.step(int(toks[130]), st)
+    n = st.length
+    out.update(lat=st.lat_all[:, :n], ik=st.ik_all[:, :n], win=st.win_all, hist=st.hist, gk=st.gk_all[:, :n // eng.cfg.index_kpool])
+    return {k: digest(v) for k, v in out.items()}
+
+
+def test_the_tiny_byte_gate():
+    """The prompt pass, decode, a tree and a commit keep their bytes across a change that must not move them (the
+    form of tests/test_refactor_gate.py; recorded on the tree before the prefill steps, tests/byte_pins.py)."""
+    from byte_pins import check
+    got = byte_gate_run()
+    assert got == byte_gate_run(), "two runs in one process differ: the gate cannot work"
+    return check("hy4_byte_gate.json", "tiny_bf16", got)
 
 
 def test_capacity_is_checked():
