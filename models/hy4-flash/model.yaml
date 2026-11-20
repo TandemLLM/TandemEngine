@@ -6,7 +6,7 @@
 # pack. disk_gb: the repository's bytes / 1e9 with the four Engram tables (40.92 GB, the same files in both packs).
 # table: the Engram tables, read past the page cache through a 2 GiB hot-row cache. max_window: both packs were
 # served at 262,144 tokens (the 3.08 pack also filled to 262,144 real tokens); the checkpoint reads 1,048,576, which
-# is not tested. One chat at a time: the family builds no side slots yet. Quality: our KL runs against the
+# is not tested. Up to 8 lanes, each the full window on the KV pool, taking turns (no joint pass yet). Quality: our KL runs against the
 # unquantized checkpoint. The measured table is empty: the served speeds so far are one chat request each, not the
 # table's shape, and are in the profile notes with their setup.
 schema: 1

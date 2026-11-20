@@ -1,6 +1,6 @@
 # Hy4-flash
 
-Tencent's Hy4-flash has about 220B parameters, and 64B of them are Engram n-gram tables. About 11B run for each token. The engine serves it from two of our EXL3 packs on one DGX Spark, one chat at a time, text only. This page lists what the engine does with it, the limits a user meets, and what is not measured yet.
+Tencent's Hy4-flash has about 220B parameters, and 64B of them are Engram n-gram tables. About 11B run for each token. The engine serves it from two of our EXL3 packs on one DGX Spark, up to 8 chats at once on lanes that take turns, text only. This page lists what the engine does with it, the limits a user meets, and what is not measured yet.
 
 ## The model
 
@@ -34,7 +34,7 @@ Each KL column compares a pack with the unquantized BF16 checkpoint (revision `d
 
 ## Limits
 
-One chat at a time. This family builds no side slots yet, so the Setup Guide caps the lanes at 1 and a second request waits in the queue. While the request ahead is inside its reasoning block, the waiting line and the live view say "another request is thinking". The state takes no KV pool pages, so the profiles run with the pool off.
+Up to 8 chats at once (ENG-485). Each lane is a side slot with the whole 262,144-token window on the shared KV pool: a lane's latents and indexer keys take pages only for the rows it holds, and an idle conversation goes to the park and the NVMe spill under memory pressure. The lanes take turns, a whole round each, with no joint pass yet, so two chats at once share the decode rate. How the lanes measure is not recorded yet.
 
 The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
 
@@ -47,7 +47,6 @@ A chat keeps its state between turns in the same caches as on other models. Anch
 - The engine cuts a prompt without a conductor plan where its first user turn starts, when its system turn holds at least 256 tokens. The state store keeps the state at that row, and the next prompt with the same system turn resumes there. The conductor's helper question then reads its system turn again only when the store does not hold it: after a start, and after the memory policy shed the store, which is the first cache it sheds. Two prompts whose system turns share 256 tokens or more count as one prompt's head, and the newer takes the older's place at the back of the store's eviction order. Past the mark anchors sit every 4,096 tokens. With a mark under 4,096 tokens the disk tier keeps no anchor of that prompt: it writes only the 4,096-token lines below the mark.
 - A state store entry holds up to 0.25 GiB on this model, a prompt of about 11,000 tokens, unless the start sets `--store-entry-gb`.
 - The end of the last prompt lives in the lane only. A chat with thinking on and no tools that loses the lane reads itself again once when it comes back, from its first user turn on.
-- Until this family builds side slots, two chats share the one lane. A chat with an entry in the state store takes the lane when the park or the NVMe can take the chat in place: the park from 4,096 tokens above what the two chats share, the NVMe from the spill's minimum, 16,384 tokens by default. Otherwise the new chat runs as a guest, as before. A chat whose prompt matches its own session snapshot resumes from the store in any case; the chat in place then goes to the NVMe only from the spill's minimum, and below it the engine drops it, as on every model. This rule goes away with the side slots.
 - A resumed prefill forwards at least one row, which reads the draft head's picks again, so the first round after the engine resumes can draft. The `[drafter]` line counts the rounds that drafted nothing because the picks were stale (`stale=`, since the start). No device run has read that count yet.
 
 None of these resumes has run on the device yet, on either pack.
