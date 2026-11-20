@@ -735,6 +735,87 @@ def test_the_request_keys_line_shows_the_shapes():
     assert '"enable_thinking": false' in line, line
 
 
+# ------------------------------------------------------------------ 10. the effort table under a plan
+
+#: SRV-899: the plans the effort table runs under (tests/test_effort_table.py): one that does not decide the effort,
+#: and one that does for each class level, under the profile's two `client_word` rules
+PLANS = [("decides=no", None, False, "ceiling")] + [
+    (f"{lv}/{rule}", cap, True, rule)
+    for lv, cap in (("low", 1024), ("medium", 8192), ("high", 16384), ("xhigh", None))
+    for rule in ("ceiling", "ignore")]
+PLAN_REQUESTS = ("nothing", "enable_thinking=false", "reasoning_effort=low", "reasoning_effort=high",
+                 "reasoning_effort=xhigh", "reasoning_effort=max", "max_reasoning_tokens=512")
+PLAN_DEFAULTS = (None, "xhigh", "off")
+PLAN_LIMIT = 160
+
+
+def _table_handler(spec, body: dict, cond, default):
+    """One request under `cond`'s plan with `spec` in force and `default` as the server's effort (off: thinking
+    off for a request that says nothing): the template calls, the loop's calls, the log, the status line."""
+    import test_effort_table as table
+    serve(None)
+    tok = table.Recorder(frame.MonTok())
+    app.STATE.update(tok=tok, think_budget=0, spec=spec, conductor=cond, monitor=frame.monitor("on"),
+                     reasoning_effort=None if default == "off" else default,
+                     thinking_default="off" if default == "off" else "on")
+    req = Req("/v1/chat/completions", body)
+    out = io.StringIO()
+    with _Spy() as spy, logbuf_capture(out):
+        head, _ = req.response()
+    return tok.calls, spy.calls, out.getvalue(), head
+
+
+def table_under_a_plan(families=None) -> dict:
+    """The effort table's rows under a plan, for every family (or `families`), by its own spec: what
+    tests/test_effort_table.py pins without a plan, and the monitor's cap and the journal row's budget fields."""
+    import copy
+
+    import test_effort_table as table
+    reqs = dict(table.REQUESTS)
+    out, done = {}, {}
+    was = _Conductor.client_word
+    try:
+        for name in sorted(families or table.REGISTRY):
+            spec = table.REGISTRY[name].spec
+            for default in PLAN_DEFAULTS:
+                for label in PLAN_REQUESTS:
+                    for plan_label, cap, decides, rule in PLANS:
+                        k = table.key(name, label, default, PLAN_LIMIT, plan_label)
+                        memo = (spec, default, label, plan_label)
+                        if memo in done:          # the server reads the family's spec alone: an equal spec, one row
+                            out[k] = done[memo]
+                            continue
+                        _Conductor.client_word = rule
+                        cond = _Conductor(cap, decides)
+                        body = dict(copy.deepcopy(reqs[label]), messages=copy.deepcopy(table.MESSAGES),
+                                    max_tokens=PLAN_LIMIT, stream=False)
+                        calls, loop, log, head = _table_handler(spec, body, cond, default)
+                        seen = [{"budget": c["budget"], "max_new": c["max_new"], "prompt": c["prompt"],
+                                 "sup": c["sup"] is not None} for c in loop]
+                        row = table.row_of(calls, seen, log, head)
+                        sup = loop[0]["sup"] if loop else None
+                        row["monitor_cap"] = getattr(sup, "think_budget", None) if sup is not None else None
+                        extra = cond.plans[-1].row["extra"] if cond.plans else {}
+                        row["extra"] = {f: extra[f] for f in ("client_word", "client_budget", "json_reserve")
+                                        if f in extra}
+                        out[k] = done[memo] = row
+    finally:
+        _Conductor.client_word = was
+    return out
+
+
+def test_the_table_under_a_plan():
+    """SRV-899: the effort table's rows under a conductor's plan are the pinned ones."""
+    import test_effort_table as table
+    with open(table.FIXTURE) as fh:
+        want = json.load(fh).get("plan_rows") or {}
+    assert want, "no pinned plan rows: write them (python tests/test_effort_table.py --write FILE --with-plan)"
+    got = table_under_a_plan(sorted({k.split("|", 1)[0] for k in want}))
+    bad = table._diff(want, got)
+    assert not bad, f"{len(bad)} rows moved:\n" + "\n".join(bad[:40])
+    return f"{len(want)} rows"
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):
