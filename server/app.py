@@ -13673,6 +13673,27 @@ def _limits_at_start(a) -> None:
             print(f"[memory] the residency document's limits were not read: {exc}", flush=True)
 
 
+#: the memory limits a family's builder may set for its own pack (Hy4-flash: serving.memory_limits)
+BUILDER_LIMITS = ("mem_ceiling_gib", "mem_peak_gib")
+
+
+def _build_with_limits(build, a, ctx) -> dict:
+    """The model's builder; a memory limit it sets for its own pack becomes the flag the server falls back to.
+    A request's refresh of the residency limits (server/memlimits.py) and the memory panel read the flags as
+    started (STATE["serve_flags"], taken before the load): without this, the first request in chat mode took
+    the cache policy back to serve.env's 70 GiB under a Hy4-flash 3.56 load of 72.7 GiB, and every save was
+    refused. A key the residency document sets still wins over it."""
+    before = {d: getattr(a, d, None) for d in BUILDER_LIMITS}
+    m = build(a, ctx)
+    flags = STATE.get("serve_flags")
+    for d, was in before.items():
+        now = getattr(a, d, None)
+        if now != was and flags is not None:
+            flags[d] = now
+            print(f"[memory] {d} {was:g} -> {now:g}: the model's own limit for its pack", flush=True)
+    return m
+
+
 def _window_at_start(a) -> None:
     """SRV-335: a --max-len above the served profile's largest window (QSE_WEIGHTS, its registry
     entry's `max_window`) stops the start here, before the minutes of loading, naming both numbers.
@@ -13807,7 +13828,7 @@ def _load(a) -> None:
     build = arch.serve_builder()
     if build is None:
         raise SystemExit(f"[server] the {arch.name} family names no builder (engine/models: Arch.serve)")
-    m = build(a, ctx)
+    m = _build_with_limits(build, a, ctx)
     eng, tok, drafter = m["engine"], m["tok"], m["drafter"]
     global IDLE_CAPTURE_FAILED
     IDLE_CAPTURE_FAILED = _idle_capture_failed(eng)         # SPD-271: `graphs_once` prints it once, no traceback
