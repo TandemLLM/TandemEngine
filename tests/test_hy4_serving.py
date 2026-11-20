@@ -355,7 +355,7 @@ def test_the_packs_limits_reach_the_cache_policy():
 
 _E32 = []
 #: a family's capabilities -> the resident prefix's arguments, as server/app.py `_load_caches` passes them
-CAPS_ARGS = (("chat_first", "chat_first"),)
+CAPS_ARGS = (("chat_first", "chat_first"), ("head_mark", "guest_store"))
 
 
 def serving32(max_len: int = 512) -> Hy4FlashServing:
@@ -642,6 +642,133 @@ def test_the_conductors_question_reaches_the_prefill_as_own():
     assert got["chat_first"] == ([True], ["prefix"], 0), got
     assert got["size rule"][0] == [False] and "session" in got["size rule"][1] and got["size rule"][2] > 0, got
     return f"{got}"
+
+
+# ------------------------------------------------------------------ the head mark (SRV-905)
+#: a grid wider than the prompts, as the family's 4,096-row grid is beside a 2,345-row question: no line
+#: below the head but its mark
+WIDE = 512
+#: the template's marks on the tiny vocabulary (64 ids; `tokens` draws 4..59): the turn opener, `user`, the end
+OPEN, USER, END, SYSTEM, ASSISTANT = 61, 62, 63, 60, 0
+
+
+class _MarksTok:
+    """A tokenizer that names its template's turn marks itself (`Hy4Tokenizer.template_marks`)."""
+
+    def template_marks(self):
+        return OPEN, [USER], END
+
+
+def _question(head_seed: int, user_seed: int, head: int = 300, user: int = 24) -> list[int]:
+    """The conductor's question in the template's turns: a system turn of `head` rows (its question and
+    options), then a user turn (the state) and the generation prompt."""
+    return ([OPEN, SYSTEM] + tokens(head, head_seed) + [END] + [OPEN, USER] + tokens(user, user_seed) + [END]
+            + [OPEN, ASSISTANT])
+
+
+class _marks:
+    """The server's view of this family for `_grid_mark`: its engine (the caps) and a tokenizer with marks."""
+
+    def __init__(self, eng, tok=None):
+        self.eng, self.tok = eng, tok if tok is not None else _MarksTok()
+
+    def __enter__(self):
+        from server import app
+        self.app, self.keep = app, dict(app.STATE)
+        app.STATE.update(engine=self.eng, tok=self.tok)
+        self.marks, app._CONV_MARKS = app._CONV_MARKS, None
+        return app
+
+    def __exit__(self, *exc):
+        self.app.STATE.clear()
+        self.app.STATE.update(self.keep)
+        self.app._CONV_MARKS = self.marks
+        return False
+
+
+def test_a_repeated_head_is_read_once():
+    """5.1 test 5: two prompts with the same system turn of at least 256 rows, through `_grid_mark` with the
+    family's marks: the second resumes at the mark, from the anchor in place and from the store, equal to a
+    cold read on the same grid. Before: no plan, no mark, and no line below the grid: `reused == 0`."""
+    a, b = _question(80, 81), _question(80, 82)
+    store = cache.StateStore(BIG, chunk=WIDE)
+    with _marks(serving32()) as app:
+        mark = app._grid_mark(None, torch.tensor(a), None)
+        assert mark == 303 == app._grid_mark(None, torch.tensor(b), None), mark
+        res, eng = _prefix(chunk=WIDE), serving32()
+        _turn(eng, res, a, 3, "a", store=store, chunk=WIDE, grid_mark=mark)
+        assert 303 in store.report()["boundaries"], store.report()
+        info: dict = {}
+        lg, reused, _ = cache.prefill(eng, None, b, "cpu", chunk=WIDE, resident=res, info=info, grid_mark=mark)
+        assert (info["kind"], reused) == ("resident", 303), (info, reused)
+        ref, ref_lg = _cold32(b, chunk=WIDE, grid_mark=mark)
+        _same(eng, ref, len(b), lg, ref_lg)
+        res, eng, info = _prefix(chunk=WIDE), serving32(), {}
+        lg, reused, _ = cache.prefill(eng, None, b, "cpu", chunk=WIDE, resident=res, store=store, info=info,
+                                      grid_mark=mark)
+        assert (info["kind"], reused) == ("prefix", 303), (info, reused)
+        _same(eng, ref, len(b), lg, ref_lg)
+    return f"the second prompt forwarded {len(b) - 303} of {len(b)} rows from the anchor and from the store"
+
+
+def test_the_conductors_question_beside_a_chat_stores_its_head_and_keeps_the_chats_end():
+    """5.1 test 6: a chat with a kept end is in place; the conductor's question with a head runs twice as its
+    guest. The first stores its head although the chat is tainted (its kept end); the second resumes from it and
+    leaves the end anchor (its stash holds every row the restore writes). The chat's next turn resumes at its
+    end. Before: no head was stored, and once one was, the hit dropped the end."""
+    store = cache.StateStore(BIG, chunk=WIDE)
+    q1, q2 = _question(90, 91), _question(90, 92)
+    with _marks(serving32()) as app, _prompt_end():
+        mark = app._grid_mark(None, torch.tensor(q1), None)
+        res, eng = _prefix(chunk=WIDE), serving32()
+        c1, _ = _turn(eng, res, tokens(40, 93), 20, "chat", store=store, chunk=WIDE)
+        e = res.end["at"]
+        assert res.taint is not None and e == len(c1) - 1, (res.taint, res.end)
+        _, t1 = _turn(eng, res, q1, 3, "q", own=True, store=store, chunk=WIDE, grid_mark=mark)
+        assert t1["guest"] and mark in store.report()["boundaries"], (t1, store.report()["boundaries"])
+        _, t2 = _turn(eng, res, q2, 3, "q", own=True, store=store, chunk=WIDE, grid_mark=mark)
+        assert t2["guest"] and (t2["kind"], t2["reused"]) == ("prefix", mark), t2
+        assert res.end is not None and res.end["at"] == e, res.end
+        _, t3 = _turn(eng, res, c1 + tokens(5, 94), 4, "chat", store=store, chunk=WIDE)
+    assert (t3["kind"], t3["reused"]) == ("end", e), t3
+    return f"the second question forwarded {t2['forwarded']} of {len(q2)} rows; the chat resumed at its end ({e})"
+
+
+def test_the_marks_and_the_mark_of_every_other_family_are_as_before():
+    """The marks lookup of a tokenizer without `template_marks` asks for Qwen's names, as before; `_grid_mark` on
+    an engine without `head_mark` gives a plan's mark or none, as before; with it, the plan's mark still wins."""
+    import types
+
+    from engine.models.adapter import Capabilities
+    from server import app
+
+    class Qwen:
+        unk_token_id = 0
+
+        def convert_tokens_to_ids(self, t):
+            return {"<|im_start|>": 10, "<|im_end|>": 11}.get(t, 0)
+
+        def encode(self, text, add_special_tokens=False):
+            return [12]
+
+    class Plain(Qwen):
+        def convert_tokens_to_ids(self, t):
+            return 0
+
+    assert app._marks_of(Qwen()) == (10, [12], 11) and app._marks_of(Plain()) is None
+    assert app._marks_of(_MarksTok()) == (OPEN, [USER], END)
+    a = torch.tensor(_question(95, 96))
+    plan = types.SimpleNamespace(head_end=40, head_ids=a[:40].tolist())
+    other = types.SimpleNamespace(head_end=40, head_ids=[1] * 40)
+    for caps, want in ((Capabilities(caches=True, side_slots=True), (None, 40, None, None)),
+                       (Hy4FlashServing.caps, (303, 40, 303, None))):
+        with _marks(types.SimpleNamespace(caps=caps)):
+            got = (app._grid_mark(None, a, None), app._grid_mark(plan, a, None), app._grid_mark(other, a, None),
+                   app._grid_mark(None, a, object()))
+        assert got == want, (caps, got, want)
+    short = torch.tensor([OPEN, SYSTEM] + tokens(100, 97) + [END, OPEN, USER, 9, END])
+    with _marks(types.SimpleNamespace(caps=Hy4FlashServing.caps)):
+        assert app._grid_mark(None, short, None) is None          # a head under 256 rows: no mark
 
 
 if __name__ == "__main__":

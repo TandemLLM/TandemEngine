@@ -873,7 +873,20 @@ _CONV_MARKS: tuple | None | bool = None
 
 def _marks_of(tok):
     """The template's marks from a tokenizer: (`<|im_start|>`, the ids of `user`, `<|im_end|>`),
-    or None when it has none."""
+    or None when it has none. SRV-905: a tokenizer whose template names its turn marks otherwise
+    gives them itself (`template_marks()`: the opener's id, the ids of `user`, the turn end's id); one
+    without the verb is asked for these names, as before."""
+    fn = getattr(tok, "template_marks", None)
+    if callable(fn):
+        try:
+            got = fn()
+            if not got:
+                return None
+            im_s, user, im_e = got
+            user = [int(t) for t in user]
+            return (int(im_s), user, int(im_e)) if user else None
+        except Exception:                                          # noqa: BLE001
+            return None
     try:
         im_s = tok.convert_tokens_to_ids("<|im_start|>")
         im_e = tok.convert_tokens_to_ids("<|im_end|>")
@@ -893,23 +906,37 @@ def _conv_marks():
     return _CONV_MARKS or None
 
 
+def _first_user(ids) -> int | None:
+    """Where a rendered prompt's first user message starts: the position of its `<|im_start|>`
+    followed by the ids of `user`. None when the template's marks are not known or the prompt has
+    no user message (`_conv_start`'s search; SRV-905: `_grid_mark`'s head)."""
+    marks = _conv_marks()
+    if marks is None:
+        return None
+    im_s, user, _ = marks
+    u = len(user)
+    try:
+        i = ids.index(im_s)
+        while True:
+            if list(ids[i + 1:i + 1 + u]) == user:
+                return i
+            i = ids.index(im_s, i + 1)
+    except Exception:                                              # noqa: BLE001
+        return None
+
+
 def _conv_start(ids) -> int | None:
     """Where a rendered prompt's conversation starts to be its own: the position just past the
     `<|im_end|>` of its first user message (`<|im_start|>user ... <|im_end|>`). Everything before
     is the client's head (its system prompt, its tools), which every chat of that client sends the
     same. Structure of the chat template, not content: None when the template's marks are not
     known or the prompt has no user message."""
-    marks = _conv_marks()
-    if marks is None:
+    i = _first_user(ids)
+    if i is None:
         return None
-    im_s, user, im_e = marks
-    u = len(user)
+    _, user, im_e = _conv_marks()
     try:
-        i = ids.index(im_s)
-        while True:
-            if list(ids[i + 1:i + 1 + u]) == user:
-                return ids.index(im_e, i + 1 + u) + 1
-            i = ids.index(im_s, i + 1)
+        return ids.index(im_e, i + 1 + len(user)) + 1
     except Exception:                                              # noqa: BLE001
         return None
 
@@ -2888,12 +2915,30 @@ def _sampled_q_free() -> bool:
 def _grid_mark(plan, prompt, mm) -> int | None:
     """SPD-249: the prefill's grid mark, the row where the plan's head notes end (`Plan.head_end`),
     when the served prompt still begins with the head the plan spliced (no images, which move rows;
-    nothing put before it since)."""
+    nothing put before it since). SRV-905: when the plan gives none, `_head_mark`."""
     end = getattr(plan, "head_end", None) if plan is not None else None
     head = getattr(plan, "head_ids", None)
     if not end or head is None or mm is not None or int(prompt.numel()) <= end:
+        return _head_mark(prompt, mm)
+    return int(end) if prompt[:end].tolist() == list(head) else _head_mark(prompt, mm)
+
+
+def _head_mark(prompt, mm) -> int | None:
+    """SRV-905: a prompt's grid mark without a plan, on an engine whose family sets
+    `Capabilities.head_mark`: the row where its first user message starts (`_first_user`), when the
+    head before it (the system turn: the conductor's question and its options, a chat's tools and
+    system text) is at least `StateStore.same_head_rows` long. Every read of that prompt cuts there,
+    and another prompt with the same head resumes at the mark bit for bit (engine/cache.py `Grid`).
+    The conductor's helper question has no plan: on a model that reads ~140 rows a second it read its
+    2,345-row head on every call (18.8 s). None without the flag, with images, or without a head."""
+    caps = getattr(STATE.get("engine"), "caps", None)
+    if mm is not None or not getattr(caps, "head_mark", False):
         return None
-    return int(end) if prompt[:end].tolist() == list(head) else None
+    ids = prompt.tolist() if hasattr(prompt, "tolist") else list(prompt)
+    i = _first_user(ids)
+    if i is None or i < cache.StateStore.same_head_rows or i >= len(ids):
+        return None
+    return int(i)
 
 
 def generate_stream(*args, **kw):
@@ -13988,7 +14033,9 @@ def _load_caches(a, eng, tok, drafter, rcache) -> dict:
                                      park_bytes=int(a.resident_park_gb * gib), mem=mem,
                                      end=a.end_anchor == "on",
                                      # SRV-907: the guest test knows the conversation's next turn
-                                     chat_first=bool(getattr(getattr(eng, "caps", None), "chat_first", False)))
+                                     chat_first=bool(getattr(getattr(eng, "caps", None), "chat_first", False)),
+                                     # SRV-905: a guest resumes from the store's heads and keeps the chat's end
+                                     guest_store=bool(getattr(getattr(eng, "caps", None), "head_mark", False)))
                 if resident_on else None)
     if store is not None:
         mem.register("store", store.shed)
@@ -14344,7 +14391,8 @@ def _side_resident(a, tok):
                                stash_bytes=int(float(SIDE_STASH_GB) * gib),
                                guest_max=a.resident_guest_max, guest_frac=1.0, pin_bytes=0,
                                park_bytes=0, mem=mem, end=res0.end_on,
-                               chat_first=bool(getattr(res0, "chat_first", False)))     # SRV-907, as slot 0's
+                               chat_first=bool(getattr(res0, "chat_first", False)),     # SRV-907, as slot 0's
+                               guest_store=bool(getattr(res0, "guest_store", False)))   # SRV-905, as slot 0's
     res.glue = glue_ids(tok)
     res.keeper = _keep_parent             # ENG-371: a parent's rows to the NVMe before they go
     if mem is not None:

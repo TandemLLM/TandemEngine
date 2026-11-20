@@ -44,6 +44,10 @@ class Capabilities:
     # (engine/cache.py `ResidentPrefix(chat_first=True)`): a turn that holds the whole last prompt in place is
     # never its guest, and the conductor's question is a guest at any size. False: the guest test by size alone
     chat_first: bool = False
+    # SRV-905: a prompt without a plan gets its grid mark where its first user turn starts (server/app.py
+    # `_grid_mark`, SPD-249's marked grid), and a guest keeps the conversation's end and stores its own head
+    # when it resumes from the state store (`ResidentPrefix(guest_store=True)`). False: the mark from a plan only
+    head_mark: bool = False
 
 
 @dataclass(frozen=True)

@@ -535,6 +535,31 @@ def test_family_knobs_live_in_their_package():
     return f"{len(LEGACY_FAMILY_KNOBS)} legacy family knobs in the shared table, none new; {len(lib)} library knobs"
 
 
+#: SRV-905, SRV-907: the conversation cache's capabilities (engine/models/adapter.py `Capabilities`) and the
+#: family packages that set them. The shared caching code (engine/cache.py, server/app.py) takes their branches
+#: only for these; every other family's caching is pinned byte for byte (tests/test_resident_pinned.py)
+CACHE_CAPS = {"chat_first": {"hy4_flash"}, "head_mark": {"hy4_flash"}}
+
+
+def test_the_cache_capabilities_are_their_families():
+    import ast
+    from engine.models.adapter import Capabilities
+    seen = {k: set() for k in CACHE_CAPS}
+    for path in sorted(glob.glob(os.path.join(ROOT, "engine", "models", "*", "*.py"))):
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg in CACHE_CAPS and not (isinstance(kw.value, ast.Constant) and kw.value.value is False):
+                    seen[kw.arg].add(os.path.basename(os.path.dirname(path)))
+    assert seen == CACHE_CAPS, f"the cache capabilities are set by {seen}, the table says {CACHE_CAPS}"
+    off = Capabilities(caches=True, side_slots=True)
+    assert not any(getattr(off, k) for k in CACHE_CAPS), "a cache capability is on by default"
+    return f"{sorted(CACHE_CAPS)}: set by {sorted(set().union(*CACHE_CAPS.values()))} alone, off by default"
+
+
 if __name__ == "__main__":
     from scriptmode import run
     run(globals())

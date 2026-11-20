@@ -112,8 +112,10 @@ class Hy4FlashServing:
                         side_lane=False, joint_plain=False)
 
     # the conversation cache on one lane (SRV-907): a chat's next turn is never a guest of its own rows, and
-    # the conductor's question is a guest at any size (engine/cache.py `ResidentPrefix`, `chat_first`)
-    caps = dataclasses.replace(caps, chat_first=True)
+    # the conductor's question is a guest at any size (engine/cache.py `ResidentPrefix`, `chat_first`); a
+    # prompt without a plan is marked where its first user turn starts, so a repeated head is read once
+    # (SRV-905, server/app.py `_head_mark`)
+    caps = dataclasses.replace(caps, chat_first=True, head_mark=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)

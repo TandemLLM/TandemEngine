@@ -159,6 +159,47 @@ def test_the_real_template_tools_and_a_call_round_trip():
     return f"the tools prompt, an earlier turn's calls in the model's form, and {len(ids)} ids read back as two calls"
 
 
+#: the template's turn marks (its lines 3-5), by name
+TURN = ("<｜hy_start:opensource｜>", "<｜hy_middle:opensource｜>", "<｜hy_end:opensource｜>")
+
+
+class _TurnStand(_Stand):
+    """The stand-in with the template's turn marks as tokens too."""
+
+    def __init__(self):
+        super().__init__()
+        self.tags += list(TURN)
+
+    def encode(self, text, add_special_tokens=False):
+        return self(text).input_ids
+
+
+def test_the_turn_marks_reach_the_servers_lookup():
+    """SRV-905: `template_marks` gives the turn opener's id, the ids of `user` and the turn end's id, ids the
+    wrapped tokenizer knows, and the server's lookup (`_marks_of`) returns them; a tokenizer without the marks
+    gives none. With HY4_TOKENIZER: the pack's ids (120000, `user` as one token, 120025)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_forward_tree  # noqa: F401  (the CPU environment before the server imports)
+    from server import app
+    stand = _TurnStand()
+    tok = Hy4Tokenizer(stand)
+    want = (stand.convert_tokens_to_ids(TURN[0]), stand.encode("user"), stand.convert_tokens_to_ids(TURN[2]))
+    assert tok.template_marks() == want and min(want[0], want[2]) >= 1000, tok.template_marks()
+    assert app._marks_of(tok) == want
+    assert Hy4Tokenizer(_Stand()).template_marks() is None and app._marks_of(Hy4Tokenizer(_Stand())) is None
+    if SKIP:
+        return SKIP
+    real = _real()
+    marks = real.template_marks()
+    assert marks == (120000, [3717], 120025) and app._marks_of(real) == marks, marks
+    ids = real.apply_chat_template([{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}],
+                                   add_generation_prompt=True, enable_thinking=False)
+    ids = list(ids["input_ids"] if hasattr(ids, "keys") else ids)
+    i = next(j for j in range(len(ids)) if ids[j] == marks[0] and ids[j + 1:j + 2] == marks[1])
+    assert ids[i - 1] == marks[2], "the first user turn starts right after the system turn's end"
+    return f"the pack's marks {marks}; the first user turn at row {i}"
+
+
 if __name__ == "__main__":
     fails = 0
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

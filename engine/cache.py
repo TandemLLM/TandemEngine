@@ -1747,6 +1747,15 @@ class ResidentPrefix:
     slot's keeper, which writes the conversation to the NVMe first. Without the flag, every line below
     runs as before.
 
+    A GUEST FROM THE STORE (`guest_store`, SRV-905; a family's `Capabilities.head_mark`). Once a prompt
+    without a plan has its head mark, the conductor's question resumes from its head in the state store
+    on every call, as a guest of the chat in place. Two lines of `_prefill` acted on the conversation's
+    state for it: a store or disk restore dropped the end anchor (the restore writes the rows below it),
+    and a tainted conversation (a kept end) turned the store's snapshots off, so the question never stored
+    its head. With the flag, such a guest's stash starts at row 0, so every row the restore writes is put
+    back and the end stays; and the store keeps its snapshots unless its own prefill resumed in a
+    session's rows (the end, the prompt end, an anchor above `taint`).
+
     MEMORY. `budget_bytes` bounds the anchors (27 at the default 4 GiB) and `stash_bytes` the
     guest stash (2 GiB = ~20k rows at 104 kB a row). Both are allocated once and reused: an
     evicted anchor's buffers take the next anchor, so a 190k prefill that passes 185 boundaries
@@ -1819,7 +1828,7 @@ class ResidentPrefix:
                  guest_max: int = 16384, guest_frac: float = 0.25,
                  pin_bytes: int = 0, pin_anchors: int = 8, park_bytes: int = 0,
                  park_anchors: int = 4, mem: "Budget | None" = None, end: bool = False,
-                 chat_first: bool = False):
+                 chat_first: bool = False, guest_store: bool = False):
         self.budget = int(budget_bytes)
         self.chunk = int(chunk)
         self.tail = max(1, int(tail))
@@ -1876,6 +1885,8 @@ class ResidentPrefix:
         # questions; `last_n` is the length of the last prompt that became the resident one (0: none)
         self.chat_first = bool(chat_first)
         self.last_n = 0
+        # SRV-905 (`guest_store`): a guest that resumes from the store keeps the end; it stores its own head
+        self.guest_store = bool(guest_store)
         # the end of the last generation (`keep_end`): its line `at`, the hidden spans below it
         # and the drafter's mark; its state in `_end_bufs`, allocated once and reused
         self.end_on = bool(end)
@@ -2338,7 +2349,10 @@ class ResidentPrefix:
                 and self.stash_budget > 0):
             guest = True                   # SRV-907: the server's own question, at any size
         if not stay and guest:
-            self._stash_for(eng, drafter, min(start, (c // self.chunk) * self.chunk), reach)
+            s = min(start, (c // self.chunk) * self.chunk)
+            if self.guest_store and kind in ("prefix", "disk"):
+                s = 0                      # SRV-905: the restore writes every row below `start`
+            self._stash_for(eng, drafter, s, reach)
             return
         if self.valid and c < self.valid:
             self.stats["invalidated"] += 1
@@ -3687,11 +3701,12 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
         res.begin(eng, drafter, keys, start, c, kind, session=conv_id, compacting=compacting,
                   scratch=scratch, reach=reach, stay=stay, continues=continues, own=own)
         res.end_hold = False               # ENG-371: held from the server's memory gate to here
-        if kind in ("prefix", "disk"):
+        if kind in ("prefix", "disk") and not (res.guest_store and res._stash is not None):
             # the restore writes over the rows below it. dropped after `begin`, whose
             # eviction writes the conversation to the NVMe with its end anchor first; dropped
             # before it, the conversation went to the disk without its end and its
-            # next turn re-read the tokens above its last grid anchor (live 13:34: 759 tokens)
+            # next turn re-read the tokens above its last grid anchor (live 13:34: 759 tokens).
+            # SRV-905: a guest's stash holds every row the restore writes (`begin`): they come back
             res._drop_end()
     if hit is not None:
         restore(eng, hit[1].snap, drafter)
@@ -3732,8 +3747,12 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
     lim = n if checkpoint_upto is None else min(n, int(checkpoint_upto) + 1)
     if res is not None and res.taint is not None:
         # a session's rows (an end anchor's prefill, or one above `taint`): no prefix snapshot,
-        # and nothing for the disk, whose files are a cold grid prefill's bytes
-        checkpoint, kind_disk = False, "session"
+        # and nothing for the disk, whose files are a cold grid prefill's bytes. SRV-905: the taint is
+        # the conversation's, not a guest's that resumed from the store or read cold
+        if not (res.guest_store and res._stash is not None and kind not in ("end", "pend")
+                and not (kind == "resident" and start > res.taint)):
+            checkpoint = False
+        kind_disk = "session"
     else:
         kind_disk = kind
     ckpt = (store.boundaries(eng, drafter, start, lim, chunk, grid)
