@@ -26,6 +26,7 @@ Each check prints one line a family: the rows it compared and the pinned rows it
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import copy
 import hashlib
@@ -82,6 +83,10 @@ class Recorder:
     def __call__(self, *a, **k):
         return self.__dict__["_tok"](*a, **k)
 
+    def __len__(self):
+        # the grammar's vocabulary takes len() of the served tokenizer (engine/grammar.py `from_tokenizer`)
+        return len(self.__dict__["_tok"])
+
     def apply_chat_template(self, messages, *a, **kw):
         self.__dict__["calls"].append({"messages": copy.deepcopy(messages),
                                        "kwargs": {k: v for k, v in kw.items() if k not in FORM}})
@@ -93,13 +98,36 @@ def key(family: str, request: str, default, limit, plan: str | None = None) -> s
     return "|".join(parts + ([f"plan={plan}"] if plan else []))
 
 
+#: the server's process memos a row reads through: the template's turn marks (set once from the loaded tokenizer),
+#: the head's token counts and a text's token count (both remembered by bytes, not by tokenizer)
+MEMOS = ("_CONV_MARKS", "_HEADS", "_TEXT_TOKENS")
+
+
+@contextlib.contextmanager
+def fresh():
+    """The block starts with the server's process memos empty, as a fresh server of one family does, and puts them
+    back after it: a row pins what that server does, not what the family served before it left behind (a head
+    counted on one family's renders saves the next family's two renders of it)."""
+    saved = {m: getattr(app, m) for m in MEMOS}
+    app._CONV_MARKS = None
+    app._HEADS = collections.OrderedDict()
+    app._TEXT_TOKENS = collections.OrderedDict()
+    try:
+        yield
+    finally:
+        for m, v in saved.items():
+            setattr(app, m, v)
+
+
 @contextlib.contextmanager
 def _served(spec, default):
     """The fake engine with `spec` in force and `default` as --reasoning-effort, for the block; yields the loop's
-    calls. The server's state and its loop are put back as they were after it."""
+    calls. The server's state and its loop are put back as they were after it, and its process memos start empty
+    (`fresh`)."""
     saved, real = dict(app.STATE), app.generate_stream
     try:
-        yield _start(spec, default)
+        with fresh():
+            yield _start(spec, default)
     finally:
         app.generate_stream = real
         app.STATE.clear()

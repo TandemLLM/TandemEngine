@@ -749,7 +749,7 @@ PLAN_DEFAULTS = (None, "xhigh", "off")
 PLAN_LIMIT = 160
 
 
-def _table_handler(spec, body: dict, cond, default, max_len: int = 256):
+def _table_handler(spec, body: dict, cond, default, max_len: int = 256, vocab: bool = False):
     """One request under `cond`'s plan (None: no conductor) with `spec` in force and `default` as the server's effort
     (off: thinking off for a request that says nothing): the template calls, the loop's calls, the log, the status
     line."""
@@ -759,9 +759,15 @@ def _table_handler(spec, body: dict, cond, default, max_len: int = 256):
     app.STATE.update(tok=tok, think_budget=0, spec=spec, conductor=cond, monitor=frame.monitor("on"),
                      reasoning_effort=None if default == "off" else default,
                      thinking_default="off" if default == "off" else "on")
+    if vocab:
+        # a constrained answer's masks: MonTok's characters as bytes (one id each, from 1), its special ids none
+        from engine import grammar as G
+        size = app.STATE["engine"].cfg.vocab_size
+        pieces = [None] + [c.encode() for c in frame.ALPHA]
+        app.STATE["grammar_vocab"] = G.Vocab((pieces + [None] * size)[:size], size)
     req = Req("/v1/chat/completions", body)
     out = io.StringIO()
-    with _Spy() as spy, logbuf_capture(out):
+    with table.fresh(), _Spy() as spy, logbuf_capture(out):
         head, _ = req.response()
     return tok.calls, spy.calls, out.getvalue(), head
 
@@ -852,7 +858,7 @@ def test_hy4_the_default_cap_with_a_json_answer():
     default cap stands and the JSON answer's own reserve applies to it, once (not the default's second reserve)."""
     body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False,
             "response_format": {"type": "json_object"}}
-    _, loop, log, head = _table_handler(_hy4(), dict(body), None, None)
+    _, loop, log, head = _table_handler(_hy4(), dict(body), None, None, vocab=True)
     assert head.startswith("HTTP/1.1 200"), (head, log[-400:])
     assert "server default medium: cap 8192" in log and "json answer: reserve" in log, log
     assert "server default: answer reserve" not in log, log
