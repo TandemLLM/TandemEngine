@@ -192,6 +192,9 @@ GOLDEN_FP4 = {
     # SPD-150: the e4m3 KV cache, off unless a family's knob asks (FN_KV_FP8, Q35M_KV_FP8, LFM2_KV_FP8, NH_KV_FP8; the
     # kernels' FP8 branch a constexpr off by default, the same rows): qwen4_exp, qwen3_5_moe, lfm2_moe, nemotron_h and
     # flint (it shares lfm2_moe's kernels and reference)
+    # SPD-321: tools/fn_prefill_kernels.py's optional clamp (no kernel source, the rows of every caller without it the
+    # same; a SAME_ROWS entry adopts their files): qwen4_exp, nemotron_h, lfm2_moe, qwen3_5_moe, flint; and Hy4-flash's
+    # prompt experts on that kernel: hy_v4_flash
     "qwen4_exp": "8814f8aef5064f448a48d8de2cce1261fcced597b24b0239e1ee6890885fc2e4",
     "nemotron_h": "748cf77d5397146906bf7eb352e09154a0019e7fb5789e7fc98a425b09fdf3b6",
     "lfm2_moe": "6445f5bda811ddef922e55466e9da85afb34d9b78daf4bcf0c313b3a13d5f747",
@@ -204,8 +207,9 @@ GOLDEN_FP4 = {
 #: table and its kernels take the generic launch option
 MAY_MOVE = {"flint"}
 #: sha256 of SAME_ROWS' entries at v0.14.0 (sorted [path, now, replaced] triples, JSON); SRV-795 adds Flash-Next's
-#: engine.py on purpose (its reason in engine/methods/manifest.py)
-SAME_ROWS_SHA256 = "4d7ac63adfdf6dc4dbc2cb026fe6752505d68dfefb96a1300fd274edff18fd5b"   # 31 entries
+#: engine.py on purpose (its reason in engine/methods/manifest.py); SPD-321 adds tools/fn_prefill_kernels.py's optional
+#: clamp on purpose (its reason there)
+SAME_ROWS_SHA256 = "bf3ad379dc8528e39a88bce09681096b68e30716b348d1e3cb4657ab3492d9f3"   # 32 entries
 
 
 def _manifest(name: str):

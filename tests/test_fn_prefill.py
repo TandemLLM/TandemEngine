@@ -10,7 +10,8 @@
     then 2,048 selected positions and the tail); every complete block sits in the shared pool, the
     chunk pools the blocks it completes; the context class is the last row's;
   * SPD-317: `moe_grouped_reference` without a clamp keeps the bytes recorded on the tree before the clamp
-    argument (a host's pin, tests/byte_pins.py).
+    argument (a host's pin, tests/byte_pins.py); SPD-321: with `clamp` it is the per-pair walk with the SwiGLU
+    clamps where the model applies them.
 """
 
 from __future__ import annotations
@@ -76,6 +77,37 @@ def test_no_clamp_is_the_recorded_digest():
     b = PK.moe_grouped_reference(x, ids, bank)
     assert torch.equal(a, b), "two calls in one process differ: the pin cannot work"
     return check("fn_prefill_pins.json", "moe_grouped_reference", {"yd": digest(a)})
+
+
+def test_the_reference_clamps_like_the_models_formula():
+    """SPD-321: `moe_grouped_reference(..., clamp=c)` is a per-pair walk with the SwiGLU clamps where the model applies
+    them (engine/models/hy4_flash/ref.py `experts`: the gate to at most c, the up to [-c, c], before the activation),
+    in the kernels' roundings; without the argument it is the call before it."""
+    from tools import exl3_linear as X
+    from tools import fn_prefill_kernels as PK
+    bank = _cpu_bank()
+    x, ids = _cpu_pairs()
+    S = ids.shape[1]
+    flat = ids.reshape(-1).tolist()
+    gu = [(X.reference_matmul(x[p // S:p // S + 1], bank.block(e, 0)).float(), X.reference_matmul(x[p // S:p // S + 1], bank.block(e, 1)).float())
+          for p, e in enumerate(flat)]
+    # a limit both clamps bind on: below the largest gate and the largest |up|
+    lim = 0.5 * min(max(float(g.max()) for g, _ in gu), max(float(u.abs().max()) for _, u in gu))
+    want = torch.zeros(len(flat), bank.H)
+    down = bank.block
+    for p, e in enumerate(flat):
+        g, u = gu[p]
+        g, u = g.clamp(max=lim), u.clamp(min=-lim, max=lim)
+        a = (g / (1.0 + torch.exp(-g))).to(torch.bfloat16).float() * u
+        d = down(e, 2)
+        d.out_fp32 = True
+        want[p] = X.reference_matmul(a.to(torch.bfloat16), d)[0]
+    got = PK.moe_grouped_reference(x, ids, bank, clamp=lim)
+    plain = PK.moe_grouped_reference(x, ids, bank)
+    assert torch.equal(got, want), (got - want).abs().max()
+    assert not torch.equal(got, plain), "the limit does not bind: the test proves nothing"
+    assert torch.equal(PK.moe_grouped_reference(x, ids, bank, clamp=None), plain)
+    return f"{len(flat)} pairs, limit {lim:.3g}: the clamped walk bit for bit; clamp None the call before it"
 
 
 class _Cfg:

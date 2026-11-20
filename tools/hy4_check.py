@@ -12,6 +12,9 @@
   fit          a prompt of --fit tokens: seconds, the state's bytes, the device's memory before and after
   prefill-digest  (--only) the prompt pass's record: digests of the last row's logits, the last chunk's head inputs
                and the state, for every expert path of --digest-arms (all equal), against a recorded file
+  experts-equal  (--only) every MoE layer's routed experts on the pair, grouped and shared prefill kernels, on real
+               inputs of --digest-text, cut row counts: equal pair outputs and combined rows (SPD-321)
+  experts-crossover  (--only) the three paths' ms at 16 to 1,024 rows and the EXPERTS_MIN they give (SPD-321)
 
 The prompt is synthetic unless --text names a file the pack's tokenizer reads. For a tiny rehearsal pack whose
 config names no draft targets, --dfly-layers and --mask-id give them.
@@ -587,6 +590,123 @@ def prefill_digest(a, eng, cfg, say) -> bool:
     return ok
 
 
+def moe_inputs(a, eng) -> list:
+    """The routed experts' real inputs of every MoE layer and chunk of --digest-text's first --digest-rows token ids, as
+    the prompt pass hands them to `_experts_chunk` on the row kernels' grouped form (gate 0's baseline):
+    [(chunk, layer, z, idx, wts)] on the device."""
+    from tokenizers import Tokenizer
+    from tools.hy4_prefill_profile import set_arm
+    if not a.digest_text:
+        raise SystemExit("experts-equal / experts-crossover: --digest-text (the prompt whose routing is used)")
+    tok = Tokenizer.from_file(os.path.join(a.pack, "tokenizer.json"))
+    ids = tok.encode(open(a.digest_text).read(), add_special_tokens=False).ids[:a.digest_rows]
+    got, real, chunk = [], eng._experts_chunk, [0]
+
+    def spy(z, idx, wts, li):
+        if li == min(eng.banks):
+            chunk[0] += 1
+        got.append((chunk[0], li, z.clone(), idx.clone(), wts.clone()))
+        return real(z, idx, wts, li)
+    set_arm(eng, "grouped")
+    eng._experts_chunk = spy
+    try:
+        eng.prefill(torch.tensor(ids), eng.new_state(len(ids) + 64), head=None)
+    finally:
+        del eng._experts_chunk
+    sync(a.device)
+    return got
+
+
+def _expert_paths(eng, z, idx, wts, li, items=(32, 64)) -> dict:
+    """One layer's routed experts on the three paths, (pair outputs fp32 before the combine, combined rows) each: the
+    pair kernels and the grouped row kernels in EXPERT_SUB launches (the prompt pass's loop), the shared prefill kernel
+    with the clamp, one call, at items of 32 and 64."""
+    from engine.models.hy4_flash import engine as E_
+    from tools import fn_prefill_kernels as PK
+    B, out = E_.EXPERT_SUB, {}
+    for name, gr in (("pair", False), ("grouped", True)):
+        yd = torch.cat([eng.expert_pairs(z[i:i + B], idx[i:i + B], li, grouped=gr) for i in range(0, z.shape[0], B)])
+        out[name] = (yd, torch.cat([eng.combine(yd[i * idx.shape[1]:(i + B) * idx.shape[1]], idx[i:i + B], wts[i:i + B])
+                                    for i in range(0, z.shape[0], B)]))
+    for it in items:
+        yd = PK.moe_grouped(z.contiguous(), idx.to(torch.int32).contiguous(), eng.banks[li], rows=it, clamp=eng.cfg.swiglu_limit)
+        out[f"group{it}"] = (yd, eng.combine(yd, idx, wts))
+    return out
+
+
+def experts_equal(a, eng, cfg, say) -> bool:
+    """SPD-321 (the prefill design's D3): every MoE layer's routed experts on the three paths, on real inputs and
+    routing of every chunk of --digest-text, cut to 1, 17, 255, 257, 4,095 and 4,096 rows: torch.equal on the pair
+    outputs before the combine and on the combined rows, against the pair kernels. The first unequal layer and row are
+    named."""
+    caps = moe_inputs(a, eng)
+    k = cfg.num_experts_per_tok
+    layers, bad = 0, []
+    for c, li, z, idx, wts in caps:
+        ok_layer = True
+        for n in (1, 17, 255, 257, 4095, 4096):
+            if n > z.shape[0]:
+                continue
+            paths = _expert_paths(eng, z[:n], idx[:n], wts[:n], li)
+            base_yd, base_y = paths["pair"]
+            for name, (yd, y) in paths.items():
+                if name == "pair":
+                    continue
+                eq_yd, eq_y = torch.equal(yd, base_yd), torch.equal(y, base_y)
+                if not (eq_yd and eq_y):
+                    ok_layer = False
+                    rows_yd = (yd != base_yd).any(dim=-1).nonzero()
+                    rows_y = (y != base_y).any(dim=-1).nonzero()
+                    bad.append({"chunk": c, "layer": li, "rows": n, "path": name, "pairs_equal": eq_yd, "combined_equal": eq_y,
+                                "first_pair": int(rows_yd[0]) if rows_yd.numel() else None,
+                                "first_row": int(rows_y[0]) if rows_y.numel() else (int(rows_yd[0]) // k if rows_yd.numel() else None),
+                                "max_abs": float((y.float() - base_y.float()).abs().max())})
+            del paths
+        layers += 1
+        say("experts_equal_layer", chunk=c, layer=li, rows=int(z.shape[0]), equal=ok_layer)
+    say("experts_equal", layer_chunks=layers, unequal=len(bad), first=bad[0] if bad else None, all_equal=not bad,
+        paths=["pair", "grouped", "group32", "group64"], row_counts=[1, 17, 255, 257, 4095, 4096])
+    return not bad
+
+
+def experts_crossover(a, eng, cfg, say) -> None:
+    """SPD-321 (the prefill design's D6): ms of the three paths at 16 to 1,024 rows of the last chunk's real inputs,
+    summed over every MoE layer (median of 5 after 2 warm-ups, a device sync around each), and EXPERTS_MIN: the
+    smallest count from which the shared prefill kernel beats the faster row-kernel form at every larger count
+    (tools/prefill_crossover.py's rule)."""
+    from tools.prefill_crossover import crossover
+    caps = moe_inputs(a, eng)
+    last = max(c for c, *_ in caps)
+    caps = [x for x in caps if x[0] == last]
+    from engine.models.hy4_flash import engine as E_
+    from tools import fn_prefill_kernels as PK
+    B, table = E_.EXPERT_SUB, {}
+
+    def timed(fn) -> float:
+        ts = []
+        for r in range(7):
+            sync(a.device)
+            t0 = time.perf_counter()
+            fn()
+            sync(a.device)
+            if r >= 2:
+                ts.append(time.perf_counter() - t0)
+        return 1e3 * sorted(ts)[len(ts) // 2]
+    for n in (16, 32, 64, 128, 256, 512, 1024):
+        ms = {"pair": 0.0, "grouped": 0.0, "group": 0.0}
+        for _, li, z, idx, wts in caps:
+            zn, xn, wn = z[:n], idx[:n], wts[:n]
+            for name, gr in (("pair", False), ("grouped", True)):
+                ms[name] += timed(lambda: torch.cat([eng.combine(eng.expert_pairs(zn[i:i + B], xn[i:i + B], li, grouped=gr), xn[i:i + B], wn[i:i + B])
+                                                     for i in range(0, n, B)]))
+            ms["group"] += timed(lambda: eng.combine(PK.moe_grouped(zn.contiguous(), xn.to(torch.int32).contiguous(), eng.banks[li],
+                                                                    rows=E_.GROUP_ROWS, clamp=cfg.swiglu_limit), xn, wn))
+        table[n] = {k: round(v, 2) for k, v in ms.items()}
+        say("experts_crossover_rows", rows=n, layers=len(caps), **table[n])
+    best = crossover({n: {"v2": min(t["pair"], t["grouped"]), "unpack": t["group"]} for n, t in table.items()})
+    say("experts_crossover", experts_min=best, table=table, rule="the smallest count from which group beats min(pair, grouped) at every larger one")
+
+
 def profile(a, eng, cfg, ids, say) -> None:
     """One decode step and one 6-row block taken apart: exclusive wall time a part, launched one by one with a
     device sync around every part (so the parts add up; a graph's replay of the same pass is given beside them)."""
@@ -746,11 +866,13 @@ def main() -> int:
     ap.add_argument("--answer", type=int, default=600)
     ap.add_argument("--profile", action="store_true", help="one decode step and one drafted round taken apart by part")
     ap.add_argument("--only", help="comma list of checks to run after the load (self,experts,tolerance,decode,dfly,caches,prose,profile,fit,"
-                                   "prefill-digest)")
+                                   "prefill-digest,experts-equal,experts-crossover)")
     ap.add_argument("--digest-text", help="prefill-digest: a text file, its first --digest-rows token ids raw")
     ap.add_argument("--digest-rows", type=int, default=8192)
     ap.add_argument("--digest-chat", help="prefill-digest: a text file, as a chat request (the essay ask, thinking off)")
-    ap.add_argument("--digest-arms", default="grouped", help="prefill-digest: comma list of the expert paths (pair, grouped)")
+    ap.add_argument("--digest-arms", default="grouped", help="prefill-digest: comma list of the expert paths (pair, grouped, group)")
+    ap.add_argument("--prefill-experts", default="group", choices=("group", "rows"),
+                    help="the prompt's experts on the shared prefill kernel (group) or the row kernels (rows; --grouped picks their form)")
     ap.add_argument("--digest-out", help="prefill-digest: write the digests to this JSON file")
     ap.add_argument("--digest-against", help="prefill-digest: compare with a JSON file --digest-out wrote")
     ap.add_argument("--need-gib", type=float, default=0.0, help="refuse to load below this MemAvailable")
@@ -788,6 +910,7 @@ def main() -> int:
         cfg = pack.cfg
     eng = Hy4FlashEngine(cfg, W, tables, device=a.device, max_len=a.max_len, banks=banks, cuts=cuts)
     eng.prefill_grouped = a.grouped
+    eng.prefill_experts = a.prefill_experts
     say("load", timing=timing, weights_gib=round(pack.resident_bytes() / (1 << 30), 3), banks=len(banks), mem=mem())
 
     g = torch.Generator().manual_seed(7)
@@ -932,6 +1055,10 @@ def main() -> int:
 
     if only is not None and "prefill-digest" in only:
         res["ok"] = prefill_digest(a, eng, cfg, say) and res["ok"]
+    if banks and only is not None and "experts-equal" in only:
+        res["ok"] = experts_equal(a, eng, cfg, say) and res["ok"]
+    if banks and only is not None and "experts-crossover" in only:
+        experts_crossover(a, eng, cfg, say)
     if a.quality and want("quality"):
         quality(a, eng, cfg, say)
     if a.prices_at and want("prices"):

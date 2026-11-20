@@ -85,3 +85,4 @@ The weights are Tencent's, under the Tencent Hy License, Version 1.0, which each
 - Structured output, parallel tool calls, and tool calls beyond the one call and its follow-up.
 - Quality past 2,048 tokens, task-level checks, and any comparison with Tencent's own stack or its FP8 release.
 - The free memory a start needs: the profiles' figures come from arithmetic.
+- The prompt pass on the shared prefill expert kernel (SPD-321, `QWEN38_HY4_PREFILL_EXPERTS=group`, the default; `rows` is the path before): its bits against the row kernels on every MoE layer of both packs (`tools/hy4_check.py --only experts-equal`), its first-token time and its prefill rate. Gate 0 compared it on 2 of the 41 layers of `hy4-3.56` only.

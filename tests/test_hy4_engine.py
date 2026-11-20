@@ -233,6 +233,119 @@ def test_the_tiny_byte_gate():
     return check("hy4_byte_gate.json", "tiny_bf16", got)
 
 
+def _pair_walk(eng, z, idx, li, lim):
+    """Every (row, slot) pair through its expert, one row at a time, the SwiGLU clamps where `lim` is set: [M k, latent]
+    fp32, the contract of the shared prefill kernel and of the row kernels (on the CPU, the tiny model's weights)."""
+    import torch.nn.functional as F
+    p = f"layers.{li}.mlp.experts."
+    G, U, D = eng.w(p + "gate_proj"), eng.w(p + "up_proj"), eng.w(p + "down_proj")
+    out = []
+    for r in range(z.shape[0]):
+        zr = z[r:r + 1].clone()
+        for e in idx[r].tolist():
+            g, u = F.linear(zr, G.weight(e, z.dtype)), F.linear(zr, U.weight(e, z.dtype))
+            if lim is not None:
+                g, u = g.clamp(max=lim), u.clamp(min=-lim, max=lim)
+            out.append(F.linear(F.silu(g) * u, D.weight(e, z.dtype)).float())
+    return torch.cat(out)
+
+
+class _Kernels:
+    """The shared prefill kernel (tools/fn_prefill_kernels.moe_grouped) and the engine's row kernels (`expert_pairs`)
+    replaced by the pair walk, every call recorded."""
+
+    def __init__(self, eng):
+        self.eng, self.grouped, self.rows = eng, [], []
+
+    def __enter__(self):
+        from tools import fn_prefill_kernels as PK
+        self.PK, self.real = PK, PK.moe_grouped
+
+        def moe_grouped(x, ids, bank, rows=64, clamp=None):
+            self.grouped.append({"rows": x.shape[0], "dtype": ids.dtype, "items": rows, "clamp": clamp, "layer": bank[1]})
+            return _pair_walk(self.eng, x, ids, bank[1], clamp)
+
+        def expert_pairs(z, idx, li, grouped=False):
+            self.rows.append({"rows": z.shape[0], "layer": li, "grouped": grouped})
+            return _pair_walk(self.eng, z, idx, li, self.eng.cfg.swiglu_limit)
+        PK.moe_grouped = moe_grouped
+        self.eng.expert_pairs = expert_pairs
+        return self
+
+    def __exit__(self, *exc):
+        self.PK.moe_grouped = self.real
+        del self.eng.expert_pairs
+
+
+def _banked(warps=None, experts_min=None):
+    """The tiny model (fp32) with a kernel bank on every MoE layer (a stand-in the patched kernels read), built with the
+    device's MoE warps and EXPERTS_MIN as given."""
+    old = (E.moe_warps, E.EXPERTS_MIN)
+    if warps is not None:
+        E.moe_warps = lambda device: warps
+    if experts_min is not None:
+        E.EXPERTS_MIN = experts_min
+    try:
+        cfg = tiny_config()
+        W, tables = random_weights(cfg)
+        eng = E.Hy4FlashEngine(cfg, W, tables, dtype=torch.float32, max_len=512)
+    finally:
+        E.moe_warps, E.EXPERTS_MIN = old
+    eng.banks = {li: ("bank", li) for li in range(cfg.num_hidden_layers) if not cfg.is_dense_mlp(li)}
+    return eng
+
+
+def test_a_chunks_experts_are_one_grouped_call():
+    """SPD-321: on a kernel bank a 300-row chunk's routed experts are one call of the shared prefill kernel a MoE layer,
+    with all its rows, int32 ids, items of GROUP_ROWS and the model's SwiGLU limit as the clamp; the row kernels' loop
+    (HY4_PREFILL_EXPERTS=rows) gives the same logits."""
+    eng = _banked()
+    toks = torch.randint(4, 60, (300,), generator=torch.Generator().manual_seed(23))
+    with _Kernels(eng) as k:
+        eng.prefill_experts = "group"
+        a = eng.prefill(toks, eng.new_state(), head="all")
+        calls, k.grouped = k.grouped, []
+        assert not k.rows, k.rows[:2]
+        assert sorted(c["layer"] for c in calls) == sorted(eng.banks), calls
+        assert all(c["rows"] == 300 and c["dtype"] == torch.int32 and c["items"] == E.GROUP_ROWS
+                   and c["clamp"] == eng.cfg.swiglu_limit for c in calls), calls
+        eng.prefill_experts = "rows"
+        b = eng.prefill(toks, eng.new_state(), head="all")
+        assert not k.grouped and [r["rows"] for r in k.rows] == [256, 44] * len(eng.banks), k.rows
+    assert torch.equal(a, b), (a - b).abs().max()
+    return f"{len(calls)} MoE layers: one call each of 300 rows, clamp {eng.cfg.swiglu_limit}; the row loop's logits equal"
+
+
+def test_below_the_crossover_the_row_kernels_run():
+    """SPD-321: at the prefill kernel's warp split a chunk below EXPERTS_MIN rows takes the row kernels, a chunk at or
+    above it the prefill kernel."""
+    eng = _banked(warps=E.GROUP_WARPS, experts_min=64)
+    assert eng.experts_min == 64
+    toks = torch.randint(4, 60, (300,), generator=torch.Generator().manual_seed(29))
+    with _Kernels(eng) as k:
+        eng.prefill(toks[:40], eng.new_state(), head=None)
+        assert not k.grouped and [r["rows"] for r in k.rows] == [40] * len(eng.banks), (k.grouped[:1], k.rows)
+        k.rows = []
+        eng.prefill(toks, eng.new_state(), head=None)
+        assert not k.rows and [c["rows"] for c in k.grouped] == [300] * len(eng.banks), (k.rows[:1], k.grouped)
+    return "40 rows on the row kernels, 300 on the prefill kernel (EXPERTS_MIN 64)"
+
+
+def test_another_warp_count_takes_one_kernel_at_every_size():
+    """SPD-321: where the row kernels split K over another warp count (their bits differ from the prefill kernel's),
+    every row count takes the prefill kernel, whatever EXPERTS_MIN says; so does a device without the row kernels."""
+    out = []
+    toks = torch.randint(4, 60, (40,), generator=torch.Generator().manual_seed(31))
+    # 8 warps; and the CPU's GPU adapter, which has no MoE launch shape at all
+    for label, eng in (("8 warps", _banked(warps=8, experts_min=64)), ("no launch shape", _banked(experts_min=64))):
+        assert eng.experts_min == 0, (label, eng.experts_min)
+        with _Kernels(eng) as k:
+            eng.prefill(toks, eng.new_state(), head=None)
+            assert not k.rows and [c["rows"] for c in k.grouped] == [40] * len(eng.banks), (label, k.rows[:1])
+        out.append(f"{label}: 40 rows on the prefill kernel")
+    return "; ".join(out)
+
+
 def test_capacity_is_checked():
     cfg, ref, eng = tiny()
     st = eng.new_state(12)

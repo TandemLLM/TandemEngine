@@ -105,20 +105,22 @@ def group_plan(ids_flat: torch.Tensor, groups: int, rows: int = GROUP_ROWS) -> d
             "iend": iend, "R": (P + 15 * groups + 15) // 16 * 16, "items": P // rows + groups}
 
 
-def moe_grouped(x: torch.Tensor, ids: torch.Tensor, bank, rows: int = GROUP_ROWS) -> torch.Tensor:
+def moe_grouped(x: torch.Tensor, ids: torch.Tensor, bank, rows: int = GROUP_ROWS, clamp: float | None = None) -> torch.Tensor:
     """Every (row, slot) pair's expert output, unweighted: x [M, H] bf16, ids int32 [M, S] (the router's,
     the shared expert as id E) -> yd [M S, H] fp32 in the pairs' own order (`combine_inject_norm`'s
-    input, as `fn_kernels.moe_experts` returns it)."""
+    input, as `fn_kernels.moe_experts` returns it). `clamp` (a SwiGLU limit): the gate|up products clamped
+    in place between the two GEMMs, the gate to at most `clamp`, the up to [-clamp, clamp]; None, the
+    call every caller made before the argument."""
     M, S = ids.shape
     P = M * S
     if not _gpu.profile(x.device).inline("fn_prefill_kernels"):
         # where the load probe passed, the batched kernels (their errors propagate); else the
         # torch reference's per-pair walk -- never an exception-driven mid-call switch
-        if x.is_cuda:
+        if x.is_cuda and clamp is None:
             from tools import moe_ada
             if _gpu.profile(x.device).moe_ok(x.device):
                 return moe_ada.moe_grouped_ada(x, ids, bank)
-        return moe_grouped_reference(x, ids, bank)
+        return moe_grouped_reference(x, ids, bank, clamp=clamp)
     mod = _module()
     g = group_plan(ids.reshape(-1), bank.n, rows)
     R, prow = g["R"], g["prow"]
@@ -137,6 +139,9 @@ def moe_grouped(x: torch.Tensor, ids: torch.Tensor, bank, rows: int = GROUP_ROWS
     ygu = torch.empty(R, 2 * bank.I, dtype=torch.bfloat16, device=x.device)
     mod.pre_group_gemm(xh, g["cnt"], g["pstart"], g["iend"], bank.tr, bank.kb, bank.su, bank.sv, 0, bank.I, ygu, None,
                        g["items"], rows // 16, kbmax)
+    if clamp is not None:
+        ygu[:, :bank.I].clamp_(max=clamp)
+        ygu[:, bank.I:].clamp_(min=-clamp, max=clamp)
     del xh
     xd = torch.empty(1, R, bank.I, dtype=torch.float16, device=x.device)
     mod.pre_pair_silu_rot(ygu, g["eid"], prow, bank.tr, bank.kb, bank.su, bank.sv, xd)
@@ -415,9 +420,10 @@ def mix_up_tail(a: torch.Tensor, w, n: torch.Tensor, hc: int, tile: int = 0,
     return mix_tail(mm_rows(a, w), n, hc, out)
 
 
-def moe_grouped_reference(x: torch.Tensor, ids: torch.Tensor, bank) -> torch.Tensor:
+def moe_grouped_reference(x: torch.Tensor, ids: torch.Tensor, bank, clamp: float | None = None) -> torch.Tensor:
     """`moe_grouped` in torch, fp32 products (tests): each pair through its expert's dequantised
-    matrices with the kernels' roundings (gate/up to bf16, the activation bf16(bf16(silu(g)) u))."""
+    matrices with the kernels' roundings (gate/up to bf16, the activation bf16(bf16(silu(g)) u)); `clamp`
+    as `moe_grouped`'s, on the bf16 gate and up before the activation."""
     M, S = ids.shape
     out = torch.zeros(M * S, bank.H, dtype=torch.float32, device=x.device)
     flat = ids.reshape(-1).tolist()
@@ -425,6 +431,8 @@ def moe_grouped_reference(x: torch.Tensor, ids: torch.Tensor, bank) -> torch.Ten
         xr = x[p // S:p // S + 1]
         g = X.reference_matmul(xr, bank.block(e, 0)).float()
         u = X.reference_matmul(xr, bank.block(e, 1)).float()
+        if clamp is not None:
+            g, u = g.clamp(max=clamp), u.clamp(min=-clamp, max=clamp)
         a = (g / (1.0 + torch.exp(-g))).to(torch.bfloat16).float() * u
         out[p] = X.reference_matmul(a.to(torch.bfloat16), _fp32(bank.block(e, 2)))[0]
     return out

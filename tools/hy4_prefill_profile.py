@@ -11,7 +11,8 @@ on the family's grouped kernels, `group`: on the shared prefill kernel, where th
 
   1. a warm-up of 4,608 random ids (every path compiled and launched);
   2. a control pass: the table cache emptied, every chunk unsynced, a device sync at each chunk's end: seconds and
-     tok/s a chunk, cold table reads a chunk;
+     tok/s a chunk, cold table reads a chunk, and the pass's peak allocation above what was held before it (the
+     prompt workspace; the S1 line compares the `group` arm with `grouped`);
   3. --reps profiles of the last chunk: the cache emptied, the chunks before it plain, then the last chunk with every
      part wrapped (`tools/fn_prefill_profile.PartTimer`: a device sync on entry and exit, time exclusive of the
      wrapped parts it calls; the chunk's forward is the root, so the parts add up to the synced chunk).
@@ -216,6 +217,9 @@ def main() -> int:
         st = eng.new_state(a.max_len)
         b = table_stats(eng)
         secs, reads, prev = [], [], b
+        held = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         for i in range(0, len(ids), C):
             t0 = time.perf_counter()
             eng.forward_chunk(torch.tensor(ids[i:i + C]), st)
@@ -225,7 +229,8 @@ def main() -> int:
             reads.append(cold_reads(prev, now))
             prev = now
         say("control", arm=arm, chunk_s=secs, chunk_tok_s=[round(min(C, len(ids) - i * C) / s, 1) for i, s in enumerate(secs)],
-            tok_s=round(len(ids) / sum(secs), 1), cold_reads=reads)
+            tok_s=round(len(ids) / sum(secs), 1), cold_reads=reads,
+            peak_above_held_gib=round((torch.cuda.max_memory_allocated() - held) / (1 << 30), 3) if torch.cuda.is_available() else None)
         for rep in range(a.reps):
             reset_tables(eng)
             st = eng.new_state(a.max_len)

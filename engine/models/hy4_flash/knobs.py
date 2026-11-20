@@ -25,4 +25,8 @@ KNOBS: dict[str, tuple] = {
     # rounds on any server, and a first request's slow rounds do not send the class to the plain step; without a
     # price file for the pack on this device, or at 0, the cut learns its prices as served
     'HY4_DRAFT_FREEZE': ('1', 'engine/models/hy4_flash/serving.py'),
+    # SPD-321: a prompt chunk's routed experts on the shared prefill kernel, one call a chunk (group), or on the row
+    # kernels in launches of 256 rows (rows: the path before, the A/B arm and the way back); HY4_PREFILL_GROUPED
+    # picks the row kernels' form wherever they run
+    'HY4_PREFILL_EXPERTS': ('group', 'engine/models/hy4_flash/serving.py'),
 }

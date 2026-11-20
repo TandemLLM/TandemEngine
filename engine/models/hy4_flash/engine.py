@@ -56,6 +56,25 @@ SUB_LIST = 32
 #: rows of a prompt chunk the routed experts take in one launch (a row's bits do not depend on the batch: the
 #: device check compares)
 EXPERT_SUB = 256
+#: SPD-321: rows from which a prompt chunk's routed experts take the shared prefill kernel
+#: (tools/fn_prefill_kernels.moe_grouped, one call for the chunk) instead of the row kernels in EXPERT_SUB launches.
+#: 0 until the device's crossover is measured (tools/hy4_check.py --only experts-crossover): every chunk takes it
+EXPERTS_MIN = 0
+#: SPD-321: the prefill kernel's item GEMM sums its K range over 4 warps in order (prefill.cu `GG_WK`); the row kernels
+#: give the same bits only where they split K over as many (`moe_launch()`'s warps), so only then may a chunk's row
+#: count choose between the two
+GROUP_WARPS = 4
+#: SPD-321: rows an item of the prefill kernel's GEMM takes (32 and 64 gave the same bits, 64 the faster: gate 0)
+GROUP_ROWS = 64
+
+
+def moe_warps(device) -> int | None:
+    """The warps the device's MoE row kernels split K over (its GPU adapter's `moe_launch()`), None where it has none."""
+    from tools import gpu as _gpu
+    try:
+        return int(_gpu.profile(device).moe_launch()[1])
+    except Exception:          # noqa: BLE001 -- a device without the MoE row kernels (NoInlineBuild, the CPU)
+        return None
 
 
 #: what torch's rms_norm adds under the root when no eps is given (the reference's Engram norms), for every float type
@@ -186,6 +205,12 @@ class Hy4FlashEngine(Hy4FlashRef):
         self.row_torch = False
         #: the prompt's routed experts on the grouped kernels (serving sets it from HY4_PREFILL_GROUPED)
         self.prefill_grouped = False
+        #: SPD-321: a prompt chunk's routed experts on the shared prefill kernel ("group") or on the row kernels ("rows",
+        #: the path before; serving sets it from HY4_PREFILL_EXPERTS). `experts_min`: the rows from which "group" takes the
+        #: chunk; below them the row kernels, which give the same bits only at the prefill kernel's warp split, so on any
+        #: other split every row count takes the prefill kernel
+        self.prefill_experts = "group"
+        self.experts_min = EXPERTS_MIN if moe_warps(self.device) == GROUP_WARPS else 0
         self.prompt_hidden = None
         self.stats = {"rows": 0, "blocks": 0, "prefill_rows": 0, "engram_rows": 0}
 
@@ -1027,13 +1052,27 @@ class Hy4FlashEngine(Hy4FlashRef):
         idx, wts = self.route(x, li)
         z = self.lin(x, self.w(p + "routed_expert_down_proj.weight"))
         if li in self.banks:
-            B, gr = EXPERT_SUB, self.prefill_grouped
-            routed = torch.cat([self.combine(self.expert_pairs(z[i:i + B], idx[i:i + B], li, grouped=gr), idx[i:i + B], wts[i:i + B])
-                                for i in range(0, x.shape[0], B)])
+            routed = self._experts_chunk(z, idx, wts, li)
         else:
             routed = self._experts_grouped(z, idx, wts, li)
         routed = self.lin(routed, self.w(p + "routed_expert_up_proj.weight"))
         return self.rms(routed + self.dense(x, p + "shared_experts."), self.w(p + "combine_output_norm.weight"))
+
+    def _experts_chunk(self, z: torch.Tensor, idx: torch.Tensor, wts: torch.Tensor, li: int) -> torch.Tensor:
+        """A prompt chunk's routed experts on the layer's kernel bank, combined -> [T, latent]. "group" at `experts_min`
+        rows or more: one call of the shared prefill kernel for the whole chunk (an expert's tiles decoded once an item
+        of GROUP_ROWS pairs) with the SwiGLU clamp between its two GEMMs, where the row kernels clamp between their
+        launches. Otherwise the row kernels in EXPERT_SUB launches, grouped by HY4_PREFILL_GROUPED. By the code both
+        apply the same products in the same order a pair (tools/hy4_check.py --only experts-equal compares every MoE
+        layer on the device)."""
+        if self.prefill_experts == "group" and z.shape[0] >= self.experts_min:
+            from tools import fn_prefill_kernels as PK
+            ids = idx.to(torch.int32).contiguous()
+            yd = PK.moe_grouped(z.contiguous(), ids, self.banks[li], rows=GROUP_ROWS, clamp=self.cfg.swiglu_limit)
+            return self.combine(yd, idx, wts)
+        B, gr = EXPERT_SUB, self.prefill_grouped
+        return torch.cat([self.combine(self.expert_pairs(z[i:i + B], idx[i:i + B], li, grouped=gr), idx[i:i + B], wts[i:i + B])
+                          for i in range(0, z.shape[0], B)])
 
     def _experts_grouped(self, z: torch.Tensor, idx: torch.Tensor, wts: torch.Tensor, li: int) -> torch.Tensor:
         """A chunk's routed experts, an expert's rows together, the pairs added in fp32 and rounded once."""
