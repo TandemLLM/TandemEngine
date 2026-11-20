@@ -245,6 +245,25 @@ def test_the_served_loop_drafts_and_writes_the_plain_text():
     return f"24 tokens twice, plain, chain and tree: the same text; {stats['chain']} / {stats['tree']}"
 
 
+def test_the_drafter_line_counts_stale_rounds():
+    """SRV-907: the verbose server's `[drafter]` line (the shared drafter's `report`) ends with the DFly head's
+    count of stale rounds, which the proof runs read; a head without the count leaves the line as it was."""
+    import types
+
+    from engine.drafters.ngram import NgramDrafter
+    from engine.methods.mtp_drafter import MTPTreeDrafter
+    from engine.methods.staircut import PriceModel, StairCut
+    cfg, eng, srv, head = setup()
+    d = MTPTreeDrafter(srv, head, StairCut(PriceModel(), siblings=False), NgramDrafter(corpus_path="", min_order=3,
+                                                                                      max_depth=16))
+    assert d.report().endswith(" stale=0"), d.report()[-40:]
+    head.stats["stale"] += 2
+    assert d.report().endswith(" stale=2")
+    d.head = types.SimpleNamespace(stats={"rounds": 0}, depth=head.depth)
+    assert " stale=" not in d.report()
+    return "stale=0, then stale=2; none for a head without the count"
+
+
 def test_the_first_round_after_each_resume_drafts():
     """SRV-907 (the conversation cache's design, test 10 and question 6.2.3): after a resume from each cache tier
     (an anchor, the end of a generation, the last prompt's end, a session snapshot, a prefix snapshot) the prefill
