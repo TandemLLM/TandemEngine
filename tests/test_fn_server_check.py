@@ -79,6 +79,8 @@ def test_each_broken_corner_fails_by_name():
     broken("sampled_seed_repeats", lambda a: a["sampled_seed"].update(_again=_msg("another poem")))
     broken("tool_forced", lambda a: a.update(tool_forced=_msg(calls=[("get_time", {})], finish="tool_calls")))
     broken("tool_forced_3", lambda a: a.update(tool_forced_3=_msg("<tool_call>get_weather</tool_call>")))
+    broken("tool_forced_2", lambda a: a["tool_forced_2"]["choices"][0]["message"]["tool_calls"][0]["function"].update(
+        arguments='{"city": "Oslo"'))
     broken("json_format_2", lambda a: a.update(json_format_2=_msg("Here you go: apple, red")))
     broken("penalty_bias", lambda a: a.update(penalty_bias=_msg("", finish="error")))
     assert not F.corners({"answers": {}})["all_pass"], "a run with no answers is no pass"

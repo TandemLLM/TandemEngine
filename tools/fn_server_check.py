@@ -201,6 +201,13 @@ def compare(a: dict, b: dict) -> dict:
     return {"all_same": ok, "cases": res}
 
 
+def _object(text) -> bool:
+    try:
+        return isinstance(json.loads(text or "{}"), dict)
+    except ValueError:
+        return False
+
+
 def corners(run_: dict) -> dict:
     """ENG-476: one run's answers checked against what the API says (the module's docstring), case by case."""
     ans = run_["answers"]
@@ -239,7 +246,7 @@ def corners(run_: dict) -> dict:
         calls = msg(name).get("tool_calls") or []
         want = body["tool_choice"]["function"]["name"] if isinstance(body["tool_choice"], dict) else None
         names = [c["function"]["name"] for c in calls]
-        ok_args = all(isinstance(json.loads(c["function"]["arguments"] or "{}"), dict) for c in calls)
+        ok_args = all(_object(c["function"]["arguments"]) for c in calls)
         out[name] = (bool(calls) and ok_args and finish(name) == "tool_calls" and (want is None or set(names) == {want}),
                      f"calls {names}, finish {finish(name)}")
     for name in ("json_format", "json_format_2", "json_format_3"):

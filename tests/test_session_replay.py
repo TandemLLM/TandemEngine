@@ -95,10 +95,13 @@ def test_the_agent_shape():
                                                "finish_reason": "stop"}], "usage": {"completion_tokens": 9}},
                 lambda b: {"choices": [{"message": {"tool_calls": [{"id": "z", "function": {"name": "read", "arguments": "[1]"}}]},
                                         "finish_reason": "tool_calls"}], "usage": {"completion_tokens": 9}},
-                lambda b: {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": {}}])
-    rep, _ = _run(lambda b: next(bad, _calls)(b), turns=3, after_turns=0, chat_turns=0, own_calls=True)
+                lambda b: {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": {}},
+                lambda b: {"choices": [{"message": {"content": "Done.", "reasoning_content": "<tool_call>read<arg_key>"},
+                                        "finish_reason": "stop"}], "usage": {"completion_tokens": 9}}])
+    rep, _ = _run(lambda b: next(bad, _calls)(b), turns=4, after_turns=0, chat_turns=0, own_calls=True)
     c = rep["calls"]
-    assert c["no_call"] == [0, 1, 3] and c["call_text"] == [1] and c["bad_args"] == [2] and c["zero_tokens"] == [3], c
+    assert c["no_call"] == [0, 1, 3, 4] and c["call_text"] == [1] and c["bad_args"] == [2] and c["zero_tokens"] == [3], c
+    assert c["call_in_reasoning"] == [4] and c["failures"] == 8, c
     return "12 tools, three calls a scripted turn, the model's own calls answered, each failure counted"
 
 

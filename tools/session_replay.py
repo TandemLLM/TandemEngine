@@ -223,13 +223,19 @@ def _record(kind: str, out: dict) -> dict:
             "calls": [c.get("function", {}).get("name") for c in calls],
             "calls_bad": [c.get("function", {}).get("name") for c in calls if not _json_ok(
                 c.get("function", {}).get("arguments"))],
-            "call_text": "<tool_call" in (msg.get("content") or "") or "<arg_key>" in (msg.get("content") or ""),
+            "call_text": _call_text(msg.get("content")),
+            "call_in_reasoning": _call_text(msg.get("reasoning_content")),
             "cached": (u.get("prompt_tokens_details") or {}).get("cached_tokens"),
             "forwarded": t.get("prompt_n"), "prompt_ms": t.get("prompt_ms"),
             "ttft_ms": t.get("ttft_ms"), "cache_source": t.get("cache_source"),
             "completion": u.get("completion_tokens"), "client_ms": round(out["_client_ms"], 1),
             "finish": (out.get("choices") or [{}])[0].get("finish_reason"),
             "text_sha": hashlib.sha256(text.encode()).hexdigest()[:16], "text": text}
+
+
+def _call_text(text) -> bool:
+    """A call's tags left in a text (the content, or the reasoning when the call was written inside it)."""
+    return any(t in (text or "") for t in ("<tool_call", "<arg_key>", "<function="))
 
 
 def _json_ok(text) -> bool:
@@ -305,10 +311,11 @@ def run(a) -> dict:
 def calls_summary(reqs: list) -> dict:
     """ENG-474: of the requests that offered tools (all but the compaction), the answers that ended in parsed
     calls, those with more than one call, and the failures: an answer that is no call, a call whose arguments are
-    not a JSON object, a call left as text in the content, an answer with no token."""
+    not a JSON object, a call left as text in the content or written inside the reasoning, an answer with no token.
+    An answer that is no call may be a right one (prose after the tool's result): the lists say which."""
     tooled = [r for r in reqs if r["kind"] != "compaction"]
     out = {"requests": len(tooled), "called": 0, "several": 0, "max_calls": 0, "no_call": [], "bad_args": [],
-           "call_text": [], "zero_tokens": []}
+           "call_text": [], "call_in_reasoning": [], "zero_tokens": []}
     for i, r in enumerate(reqs):
         if r["kind"] == "compaction":
             continue
@@ -323,9 +330,12 @@ def calls_summary(reqs: list) -> dict:
             out["bad_args"].append(i)
         if r.get("call_text"):
             out["call_text"].append(i)
+        if r.get("call_in_reasoning"):
+            out["call_in_reasoning"].append(i)
         if not r.get("completion"):
             out["zero_tokens"].append(i)
-    out["failures"] = len(out["no_call"]) + len(out["bad_args"]) + len(out["call_text"]) + len(out["zero_tokens"])
+    out["failures"] = sum(len(out[k]) for k in ("no_call", "bad_args", "call_text", "call_in_reasoning",
+                                                  "zero_tokens"))
     return out
 
 
@@ -402,7 +412,8 @@ def main() -> None:
     c = rep["calls"]
     print(f"[replay] calls: {c['called']} of {c['requests']} answers called ({c['several']} with several, "
           f"most {c['max_calls']}); no call {c['no_call']}, bad arguments {c['bad_args']}, call text "
-          f"{c['call_text']}, no token {c['zero_tokens']}", flush=True)
+          f"{c['call_text']}, call in the reasoning {c['call_in_reasoning']}, no token {c['zero_tokens']}",
+          flush=True)
     print(f"[replay] wrote {a.out}", flush=True)
     if a.expect_calls:
         return min(c["failures"], 100)
