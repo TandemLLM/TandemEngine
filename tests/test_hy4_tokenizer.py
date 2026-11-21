@@ -230,6 +230,26 @@ def _forced(tok, eos: int) -> str:
     return f"required, parallel and named: the opener {opener} legal first, the closer {closer} after the calls"
 
 
+def test_parallel_tool_calls_false_keeps_one_of_the_models_calls():
+    """ENG-474: the request's `parallel_tool_calls: false` is the shared cap of one call (server/app.py `max_calls`,
+    the stream's ToolCallBuffer), as for Flash-Next and the 27B: of the model's two-call turn one call leaves and the
+    other is counted as dropped; without the cap both leave, in one message."""
+    tok = Hy4Tokenizer(_Stand())
+    ids = tok._tok(CALL).input_ids
+    fmt = toolformats.get("argkey")
+    for cap, want in ((None, WANT), (1, WANT[:1])):
+        b = ToolCallBuffer(names=["write_file", "get_time"], max_calls=cap, types=TYPES, fmt=fmt)
+        sent = ""
+        for i in range(1, len(ids) + 1):
+            now = tok.decode(ids[:i])
+            b.feed(now[len(sent):])
+            sent = now
+            b.drain_deltas()
+        b.finish(eos=True)
+        assert _calls(b.calls) == want, (cap, b.calls)
+    return "no cap: both calls; parallel_tool_calls false: the first"
+
+
 def test_a_forced_tool_choice_lets_the_model_write_its_own_opener():
     return _forced(Hy4Tokenizer(_VocabStand()), 999)
 
