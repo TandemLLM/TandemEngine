@@ -28,7 +28,8 @@ The requests name no model's own tags or template: the same set ran on LFM2.5 an
 every vocabulary: on Hy4-flash's 11 and 13 are `,` and `.` as on Qwen's, 264 and 279 other common tokens.
 
 `--corners`: one run's answers against what the API says, for any family: the stop string never in the
-answer and finish_reason stop; every logprob token with its logprob and a top list of five, best first; a
+answer and finish_reason stop; every logprob token the model chose with its logprob and a top list of five, best
+first, and the tokens the server wrote (a reasoning budget's close: logprob 0, itself the only alternative) one run; a
 seeded request the same text when sent again; the penalties and logit_bias served; a forced tool_choice a
 parsed call (the named one where one is named); response_format json_object a JSON object. Exit: the
 failures.
@@ -227,11 +228,19 @@ def corners(run_: dict) -> dict:
                               f"finish {finish('stop_string')}, ends {text[-40:]!r}")
     if "logprobs" in ans:
         lp = ((ans["logprobs"].get("choices") or [{}])[0].get("logprobs") or {}).get("content") or []
-        bad = [i for i, t in enumerate(lp) if not isinstance(t.get("logprob"), (int, float)) or t["logprob"] > 1e-6
+        # a token the server wrote (a budget's forced close, server/logprobs.py `Recorder.forced`): logprob 0 with
+        # itself the only alternative, for every family; one run of them, the one close
+        written = [i for i, t in enumerate(lp) if t.get("logprob") == 0.0
+                   and [(x.get("token"), x.get("logprob")) for x in t.get("top_logprobs") or []] == [(t.get("token"), 0.0)]]
+        runs = sum(1 for k, i in enumerate(written) if k == 0 or written[k - 1] != i - 1)
+        bad = [i for i, t in enumerate(lp) if i not in written and (
+               not isinstance(t.get("logprob"), (int, float)) or t["logprob"] > 1e-6
                or len(t.get("top_logprobs") or []) != 5
                or [x["logprob"] for x in t["top_logprobs"]] != sorted((x["logprob"] for x in t["top_logprobs"]),
-                                                                       reverse=True)]
-        out["logprobs"] = (bool(lp) and not bad, f"{len(lp)} tokens, {len(bad)} without a logprob or an ordered top 5")
+                                                                       reverse=True))]
+        out["logprobs"] = (bool(lp) and not bad and runs <= 1,
+                           f"{len(lp)} tokens, {len(bad)} without a logprob or an ordered top 5; {len(written)} written "
+                           f"by the server (logprob 0, itself alone) in {runs} run{'s' if runs != 1 else ''}")
     for name in REPEAT:
         if name in ans and "_again" in ans[name]:
             same = _main_text(ans[name]) == _main_text(ans[name]["_again"])

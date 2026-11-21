@@ -87,6 +87,37 @@ def test_each_broken_corner_fails_by_name():
     return f"{len(cases)} broken corners, each failing by name"
 
 
+def _written(token):
+    """A token the server wrote (a budget's forced close), as server/logprobs.py reports one: logprob 0, itself the
+    only alternative."""
+    return {"token": token, "logprob": 0.0, "top_logprobs": [{"token": token, "logprob": 0.0}]}
+
+
+def test_a_close_the_server_wrote_is_logprob_0_with_itself_alone():
+    """ENG-476 (Hy4-flash, hold 1a on 5c89764b): the logprobs request's reasoning block is closed by the budget (the
+    family's default cap less the answer reserve at 60 tokens), so its close is the server's: logprob 0 with itself
+    the only alternative, every family alike (one token for Hy4-flash's own close, the shared phrase's tokens for
+    the others). The corner takes one such run and still wants a full ordered top 5 for every token the model chose;
+    a lone alternative that is not the token, a written token whose logprob is not 0, or a second run fail it."""
+    def answer(entries):
+        run = copy.deepcopy(_run())
+        run["answers"]["logprobs"] = _msg("One two", logprobs=entries)
+        return F.corners(run)["cases"]["logprobs"]
+    first = {"token": "One", "logprob": -0.1, "top_logprobs": _top(-0.1, -2, -3, -4, -5)}
+    after = {"token": " two", "logprob": 0.0, "top_logprobs": _top(0.0, -9, -9, -10, -11)}
+    for close in (["</think:opensource>"], ["\n\n", "Considering", " the", "</think>", "\n\n"]):
+        got = answer([first] + [_written(t) for t in close] + [after])
+        assert got["pass"] and f"{len(close)} written" in got["seen"], (close, got)
+    for label, entries in (
+            ("a lone alternative that is not the token", [first, dict(_written("</think>"), top_logprobs=[
+                {"token": "x", "logprob": 0.0}]), after]),
+            ("a written token not at logprob 0", [first, dict(_written("</think>"), logprob=-0.3), after]),
+            ("two written runs", [first, _written("</think>"), after, _written("</think>"), after])):
+        got = answer(entries)
+        assert not got["pass"], (label, got)
+    return "one written run (one token, five) passes; a lone other token, a written -0.3, two runs fail"
+
+
 if __name__ == "__main__":
     from scriptmode import run
     run(globals())

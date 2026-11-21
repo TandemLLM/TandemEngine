@@ -5,8 +5,9 @@ target's logits after the deterministic logit processors (penalties, the no-repe
 `logit_bias`) and before temperature, top-p, top-k and min_p -- the model's distribution under
 the request's rules, not the sampling filter's. A verified block hands its rows over at once: in a
 chain, row i is the token at position i; in a tree, the rows of the accepted path. The engine's own
-tokens -- the phrase a reasoning budget forces -- were not chosen by the model at all, and carry
-logprob 0 with themselves as the only alternative.
+tokens -- the close a reasoning budget forces, the shared phrase or a family's own (`_force_close`) --
+were not chosen by the model at all, and carry logprob 0 with themselves as the only alternative,
+for every family alike.
 
 The recorder costs nothing unless a request asks: the loop checks for one per decision site, and
 only a recording request pays for a log-softmax over its rows and one host copy a block.

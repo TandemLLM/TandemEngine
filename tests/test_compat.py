@@ -193,6 +193,74 @@ def test_logprobs_change_no_token_and_agree_across_paths():
     return "3 paths, 24 tokens: same ids, logprobs within 1e-4 of the single-step rows"
 
 
+class TagTok(Tok):
+    """`Tok` with the reasoning tags one token each, as a real tokenizer's special tokens are: `<think>` is 94 and
+    `</think>` 95 (the `~` and DEL characters, which no text here holds)."""
+
+    TAGS = {"<think>": 94, "</think>": 95}
+
+    def convert_tokens_to_ids(self, text):
+        return self.TAGS.get(text, -1)
+
+    def __call__(self, text, add_special_tokens=False, return_tensors=None):
+        ids, i = [], 0
+        while i < len(text):
+            tag = next((k for k in self.TAGS if text.startswith(k, i)), None)
+            ids.append(self.TAGS[tag] if tag else (ord(text[i]) - 32) % 96)
+            i += len(tag) if tag else 1
+        return type("R", (), {"input_ids": torch.tensor([ids]) if return_tensors else ids})()
+
+
+def test_a_budget_closed_blocks_written_close_is_logprob_0_for_every_family():
+    """ENG-476 (the fncheck corner on Hy4-flash, 2026-11-21): a reasoning block the budget closes gets its close
+    written by the engine (`_force_close`), not sampled. Every written token is logprob 0 with itself as its only
+    alternative (server/logprobs.py `Recorder.forced`); every token the model chose, the first answer token after
+    the close among them, has its own row's logprob and the full top list. One rule for every family: each
+    registered family's close (`_think_close()` under its spec, the shared phrase or its own), with no drafter,
+    a chain and a tree."""
+    from engine.models import REGISTRY
+    from engine.spec import ThinkBudget
+    tok, budget, after, top = TagTok(), 5, 4, 3
+    prompt = PROMPT + tok("<think>", add_special_tokens=False).input_ids
+    closes = {}
+    for name in sorted(REGISTRY):
+        serve()
+        app.STATE["spec"] = REGISTRY[name].spec
+        closes.setdefault(app._think_close(), []).append(name)
+    assert len(closes) >= 2, closes                  # the shared phrase and at least one family's own
+    seen = 0
+    for close, names in closes.items():
+        ids = tok(close, add_special_tokens=False).input_ids
+        n = budget + len(ids) + after
+
+        def run(dr=None, tree=False, lpr=None):
+            serve(dr, tree=tree)
+            app.STATE.update(spec=REGISTRY[names[0]].spec, tok=tok)
+            think = ThinkBudget(tok, budget, phrase=app._think_close()).start(prompt)
+            kw = {"lpr": lpr} if lpr is not None else {}
+            return list(app.generate_stream(torch.tensor(prompt), n, set(), think, **kw))
+        plain = run()
+        # the close the budget wrote: after the block's `budget` tokens (and the one the step that spent it drew)
+        at = next((i for i in range(budget, budget + 2) if plain[i:i + len(ids)] == ids), None)
+        assert at is not None and len(plain) == n and at + len(ids) < n, (names, plain)   # answer tokens after it
+        for label, dr, tree in (("none", None, False), ("chain", Oracle(plain), False),
+                                ("tree", TreeOracle(plain), True)):
+            rec = app.lp_mod.Recorder(top)
+            out = run(dr, tree, rec)
+            assert out == plain, (names, label, "logprobs changed the output")
+            ents = rec.entries[:len(out)]
+            assert [e[0] for e in ents] == out, (names, label)
+            for i, (t, lp, alts) in enumerate(ents):
+                if at <= i < at + len(ids):
+                    assert (lp, alts) == (0.0, [(t, 0.0)]), (names, label, i, lp, alts)
+                else:
+                    assert len(alts) == top and alts[0][0] == t and lp <= 1e-6, (names, label, i, lp, alts)
+                    assert [v for _, v in alts] == sorted((v for _, v in alts), reverse=True), (names, label, i)
+            seen += 1
+    return (f"{len(closes)} closes ({', '.join(f'{len(v)} famil' + ('y' if len(v) == 1 else 'ies') for v in closes.values())})"
+            f", 3 paths each: the written close logprob 0 with itself alone, the chosen tokens a full top {top}")
+
+
 # ------------------------------------------------------------------ the handler
 
 class Req(app.Handler):
