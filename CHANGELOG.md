@@ -15,6 +15,8 @@ Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; 
 
 ### Effort
 
+- The answer reserve is one rule for every model (ENG-468 / M1.5): with thinking on, a request's reasoning closes early enough to leave its answer min(2,048, a quarter of the output limit), whoever set the cap: a client's budget, a conductor's class, `--think-budget`, or nobody. Before, only a client's budget, a JSON answer and Hy4-flash's own default level got it, and a chat-mode request with 200 tokens under a class cap of 8,192 reasoned all 200 and answered nothing. `--answer-reserve 0` turns it off.
+- A JSON answer (`response_format` json_object or json_schema) keeps min(2,048, half the output limit) for the JSON after its reasoning, where other answers keep a quarter (SRV-169). At 150 tokens a quarter, 37, was too few for a short JSON array. A number set with `--answer-reserve` stands, and 0 turns it off.
 - A family says how its chat template takes the thinking effort, in its spec (SRV-899). `EffortSpec` names the template's word for each effort level and, when the family has one, a default level of its own. The default spec is the shared words `low`, `medium` and `xhigh`. tests/test_effort_table.py pins what each family's template is handed, and the budget, for every effort a request can carry, against rows written on main: the six other families' rows are unchanged.
 - A family's own default level caps a request that nobody else decided: no client budget, no `--think-budget`, no conductor plan that decides the effort. The cap gets the answer reserve and closes with the engine's own phrase.
 - On a model that serves one chat at a time, a request waiting behind one that is thinking reads "another request is thinking".

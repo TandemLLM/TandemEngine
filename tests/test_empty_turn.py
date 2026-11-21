@@ -70,6 +70,9 @@ def _ask(end, mode: str = "on", tasks=E1, stream=True, think_on=True, fmt="tags"
     """One chat request whose model ends at `end` (a token, or a list of them);
     (monitor, content, reasoning, finish)."""
     serve(FixedDrafter(97, 5, tree_mode=False))
+    # the answer reserve off (--answer-reserve 0): this tests the monitor's own acts, at a limit
+    # where the reserve for a request with nothing asked (ENG-468 / M1.5) would close first
+    app.STATE["answer_reserve"] = 0
     app.STATE["tok"] = MonTok(ends=end if isinstance(end, list) else [end])
     app.STATE["cfg_eos"] = end
     app.STATE["reasoning_format"] = fmt

@@ -187,9 +187,11 @@ def test_a_family_default_renders_its_word_and_caps_what_nobody_decided():
     # --think-budget is the operator's: it wins
     word, budget, log = _one(spec, {}, think_budget=300)
     assert budget == 300 and "server default" not in log, budget
-    # the default spec: no default of its own, the server's word, no cap
+    # the default spec: no default of its own, the server's word, no cap of a level's: the answer reserve alone
+    # (ENG-468 / M1.5, every request with thinking on keeps it)
     word, budget, log = _one(None, {})
-    assert word == "xhigh" and not budget and "server default" not in log, (word, budget)
+    assert word == "xhigh" and "server default" not in log, (word, budget)
+    assert budget == th.with_reserve(0, 32768, th.AUTO, _one.closer)[0] and "answer reserve" in log, (budget, log)
 
 
 HY4 = REGISTRY["hy_v4_flash"].spec if "hy_v4_flash" in REGISTRY else None

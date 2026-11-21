@@ -9,6 +9,9 @@
   "hy_v4_flash": "185d3148",
   "tandemapp": "7207618"
  },
+ "moved": {
+  "rows": "ENG-468 / M1.5: the answer reserve for a request with thinking on and nothing asked, on hy4-m1-serve: 48 rows (the six families without a default level of their own, a request that carries nothing, server defaults unset, low, medium and xhigh, both limits) gain the reserve's [think] line and its cap; written on the Mac (CPU, the same rows as the Spark for every row before)"
+ },
  "plan_rows": {
   "flint|enable_thinking=false|default=-|limit=160|plan=decides=no": {
    "budget": 0,
@@ -63405,7 +63408,7 @@
    ]
   },
   "flint|nothing|default=-|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -63417,10 +63420,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "flint|nothing|default=-|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -63432,10 +63437,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "flint|nothing|default=low|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -63448,10 +63455,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "flint|nothing|default=low|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -63464,10 +63473,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "flint|nothing|default=medium|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -63480,10 +63491,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "flint|nothing|default=medium|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -63496,7 +63509,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "flint|nothing|default=off|limit=2048": {
    "budget": 0,
@@ -63529,7 +63544,7 @@
    "think": []
   },
   "flint|nothing|default=xhigh|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -63542,10 +63557,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "flint|nothing|default=xhigh|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -63558,7 +63575,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "flint|reasoning.enabled|default=-|limit=2048": {
    "budget": 1425,
@@ -70557,7 +70576,7 @@
    ]
   },
   "lfm2_moe|nothing|default=-|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -70569,10 +70588,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -70584,10 +70605,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "lfm2_moe|nothing|default=low|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -70600,10 +70623,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "lfm2_moe|nothing|default=low|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -70616,10 +70641,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "lfm2_moe|nothing|default=medium|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -70632,10 +70659,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "lfm2_moe|nothing|default=medium|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -70648,7 +70677,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "lfm2_moe|nothing|default=off|limit=2048": {
    "budget": 0,
@@ -70681,7 +70712,7 @@
    "think": []
   },
   "lfm2_moe|nothing|default=xhigh|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -70694,10 +70725,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -70710,7 +70743,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "lfm2_moe|reasoning.enabled|default=-|limit=2048": {
    "budget": 1425,
@@ -74105,7 +74140,7 @@
    ]
   },
   "nemotron_h|nothing|default=-|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -74117,10 +74152,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -74132,10 +74169,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "nemotron_h|nothing|default=low|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -74148,10 +74187,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "nemotron_h|nothing|default=low|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -74164,10 +74205,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "nemotron_h|nothing|default=medium|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -74180,10 +74223,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "nemotron_h|nothing|default=medium|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -74196,7 +74241,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "nemotron_h|nothing|default=off|limit=2048": {
    "budget": 0,
@@ -74229,7 +74276,7 @@
    "think": []
   },
   "nemotron_h|nothing|default=xhigh|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -74242,10 +74289,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -74258,7 +74307,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "nemotron_h|reasoning.enabled|default=-|limit=2048": {
    "budget": 1425,
@@ -77653,7 +77704,7 @@
    ]
   },
   "qwen3_5_moe|nothing|default=-|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -77665,10 +77716,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -77680,10 +77733,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen3_5_moe|nothing|default=low|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -77696,10 +77751,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen3_5_moe|nothing|default=low|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -77712,10 +77769,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen3_5_moe|nothing|default=medium|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -77728,10 +77787,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen3_5_moe|nothing|default=medium|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -77744,7 +77805,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen3_5_moe|nothing|default=off|limit=2048": {
    "budget": 0,
@@ -77777,7 +77840,7 @@
    "think": []
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -77790,10 +77853,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -77806,7 +77871,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen3_5_moe|reasoning.enabled|default=-|limit=2048": {
    "budget": 1425,
@@ -81201,7 +81268,7 @@
    ]
   },
   "qwen3_5|nothing|default=-|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -81213,10 +81280,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -81228,10 +81297,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen3_5|nothing|default=low|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -81244,10 +81315,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen3_5|nothing|default=low|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -81260,10 +81333,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen3_5|nothing|default=medium|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -81276,10 +81351,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen3_5|nothing|default=medium|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -81292,7 +81369,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen3_5|nothing|default=off|limit=2048": {
    "budget": 0,
@@ -81325,7 +81404,7 @@
    "think": []
   },
   "qwen3_5|nothing|default=xhigh|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -81338,10 +81417,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -81354,7 +81435,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen3_5|reasoning.enabled|default=-|limit=2048": {
    "budget": 1425,
@@ -84749,7 +84832,7 @@
    ]
   },
   "qwen4_exp|nothing|default=-|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -84761,10 +84844,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "63d1085d122345d1",
    "kwargs": {
@@ -84776,10 +84861,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen4_exp|nothing|default=low|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -84792,10 +84879,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen4_exp|nothing|default=low|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "56c89baf49ef7381",
    "kwargs": {
@@ -84808,10 +84897,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen4_exp|nothing|default=medium|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -84824,10 +84915,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen4_exp|nothing|default=medium|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "321a65dc55fdb543",
    "kwargs": {
@@ -84840,7 +84933,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen4_exp|nothing|default=off|limit=2048": {
    "budget": 0,
@@ -84873,7 +84968,7 @@
    "think": []
   },
   "qwen4_exp|nothing|default=xhigh|limit=2048": {
-   "budget": 0,
+   "budget": 1425,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -84886,10 +84981,12 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 512 of 2048, in force none -> cap 1425"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=32768": {
-   "budget": 0,
+   "budget": 30609,
    "calls": 3,
    "calls_sha": "3ea35f420fc38aad",
    "kwargs": {
@@ -84902,7 +84999,9 @@
    "prompt_len": 80,
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 2048 of 32768, in force none -> cap 30609"
+   ]
   },
   "qwen4_exp|reasoning.enabled|default=-|limit=2048": {
    "budget": 1425,

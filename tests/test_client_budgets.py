@@ -414,28 +414,39 @@ def logbuf_capture(out):
 
 
 def test_no_field_hands_the_loop_what_it_had():
-    """No budget field: the loop gets the server's budget and the request's limit, no monitor
-    cap, no client-budget line -- on raw, with a monitor on, and with the server's own --think-budget."""
+    """No budget field: the loop gets the request's limit and no client-budget line -- on raw, with a monitor on, and
+    with the server's own --think-budget. With thinking on (the default, and the switch alone) the server's budget is
+    lowered to leave the answer its reserve (ENG-468 / M1.5: before, it went to the loop as it was, and the limit
+    could end the turn inside the block): the monitor holds that cap where one acts. With thinking off: the server's
+    budget as it was, no monitor cap, no reserve."""
     msgs = [{"role": "user", "content": "hello"}]
     for mode, tb in ((None, 0), ("on", 0), (None, 7), ("on", 7)):
+        cap = thinking.with_reserve(tb, 40, thinking.AUTO, P)[0]
         for b in ({"messages": msgs, "max_tokens": 40},
                   {"messages": msgs, "max_tokens": 40,
                    "chat_template_kwargs": {"enable_thinking": True}}):
             raw, calls, log = _handler(b, mode=mode, think_budget=tb)
-            assert len(calls) == 1 and calls[0]["budget"] == tb and calls[0]["max_new"] == 40
-            sup = calls[0]["sup"]
-            assert sup is None or sup.think_budget is None, mode
+            assert len(calls) == 1 and calls[0]["max_new"] == 40
+            assert _cap_in_force(calls[0]) == cap, (mode, tb, calls[0]["budget"])
+            assert _RESERVE.findall(log) == [("10", "40")], log
             assert "client budget" not in log, log
+        b = {"messages": msgs, "max_tokens": 40, "chat_template_kwargs": {"enable_thinking": False}}
+        raw, calls, log = _handler(b, mode=mode, think_budget=tb)
+        sup = calls[0]["sup"]
+        assert calls[0]["budget"] == tb and (sup is None or sup.think_budget is None), mode
+        assert not _RESERVE.findall(log) and "client budget" not in log, log
 
 
 def test_no_field_x_tandem_raw_is_the_raw_loop():
+    """`X-Tandem: raw` runs no monitor: the loop's own cap is the answer reserve's (ENG-468 / M1.5), as on a server
+    with no monitor at all, and the two write the same tokens."""
     msgs = [{"role": "user", "content": "hello"}]
     raw, calls, _ = _handler({"messages": msgs, "max_tokens": 40}, mode="on",
                              headers={"X-Tandem": "raw"})
-    assert calls[0]["sup"] is None and calls[0]["budget"] == 0
+    assert calls[0]["sup"] is None and calls[0]["budget"] == thinking.with_reserve(0, 40, thinking.AUTO, P)[0]
     # the same request with no monitor at all yields the same tokens
     raw2, calls2, _ = _handler({"messages": msgs, "max_tokens": 40})
-    assert calls[0]["ids"] == calls2[0]["ids"]
+    assert calls2[0]["budget"] == calls[0]["budget"] and calls[0]["ids"] == calls2[0]["ids"]
 
 
 # ------------------------------------------------------------------ 8. the close, over the handler
@@ -761,6 +772,57 @@ def test_over_the_handler_chat_app_a_switch_keeps_the_class_and_a_word_wins():
     return "chat-app: " + ", ".join(out)
 
 
+_RESERVE = __import__("re").compile(r"\[think\] \S+ answer reserve (\d+) of (\d+)")
+
+
+def _cap_in_force(call) -> int:
+    """The reasoning cap a loop call ran with: ThinkBudget's, or the monitor's where it holds the cap (0: none)."""
+    return int(call["budget"] or getattr(call["sup"], "think_budget", None) or 0)
+
+
+def test_over_the_handler_thinking_on_with_nothing_asked_keeps_the_answer_reserve():
+    """ENG-468 / M1.5 (hold 1a, 2026-11-21: a chat-mode request with thinking on, no effort and 200 tokens reasoned all
+    200 and answered nothing, with no `[think]` line): a request with thinking on gets the answer reserve within its
+    output limit whatever set its cap, nothing included. Under a plan that decides the effort (the class's 8,192, or
+    xhigh's none) and under one that does not, with the monitor and without one, the reasoning closes with
+    min(2,048, a quarter of the limit) and the close left; thinking off gets no reserve, and `--answer-reserve 0`
+    keeps none, as for a client's budget."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 200}
+    want = 200 - 50 - P
+    got = []
+    for label, cond, mode in (("class 8192", _Conductor(8192), "on"), ("class xhigh", _Conductor(None), "on"),
+                              ("plan decides nothing", _Conductor(None, decides=False), "on"),
+                              ("engine alone", None, None), ("engine alone, monitor", None, "on")):
+        _, calls, log = _handler(dict(body), mode=mode, cond=cond)
+        assert _RESERVE.findall(log) == [("50", "200")], (label, log[-500:])
+        assert _cap_in_force(calls[0]) == want, (label, calls[0]["budget"], getattr(calls[0]["sup"], "think_budget", None))
+        got.append(label)
+    _, calls, log = _handler(dict(body, chat_template_kwargs={"enable_thinking": False}), mode="on", cond=_Conductor(8192))
+    assert not _RESERVE.findall(log) and "[think]" not in log, log[-400:]
+    _, calls, log = _handler(dict(body), mode="on", cond=_Conductor(None), reserve=0)
+    assert not _RESERVE.findall(log) and _cap_in_force(calls[0]) == 0, log[-400:]
+    return f"cap {want} of 200 for: {', '.join(got)}; none with thinking off or --answer-reserve 0"
+
+
+def test_every_family_keeps_the_answer_reserve_with_nothing_asked_under_a_class_cap():
+    """ENG-468 / M1.5: the same request (thinking on, nothing asked, 200 tokens) under a plan whose class caps at
+    8,192 (chat mode), on Flash-Next's, the 27B's and Hy4-flash's specs and every other family's: the reasoning
+    closes with the reserve left, the close each family writes counted. Before, every family ran its 8,192 against
+    200 tokens: nothing of the answer was left."""
+    from engine.models import REGISTRY
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 200, "stream": False}
+    seen = {}
+    for name in sorted(REGISTRY):
+        _, loop, log, head = _table_handler(REGISTRY[name].spec, dict(body), _Conductor(8192, decides=True), None,
+                                            max_len=4096)
+        r = _RESERVE.findall(log)
+        assert r == [("50", "200")], (name, log[-500:])
+        cap = _cap_in_force(loop[0])
+        assert 0 < cap <= 200 - 50, (name, cap)
+        seen[name] = cap
+    return ", ".join(f"{k} {v}" for k, v in seen.items())
+
+
 def test_over_the_handler_thinking_off_has_no_budget():
     body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 40,
             "reasoning_effort": "none"}
@@ -887,14 +949,15 @@ PLAN_DEFAULTS = (None, "xhigh", "off")
 PLAN_LIMIT = 160
 
 
-def _table_handler(spec, body: dict, cond, default, max_len: int = 256, vocab: bool = False):
+def _table_handler(spec, body: dict, cond, default, max_len: int = 256, vocab: bool = False, monitor: str | None = "on"):
     """One request under `cond`'s plan (None: no conductor) with `spec` in force and `default` as the server's effort
-    (off: thinking off for a request that says nothing): the template calls, the loop's calls, the log, the status
-    line."""
+    (off: thinking off for a request that says nothing), the session monitor in `monitor`'s mode (None: none): the
+    template calls, the loop's calls, the log, the status line."""
     import test_effort_table as table
     serve(None, max_len=max_len)
     tok = table.Recorder(frame.MonTok())
-    app.STATE.update(tok=tok, think_budget=0, spec=spec, conductor=cond, monitor=frame.monitor("on"),
+    app.STATE.update(tok=tok, think_budget=0, spec=spec, conductor=cond,
+                     monitor=frame.monitor(monitor) if monitor else None,
                      reasoning_effort=None if default == "off" else default,
                      thinking_default="off" if default == "off" else "on")
     if vocab:
@@ -970,14 +1033,17 @@ def _hy4():
 def test_hy4_a_category_xhigh_with_server_xhigh_is_the_normal_mode_with_no_cap():
     """The owner's fault (2026-11-20, 25,806 thinking tokens in 853.8 s): a plan that decides the effort at xhigh, the
     server's default word xhigh, no effort in the request. On Hy4-flash's spec that is the template's normal mode
-    `high` with no cap below the monitor's backstop, never `max`."""
+    `high` with no cap of the category's, never `max`; the answer reserve (ENG-468 / M1.5) is the one cap, held by the
+    monitor: the limit less the reserve and the close."""
     body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False}
     calls, loop, log, head = _table_handler(_hy4(), dict(body), _Conductor(None, decides=True), "xhigh")
     assert head.startswith("HTTP/1.1 200"), head
     words = [c["kwargs"].get("reasoning_effort") for c in calls]
     assert words and all(w == "high" for w in words), words
-    assert loop[0]["budget"] == 0 and getattr(loop[0]["sup"], "think_budget", None) in (None, 0), loop[0]["budget"]
+    assert loop[0]["budget"] == 0, loop[0]["budget"]
+    assert getattr(loop[0]["sup"], "think_budget", None) == thinking.with_reserve(0, 160, thinking.AUTO, P)[0], loop[0]
     assert "server default" not in log and "client budget" not in log, log
+    assert "answer reserve 40 of 160, in force none" in log, log
 
 
 def test_hy4_the_default_cap_under_a_plan_that_does_not_decide_at_2048():
@@ -993,7 +1059,8 @@ def test_hy4_the_default_cap_under_a_plan_that_does_not_decide_at_2048():
 
 def test_hy4_the_default_cap_with_a_json_answer():
     """SRV-899: a JSON answer (`response_format`) with no effort, on Hy4-flash's spec and no conductor: the family's
-    default cap stands and the JSON answer's own reserve applies to it, once (not the default's second reserve)."""
+    default cap stands and the JSON answer's own reserve applies to it, once (not the default's second reserve): half
+    the limit since the ruling of 2026-11-21 (SRV-169's block)."""
     body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False,
             "response_format": {"type": "json_object"}}
     _, loop, log, head = _table_handler(_hy4(), dict(body), None, None, vocab=True)
@@ -1002,9 +1069,68 @@ def test_hy4_the_default_cap_with_a_json_answer():
     assert "server default: answer reserve" not in log, log
     # the reserve lowered the cap, so with the monitor on it closes hidden (the monitor holds the cap) as a JSON
     # answer's reserve does on every model
-    cap = thinking.with_reserve(8192, 160, thinking.AUTO, P)[0]
+    cap = thinking.with_reserve(8192, 160, 80, P)[0]
+    assert "json answer: reserve 80 of 160" in log, log
     got = loop[0]["budget"] or getattr(loop[0]["sup"], "think_budget", None)
     assert got == cap, (loop[0]["budget"], getattr(loop[0]["sup"], "think_budget", None), cap)
+
+
+def test_a_json_answer_keeps_half_its_limit_for_the_json_when_the_model_thinks_past_its_cap():
+    """SRV-169, ruling of 2026-11-21 (fncheck's json_format_2 on Hy4-flash: 150 tokens, json_object, thinking on; about
+    100 tokens of reasoning, then the JSON cut at the limit): a JSON answer keeps min(2,048, half the limit) for the JSON
+    after the close, where a client's budget and the others keep a quarter: a cut JSON is worthless, a reasoning cut
+    short still answers. The corner's shape on every family's spec, engine alone, no monitor, the random model
+    thinking past every cap: the reserve is 75 of 150 and the JSON has those 75 tokens after the close."""
+    from engine.models import REGISTRY
+    body = {"messages": [{"role": "user", "content": "A JSON array of three fruits with their colours."}],
+            "max_tokens": 150, "stream": False, "response_format": {"type": "json_object"}}
+    seen = {}
+    for name in sorted(REGISTRY):
+        spec = REGISTRY[name].spec
+        _, loop, log, head = _table_handler(spec, dict(body), None, None, max_len=4096, vocab=True, monitor=None)
+        got = __import__("re").findall(r"json answer: reserve (\d+) of (\d+) -> cap (\S+)", log)
+        assert got and got[0][:2] == ("75", "150"), (name, got, log[-500:])
+        closer = len(frame.MonTok().encode(spec.reasoning.close or ThinkBudget.PHRASE))
+        cap = loop[0]["budget"]
+        assert cap == thinking.with_reserve(int(_effort_caps_of(spec)), 150, 75, closer)[0], (name, cap, closer)
+        assert 150 - cap - closer >= 75 or cap == 1, (name, cap, closer)       # the JSON's room after the close
+        seen[name] = (cap, closer)
+        # last: the turn was served, the model closed where the cap says (the close runs a forward: triton)
+        assert head.startswith("HTTP/1.1 200"), (name, head[:60])
+        ids = loop[0]["ids"]
+        assert frame.CLOSE in ids and ids.index(frame.CLOSE) <= cap + 1, (name, ids[:12])
+    return ", ".join(f"{k} cap {c} close {n}" for k, (c, n) in seen.items())
+
+
+def test_a_json_answer_with_a_client_budget_keeps_the_quarter():
+    """SRV-169, ruling of 2026-11-21: the JSON's half is the server's choice when nobody named a budget. A client that
+    names one has made its choice, and its budget is respected as an explicit effort is: the client block's reserve,
+    a quarter (37 of 150), never the JSON's half. The corner's shape with `thinking_budget` 1,000 on every family's
+    spec, engine alone, no monitor."""
+    from engine.models import REGISTRY
+    body = {"messages": [{"role": "user", "content": "A JSON array of three fruits with their colours."}],
+            "max_tokens": 150, "stream": False, "response_format": {"type": "json_object"},
+            "thinking_budget": 1000}
+    seen = {}
+    for name in sorted(REGISTRY):
+        spec = REGISTRY[name].spec
+        _, loop, log, head = _table_handler(spec, dict(body), None, None, max_len=4096, vocab=True, monitor=None)
+        assert "json answer:" not in log, (name, log[-500:])
+        got = __import__("re").findall(r"client budget 1000 \(thinking_budget\), in force \S+, answer reserve (\d+) of "
+                                       r"(\d+) -> cap (\S+)", log)
+        assert got and got[0][:2] == ("37", "150"), (name, got, log[-500:])
+        closer = len(frame.MonTok().encode(spec.reasoning.close or ThinkBudget.PHRASE))
+        cap = loop[0]["budget"]
+        assert cap == thinking.with_reserve(1000, 150, thinking.AUTO, closer)[0], (name, cap, closer)
+        assert str(cap) == got[0][2], (name, cap, got)
+        seen[name] = (cap, closer)
+    return ", ".join(f"{k} cap {c} close {n}" for k, (c, n) in seen.items())
+
+
+def _effort_caps_of(spec) -> int:
+    """The cap a request with no effort gets on the engine alone: the family's own default level's, else none."""
+    d = spec.reasoning.effort.default
+    return int(thinking.caps().get(d) or 0) if d else 0
 
 
 def test_the_table_under_a_plan():
