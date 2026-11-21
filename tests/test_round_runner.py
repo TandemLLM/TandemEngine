@@ -17,6 +17,9 @@ another lane's prefill chunk, its tasks picked, and the leaving lane's teardown 
                                                       test_a_closed_streams_task_is_out_of_the_runner_when_the_close_returns
   R4  the slot given to a second request before the runner's turn: the new request's rows do not move
                                                       test_a_slot_given_to_the_next_request_keeps_its_rows
+  E29 the same order through the handler on a real socket: the stream's write fails, the handler's teardown
+      (`kv_trim_current`, `_par_end`) runs first, and no engine call reaches the lane after its trim
+                                                      test_the_handlers_teardown_is_the_lanes_last_word
 
 Run: python tests/test_round_runner.py
 """
@@ -557,6 +560,129 @@ def test_a_slot_given_to_the_next_request_keeps_its_rows():
         f"errors {seen['errs']}")
     assert not seen["errs"] and seen["errors"] == 0, (seen["errs"], seen["errors"])
     return "the next request's 5 rows unchanged; no call on the lane after the old request's teardown"
+
+
+def test_the_handlers_teardown_is_the_lanes_last_word():
+    """E29 (SRV-885): R2's order through the handler on a real socket. Two streamed requests decode through the
+    runner (C on slot 0, A on slot 1). A's handler is held in a write; a prefill chunk (stood in for) takes the turn
+    as the runner gives it up, so the runner, its tasks picked, waits for it. A's write then fails as a closed
+    socket's does (BrokenPipeError), and its teardown queues for the turn behind the chunk at a lower virtual time
+    than the runner's. The handler's teardown runs first; after its `kv_trim_current` no engine call may reach the
+    lane, and the request is off the running count as soon as the chunk ends."""
+    import json
+    import socket
+    import threading
+    import time
+    from engine import model as M
+    from server import app, slots
+    cfg = T.tiny_config()
+    w = T.FakeWeights(cfg, seed=5)
+    engines = [T._engine(cfg, w) for _ in range(2)]
+    R.RUNNER = None
+    pool = T._setup(engines, [T.OracleTree([1] * 400) for _ in range(2)])
+    turn, eng1, side = pool.turn, engines[1], pool.slots[1]
+    seen: dict = {"torn": None, "calls": [], "errs": []}
+    pause, blocked, resume, held, go = (threading.Event() for _ in range(5))
+    real_write, real_trim, real_multi = app._GoneOnTimeout.write, app.kv_trim_current, M.forward_tree_multi
+
+    def write(self, data):
+        if slots.current() is side and pause.is_set() and b'"text"' in data:
+            blocked.set()
+            resume.wait(60)
+            if seen.get("trap"):
+                raise BrokenPipeError(32, "Broken pipe")          # the client closed its socket
+        return real_write(self, data)
+
+    def trim():
+        if slots.current() is side and seen["torn"] is None:
+            seen["torn"] = time.monotonic()
+        return real_trim()
+
+    def spy(name, fn):
+        def call(*a, **kw):
+            if seen["torn"] is not None:
+                seen["calls"].append(name)
+            return fn(*a, **kw)
+        return call
+    for name in ("forward", "forward_tree", "commit_tree"):
+        setattr(eng1, name, spy(name, getattr(eng1, name)))
+
+    def multi(items):
+        if seen["torn"] is not None and any(it[0] is eng1 for it in items):
+            seen["calls"].append("forward_tree_multi")
+        return real_multi(items)
+
+    def chunk():
+        turn.acquire("chunk")
+        held.set()
+        go.wait(60)
+        turn.release("chunk")
+
+    srv = app.EngineServer(("127.0.0.1", 0), app.Handler)
+    port = srv.server_address[1]
+    outs: dict = {}
+
+    def post(name, prompt, n):
+        try:
+            body = json.dumps({"prompt": prompt, "max_tokens": n, "stream": True, "temperature": 0}).encode()
+            c = socket.create_connection(("127.0.0.1", port), timeout=60)
+            c.sendall(b"POST /v1/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                      + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
+            raw = b""
+            while True:
+                got = c.recv(65536)
+                if not got:
+                    break
+                raw += got
+                if name == "A" and raw.count(b'"text"') >= 3:
+                    pause.set()                                   # A has its first tokens
+            outs[name] = raw
+            c.close()
+        except BaseException as exc:                               # noqa: BLE001
+            seen["errs"].append(exc)
+    app._GoneOnTimeout.write, app.kv_trim_current, M.forward_tree_multi = write, trim, multi
+    before = dict(app.INFLIGHT)
+    ths = []
+    try:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        ths.append(threading.Thread(target=post, args=("C", "the quick brown fox " * 3, 90), daemon=True))
+        ths[0].start()
+        _until(lambda: pool.slots[0].phase == "runner", "C to decode through the runner")
+        ths.append(threading.Thread(target=post, args=("A", "jumps over the lazy dog " * 4, 60), daemon=True))
+        ths[1].start()
+        _until(blocked.is_set, "A's handler in a write")
+        threading.Thread(target=chunk, daemon=True).start()
+        held.wait(60)
+        _until(lambda: "runner" in turn.report()["waiting"], "the runner to wait for the turn")
+        with turn._cv:
+            turn._v[1] = turn._v.get("runner", 0.0) - 1.0         # behind the runner, as slots 1 and 6 were
+        seen["trap"] = True
+        resume.set()
+        _until(lambda: 1 in turn.report()["waiting"], "A's teardown to wait for the turn")
+        t_go = time.monotonic()
+        go.set()
+        _until(lambda: app.INFLIGHT["running"] - before["running"] <= 1, "A off the running count", 10)
+        seen["off_s"] = time.monotonic() - t_go
+        for th in ths:
+            th.join(60)
+        _until(lambda: not R.RUNNER.tasks, "the runner to be idle", 10)
+    finally:
+        pause.clear()
+        resume.set()
+        go.set()
+        app._GoneOnTimeout.write, app.kv_trim_current, M.forward_tree_multi = real_write, real_trim, real_multi
+        srv.shutdown()
+        srv.server_close()
+        seen.update(owner=turn.owner, errors=R.RUNNER.stats["errors"] if R.RUNNER else None,
+                    abandoned=app.INFLIGHT["abandoned"] - before["abandoned"])
+        T._teardown()
+    assert not seen["errs"], seen["errs"]
+    assert seen["torn"] is not None and seen["abandoned"] == 1, (seen["torn"], seen["abandoned"])
+    assert seen["calls"] == [], f"{len(seen['calls'])} engine call(s) on lane 1 after its kv_trim_current: {seen['calls']}"
+    assert outs.get("C", b"").rstrip().endswith(b"data: [DONE]"), outs.get("C", b"")[-200:]
+    assert seen["off_s"] < 2.0 and seen["owner"] is None and seen["errors"] == 0, seen
+    return (f"A abandoned through its write; no engine call on lane 1 after its trim; off the running count "
+            f"{seen['off_s'] * 1e3:.0f} ms after the chunk; C wrote to [DONE]")
 
 
 def test_the_familys_rows_at_a_lane_count_bound_the_joint_cut():
