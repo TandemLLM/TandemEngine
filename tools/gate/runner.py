@@ -17,7 +17,9 @@ instrument for both sides.
 REPO is rewritten for each tree), `setup_env` (its run/setup.env, under the arm's own settings),
 `local_env`, `links` / `copies` ({path in the tree: path on the box}, a file or a folder), and
 `conductor_from` (a conductor config each arm copies, without its decisions or tokens). Without it
-an install's run/local.env is used where there is one.
+an install's run/local.env is used where there is one. A `local_env` in an install's run/ brings that
+install's generated serve.env with it (run/ops/serve.env, which reads the local.env as the install's own
+start does: its PY and its paths) unless `serve_env` names one; a checkout's is copied and read by nothing.
 
 `--head-patch FILE` plants a change in the head's tree and `--head-env K=V` a setting in the head's
 servers (a dry run of the gate itself); the report says so and the CI check refuses it.

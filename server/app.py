@@ -7333,11 +7333,19 @@ def _kv_after_load(a) -> None:
     static = sum(b.nbytes for b in pages.bufs)
     mem = dict.get(STATE, "mem")
     if mem is not None and mem.on:
+        # a configured ceiling and peak count slot 0's window as allocator memory, and the pool now holds it outside
+        # the allocator the policy measures: they go down by it. A limit the model's builder set from what the
+        # allocator held after its load (`_build_with_limits`) was measured with the window already the pool's and
+        # holds none of it. The fixed bytes always do: a figure the residency document sets later is a configured one
+        own = STATE.get("limits_from_load") or {}
+        cut = {d: 0 if d in own else static for d in ("mem_ceiling_gib", "mem_peak_gib")}
         mem.fixed -= static
-        mem.ceiling -= static
-        mem.peak -= static
-        print(f"[kv-pool] memory policy: ceiling and peak -{_gib(static)} GiB (slot 0's window is "
-              f"the pool's now): {_gib(mem.ceiling)} / {_gib(mem.peak)} GiB", flush=True)
+        mem.ceiling -= cut["mem_ceiling_gib"]
+        mem.peak -= cut["mem_peak_gib"]
+        print(f"[kv-pool] memory policy: ceiling -{_gib(cut['mem_ceiling_gib'])} and peak "
+              f"-{_gib(cut['mem_peak_gib'])} GiB (slot 0's window of {_gib(static)} GiB is the pool's now"
+              + ("; the model's own limits were set from its load without it" if own else "")
+              + f"): {_gib(mem.ceiling)} / {_gib(mem.peak)} GiB", flush=True)
     _add_kv_reclaimers(pool)
     print(f"[kv-pool] on: slot 0 window {eng.kv.max_len:,} rows reserved as "
           f"{_gib(static)} GiB of addresses, page {pages.bufs[0].page >> 20} MiB, hard floor "
@@ -13836,8 +13844,11 @@ def _build_with_limits(build, a, ctx) -> dict:
     before = {d: getattr(a, d, None) for d in BUILDER_LIMITS}
     m = build(a, ctx)
     flags = STATE.get("serve_flags")
+    own = STATE["limits_from_load"] = {}
     for d, was in before.items():
         now = getattr(a, d, None)
+        if now != was:
+            own[d] = now          # `_kv_after_load`: set from the load, with slot 0's window already the pool's
         if now != was and flags is not None:
             flags[d] = now
             print(f"[memory] {d} {was:g} -> {now:g}: the model's own limit for its pack", flush=True)

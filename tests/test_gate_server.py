@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -265,6 +266,76 @@ def _arm_mode(pack: dict, prof, site: dict | None = None) -> tuple:
     got = out.stdout.strip().split("|")
     assert len(got) == 4, out.stdout + out.stderr
     return got[0], got[1], got[2], got[3] == "off"
+
+
+def _install(d: Path, local: str) -> Path:
+    """An install's run/ as install.sh leaves it: run/ops/serve.env written by install.sh's own `render_env` (its
+    text read from install.sh, with its `q` and `setv`) over this tree's template, with a machine's PY, PYTHONPATH and
+    HF_HUB_CACHE as its keys, and run/local.env holding `local`. Returns run/local.env."""
+    text = open(os.path.join(ROOT, "install.sh")).read()
+
+    def block(start: str, end: str) -> str:
+        i = text.index(start)
+        return text[i:text.index(end, i) + len(end)]
+    run = d / "run"
+    (run / "ops").mkdir(parents=True)
+    (run / "local.env").write_text(local)
+    script = "\n".join([
+        "set -e", block("q() {", "}    # single-quoted for the env file"), "ENV_KEYS=()", "ENV_ASSIGN=()",
+        block("setv() {", "}"), 'setv REPO "$(q /box/install/src)"', 'setv PY "$(q /box/install/venv/bin/python)"',
+        'setv PYTHONPATH ""', 'setv HF_HUB_CACHE "$(q /box/hub)"', f'RUN={run}', f'TEMPLATE={ROOT}/ops/serve.env',
+        "TANDEM_REF=test", block("render_env() {", "\n}\n"), f'render_env > {run}/ops/serve.env'])
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert r.returncode == 0 and "local.env" in (run / "ops" / "serve.env").read_text(), r.stderr[-400:]
+    return run / "local.env"
+
+
+def _arm_reads(site: dict, keys: str) -> list:
+    """`keys` as the arm's start reads them: its tree prepared with `site`, its setup.env written, the tree's
+    ops/serve.env sourced by bash as ops/start.sh sources it."""
+    from tools.gate.hw.gb10 import GB10
+    g = GB10(Fingerprint(name="NVIDIA GB10", memory_gib=119.7, cc="12.1", unified=True))
+    pack = dict(load_packs()["hy4-3.56"], id="hy4-3.56")
+    d = Path(tempfile.mkdtemp(prefix="gate-install-"))
+    tree = d / "tree"
+    shutil.copytree(os.path.join(ROOT, "ops"), tree / "ops", ignore=shutil.ignore_patterns("__pycache__"))
+    ol = server.OpsLauncher(g, pack, site)
+    ol.prepare(tree)
+    arm = server.Arm("head", "main", tree, 8105, d / "home", arm_env(g, pack, "head", "main"))
+    ol.arm_state(arm)
+    (tree / "run" / "setup.env").write_text(ol.setup_env(arm))
+    echo = "|".join(f"${{{k}}}" for k in keys.split())
+    out = subprocess.run(["bash", "-c", f'set -a; . "$0/ops/serve.env"; echo "{echo}"', str(tree)],
+                         capture_output=True, text=True, env={"HOME": str(d), "PATH": os.environ.get("PATH", "")})
+    shutil.rmtree(d, ignore_errors=True)
+    return out.stdout.strip().split("|")
+
+
+def test_an_arm_reads_the_installs_local_env_as_its_start_does():
+    """An install's run/local.env is read by the serve.env install.sh generated beside it (render_env puts the line
+    before the template's mode block); the repository's template reads none. The gate copied a site's local_env into
+    the arm's tree and nothing read it, so an arm ran the template's default PY, not the install's. A local_env in an
+    install's run/ now takes that install's generated serve.env as the arm's (as the `serve_env` site key does, REPO
+    the arm's tree): the arm's PY is local.env's where local.env sets it, else the install's, and the install's paths
+    come with it; the arm's port and mode stay the arm's. A local_env with no generated serve.env beside it (a
+    checkout's) is copied as before."""
+    d = Path(tempfile.mkdtemp(prefix="gate-inst-"))
+    try:
+        local = _install(d / "a", "PY=/box/local/venv/bin/python\n")
+        py, hub, port, mode, repo = _arm_reads({"local_env": str(local)}, "PY HF_HUB_CACHE PORT QSE_MODE REPO")
+        assert (py, hub, port, mode) == ("/box/local/venv/bin/python", "/box/hub", "8105", "engine"), (py, hub, port, mode)
+        assert repo.endswith("/tree"), repo
+        local = _install(d / "b", "# nothing of PY here\n")
+        assert _arm_reads({"local_env": str(local)}, "PY")[0] == "/box/install/venv/bin/python"
+        plain = d / "plain.env"
+        plain.write_text("PY=/opt/py\n")
+        tmpl = re.search(r"(?m)^PY=\$\{HOME\}(.*)$", open(os.path.join(ROOT, "ops", "serve.env")).read()).group(1)
+        for site in ({}, {"local_env": str(plain)}):
+            got = _arm_reads(site, "PY")[0]
+            assert got.endswith(tmpl) and got != "/opt/py", (site, got, "a checkout's local.env as before")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return "local.env's PY, the install's paths; else the install's PY; a checkout's local.env unread as before"
 
 
 def test_a_gate_arm_serves_the_engine_alone():
