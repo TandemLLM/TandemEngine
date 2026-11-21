@@ -456,7 +456,7 @@ def test_the_store_entry_cap_is_the_familys_and_survives_a_refresh():
 
 _E32 = []
 #: a family's capabilities -> the resident prefix's arguments, as server/app.py `_load_caches` passes them
-CAPS_ARGS = (("chat_first", "chat_first"), ("head_mark", "guest_store"), ("solo", "solo"))
+CAPS_ARGS = (("chat_first", "chat_first"), ("head_mark", "guest_store"))
 
 
 def serving32(max_len: int = 512) -> Hy4FlashServing:
@@ -1004,32 +1004,17 @@ def test_the_marks_and_the_mark_of_every_other_family_are_as_before():
         assert app._grid_mark(None, short, None) is None          # a head under 256 rows: no mark
 
 
-def test_interim_a_second_chat_the_store_remembers_takes_the_lane():
-    """INTERIM (SRV-907, `Capabilities.solo`, asked for here: ENG-485 gave Hy4-flash side slots and its caps no longer
-    set it; this test goes with the capability). On one lane a second chat ran as a guest of the first: its first turn (short) kept a session snapshot,
-    and its next turn with thinking on holds only its last prompt, so it was a guest again and read itself
-    again every turn. Now a conversation the store remembers takes the lane: the first chat is parked with its
-    end, not cut, and comes back from the park at its end."""
-    store = cache.StateStore(BIG, chunk=CH)
-    with _prompt_end():
-        res, eng = _prefix(park_bytes=BIG, solo=True), serving32()
-        ca1, _ = _turn(eng, res, tokens(60, 100), 150, "A", store=store)
-        b1 = tokens(30, 101)
-        cb1, tb1 = _turn(eng, res, b1, 4, "B", store=store)
-        assert tb1["guest"] and store.holds("B") and not store.holds("C"), tb1
-        b2 = b1 + [_other(cb1[30])] + tokens(8, 102)
-        assert len(b2) < 0.25 * res.valid
-        _, tb2 = _turn(eng, res, b2, 3, "B", store=store)
-        assert not tb2["guest"] and res.owner == "B" and res.stats["parks"] == 1, (tb2, res.stats["parks"])
-        _, ta2 = _turn(eng, res, ca1 + tokens(4, 103), 2, "A", store=store)
-    assert (ta2["kind"], ta2["reused"]) == ("end", len(ca1) - 1), ta2
-    return f"the second chat took the lane; the first came back from the park at its end ({len(ca1) - 1})"
+def _held(store: cache.StateStore, conv_id: str) -> bool:
+    """Whether the store holds an entry of the conversation (read under its lock)."""
+    with store.lock:
+        return any(e.conv_id == conv_id for e in store._d.values())
 
 
-def test_interim_a_chat_too_short_for_the_park_keeps_the_lane():
-    """INTERIM (SRV-907, `solo`; goes with it). A chat under one chunk above what it shares with the second
-    chat is too short for the park (and the spill): the second chat would cut it, and two short chats taking
-    turns would both read themselves again every turn. The size rule stands there: the second chat is a guest."""
+def test_a_chat_too_short_for_the_park_keeps_its_prefix_beside_a_short_second_chat():
+    """SRV-907, the size rule on one resident prefix (the interim one-lane rule that let a second chat the store
+    remembers take it is gone with Hy4-flash's side slots, ENG-485). A chat under one chunk above what it shares
+    with a short second chat keeps the prefix: the second chat runs as its guest, the chat's end stays, nothing is
+    parked, and the chat's next turn resumes at its end with a cold read's tokens."""
     store = cache.StateStore(BIG, chunk=64)
     with _prompt_end():
         res, eng = _prefix(park_bytes=BIG, chunk=64), serving32()
@@ -1038,7 +1023,7 @@ def test_interim_a_chat_too_short_for_the_park_keeps_the_lane():
         assert e < res.chunk
         b1 = tokens(8, 131)
         cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store, chunk=64)
-        assert tb1["guest"] and store.holds("B"), tb1
+        assert tb1["guest"] and _held(store, "B"), tb1
         b2 = b1 + [_other(cb1[8])] + tokens(2, 132)
         assert len(b2) < 0.25 * res.valid
         _, tb2 = _turn(eng, res, b2, 2, "B", store=store, chunk=64)
@@ -1049,22 +1034,20 @@ def test_interim_a_chat_too_short_for_the_park_keeps_the_lane():
     assert (ta2["kind"], ta2["reused"]) == ("end", e) and c2[len(p2):] == want, ta2
 
 
-def test_interim_a_session_hit_takes_the_lane_as_before():
-    """INTERIM (SRV-907, `solo`). A second chat whose prompt matches its session snapshot resumes from the store
-    whatever the rule: the conversation in place is written to the NVMe only from the spill's `min_tokens`, and
-    is dropped otherwise, as on every family. The rule changes nothing here (with and without it)."""
-    got = []
-    for solo in (True, False):
-        store = cache.StateStore(BIG, chunk=CH)
-        with _prompt_end():
-            res, eng = _prefix(park_bytes=BIG, solo=solo), serving32()
-            _turn(eng, res, tokens(60, 134), 100, "A", store=store)
-            b1 = tokens(20, 135)
-            cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store)
-            assert tb1["guest"], tb1
-            _, tb2 = _turn(eng, res, cb1 + tokens(3, 136), 2, "B", store=store)
-        got.append((tb2["kind"], tb2["reused"], res.owner, res.stats["parks"], res.park_rows, res.valid))
-    assert got[0] == got[1] and got[0][:4] == ("session", len(cb1) - 1, "B", 0), got
+def test_a_second_chats_session_hit_takes_the_prefix():
+    """SRV-907. A second chat whose prompt matches its session snapshot resumes from the store, and the
+    conversation in place is dropped (it is written to the NVMe only from the spill's `min_tokens`), as on every
+    family; nothing is parked."""
+    store = cache.StateStore(BIG, chunk=CH)
+    with _prompt_end():
+        res, eng = _prefix(park_bytes=BIG), serving32()
+        _turn(eng, res, tokens(60, 134), 100, "A", store=store)
+        b1 = tokens(20, 135)
+        cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store)
+        assert tb1["guest"], tb1
+        _, tb2 = _turn(eng, res, cb1 + tokens(3, 136), 2, "B", store=store)
+    got = (tb2["kind"], tb2["reused"], res.owner, res.stats["parks"])
+    assert got == ("session", len(cb1) - 1, "B", 0), got
 
 
 if __name__ == "__main__":

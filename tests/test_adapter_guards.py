@@ -96,8 +96,10 @@ from engine.models import REGISTRY  # noqa: E402
 # SRV-905, SRV-907: the conversation cache on one lane (engine/cache.py: a chat's next turn is no guest of its own
 # rows, the head mark, the guest's store entry) moves the whole-tree half; the arithmetic half holds, and the 27B's
 # and Flash-Next's resident prefix and store reproduce byte for byte (tests/test_resident_pinned.py)
+# SRV-907: the interim one-lane rule (`Capabilities.solo`, `StateStore.holds`, `ResidentPrefix.sets_aside`) leaves
+# engine/cache.py now that Hy4-flash has side slots: the whole-tree half moves again, the arithmetic half holds
 GOLDEN_V2 = ("7c6b4c314c5f6cf7f086c9208b0ac4f74198984a8093d1d41a82a71e9ca0d6f5",
-             "325d5b6ad4745269ec94a3e51fd1a84a790f68b91d4a8c9b2910c6ea7e443681")
+             "f25ee4d9c1e9197aae88d024c0a353cab80c620f042827fc53675d4e77a1b7ac")
 GOLDEN_FP4 = {
     # SPD-201 (2026-10-24): the speed setup's knobs default on, so every family's fingerprint moved once;
     # SPD-215: Flash-Next's joint pass row-wise and grouped experts by default (its two adapters again);
@@ -555,8 +557,7 @@ def test_family_knobs_live_in_their_package():
 #: SRV-905, SRV-907: the conversation cache's capabilities (engine/models/adapter.py `Capabilities`) and the
 #: family packages that set them. The shared caching code (engine/cache.py, server/app.py) takes their branches
 #: only for these; every other family's caching is pinned byte for byte (tests/test_resident_pinned.py)
-# ENG-485: Hy4-flash builds side slots, so no family sets the interim `solo` (SRV-907) any more
-CACHE_CAPS = {"chat_first": {"hy4_flash"}, "head_mark": {"hy4_flash"}, "solo": set()}
+CACHE_CAPS = {"chat_first": {"hy4_flash"}, "head_mark": {"hy4_flash"}}
 
 
 def test_the_cache_capabilities_are_their_families():

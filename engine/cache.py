@@ -1460,14 +1460,6 @@ class StateStore:
             self._evict_locked(nbytes)
         return True
 
-    def holds(self, conv_id: str | None) -> bool:
-        """Whether an entry of one conversation is stored (`drop_session`'s lookup, read only). INTERIM
-        (SRV-907): read by `_prefill` for a resident prefix with `solo` only."""
-        if not conv_id:
-            return False
-        with self.lock:
-            return any(e.conv_id == conv_id for e in self._d.values())
-
     def drop_session(self, conv_id: str | None) -> int:
         """Forget every entry of one conversation -- its compaction has started, and the history
         those entries are keyed by will not be sent again. Returns the bytes given back."""
@@ -1836,7 +1828,7 @@ class ResidentPrefix:
                  guest_max: int = 16384, guest_frac: float = 0.25,
                  pin_bytes: int = 0, pin_anchors: int = 8, park_bytes: int = 0,
                  park_anchors: int = 4, mem: "Budget | None" = None, end: bool = False,
-                 chat_first: bool = False, guest_store: bool = False, solo: bool = False):
+                 chat_first: bool = False, guest_store: bool = False):
         self.budget = int(budget_bytes)
         self.chunk = int(chunk)
         self.tail = max(1, int(tail))
@@ -1901,9 +1893,6 @@ class ResidentPrefix:
         self.own_prev: tuple = (None, 0)
         # SRV-905 (`guest_store`): a guest that resumes from the store keeps the end; it stores its own head
         self.guest_store = bool(guest_store)
-        # INTERIM (SRV-907, a family's `Capabilities.solo`; goes when the family builds side slots): one lane,
-        # a conversation the store remembers takes it from another one (`_prefill`)
-        self.solo = bool(solo)
         # the end of the last generation (`keep_end`): its line `at`, the hidden spans below it
         # and the drafter's mark; its state in `_end_bufs`, allocated once and reused
         self.end_on = bool(end)
@@ -2455,27 +2444,6 @@ class ResidentPrefix:
         per_row = sum(t.numel() // t.shape[ax] * t.element_size() for t, ax in views)
         ab = self._anchor_bytes or eng.cost().section_bytes
         return max(0, (self.park_budget - self.park_anchor_max * ab) // max(1, per_row))
-
-    def sets_aside(self, eng, drafter, keep: int) -> bool:
-        """INTERIM (SRV-907, `solo`; goes with it): whether a prefill that replaces the rows above `keep` would
-        keep the conversation in place out of its way (`begin`): the NVMe spill from its `min_tokens`, else the
-        park from one chunk above `keep` (`_park_now`'s floor, with its end anchor or up to its anchors). The
-        memory policy may still refuse the park; the sizes alone are asked here."""
-        keep = int(keep)
-        if self.valid <= keep:
-            return False
-        if self.spiller is not None and self.valid >= self.spiller.min_tokens:
-            return True
-        if not self.park_budget:
-            return False
-        views = _kv_views(eng, drafter)
-        per_row = sum(t.numel() // t.shape[ax] * t.element_size() for t, ax in views)
-        ab = self._anchor_bytes or eng.cost().section_bytes
-        cap_rows = max(0, (self.park_budget - self.park_anchor_max * ab) // max(1, per_row))
-        if self._end_to_park(keep, cap_rows) is not None:
-            return True
-        above = [b for b in self.anchors if keep < b <= min(self.valid, keep + cap_rows)]
-        return bool(above) and max(above) - keep >= self.chunk
 
     def _spill(self, eng, drafter, reason: str) -> bool:
         """The resident conversation to the disk; whether it is there now."""
@@ -3773,14 +3741,6 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
     if res is not None:
         # SRV-907: the request holds the whole last prompt in place, so it goes on with the conversation
         continues = res.chat_first and 0 < res.last_n <= c
-        if (res.solo and not own and conv_id is not None and conv_id != res.owner and store is not None
-                and store.holds(conv_id) and res.sets_aside(eng, drafter, min(start, c))):
-            # INTERIM (SRV-907, `solo`; deleted with the capability when the family builds side slots): on
-            # one lane a second chat the store remembers takes the lane, as a side slot would give it one,
-            # when the park or the NVMe takes the conversation in place first (`begin`). One they cannot
-            # take (under a chunk above the shared head, under the spill's `min_tokens`) would be cut, and
-            # two short chats taking turns would both read themselves again every turn: the size rule stands
-            stay = True
         # decided before any row is written: a guest's stash must hold the rows as they are now
         res.begin(eng, drafter, keys, start, c, kind, session=conv_id, compacting=compacting,
                   scratch=scratch, reach=reach, stay=stay, continues=continues, own=own)
