@@ -158,23 +158,40 @@ def overrides_at_start(a, doc: dict | None, *, len_mode: str | None = None) -> l
     return lines
 
 
+def limit_of(mem, b: int) -> int:
+    """OPS-308, the one rule: the ceiling or peak the memory policy enforces for a figure of `b` bytes, the figure plus
+    its fixed bytes (`Budget.fixed`: the side slots' share, less slot 0's window when the KV pool holds it, plus a
+    window above LIMITS_WINDOW when the pool is off), at the start and at every refresh alike. Every family's figure
+    is a configured one: serve.env's, a weight profile's (ops/profiles/<pack>.env), the residency document's. Every
+    line that names the ceiling or peak prints the policy's own figures: [kv-pool], [parallel], [limits], the
+    residency refresh's."""
+    return int(b) + int(getattr(mem, "fixed", 0) or 0)
+
+
 def apply(state: dict, values: dict) -> list[str]:
-    """Hand the live keys in `values` to the objects that hold the bytes. Returns what changed."""
+    """Hand the live keys in `values` to the objects that hold the bytes. Returns what changed. A ceiling or peak is
+    set again whenever the policy's figure for it (`limit_of`) differs from the one it runs."""
     mem, store, res = state.get("mem"), state.get("state_store"), state.get("resident")
     applied = state.setdefault("limits_applied", {})
     done = []
     for key, v in values.items():
         dest, unit, live, _ = _BY_KEY[key]
-        if not live or applied.get(key) == v:
+        if not live:
             continue
         b = int(float(v) * _scale(unit)) if unit in ("GiB", "MiB") else int(v)
+        if key in ("MEM_CEILING_GIB", "MEM_PEAK_GIB") and mem is not None:
+            want = limit_of(mem, b)
+            if applied.get(key) == v and (mem.ceiling if key == "MEM_CEILING_GIB" else mem.peak) == want:
+                continue
+        elif applied.get(key) == v:
+            continue
         if key == "MEM_CEILING_GIB" and mem is not None:
             # the configured figure plus what the side slots hold for good (`Budget.fixed`):
             # assigning the bare figure took the side slots' 7.65 GiB out of the caches' room
             # on every start of 0.3.44 to 0.3.46, at the first request
-            mem.ceiling = b + int(getattr(mem, "fixed", 0) or 0)
+            mem.ceiling = want
         elif key == "MEM_PEAK_GIB" and mem is not None:
-            mem.peak = b + int(getattr(mem, "fixed", 0) or 0)
+            mem.peak = want
         elif key == "RESERVE_SLACK_GIB" and mem is not None:
             mem.slack = b
         elif key == "RESIDENT_GB" and res is not None:
@@ -221,7 +238,12 @@ def refresh(state: dict) -> list[str]:
     values = {k: over.get(k, flag_value(flags, k)) for k in KEYS if _BY_KEY[k][2]}
     done = apply(state, {k: x for k, x in values.items() if x is not None})
     if done:
-        print(f"[memory] residency v{v}: " + ", ".join(done), flush=True)
+        # OPS-308: and the ceiling and peak the policy enforces from here, the side slots and the KV pool in them
+        mem = state.get("mem")
+        runs = (f"; the memory policy enforces {mem.ceiling / GIB:.2f} / {mem.peak / GIB:.2f} GiB"
+                if mem is not None and getattr(mem, "on", False)
+                and any(d.startswith(("MEM_CEILING_GIB=", "MEM_PEAK_GIB=")) for d in done) else "")
+        print(f"[memory] residency v{v}: " + ", ".join(done) + runs, flush=True)
     return done
 
 

@@ -81,6 +81,22 @@ def _kl(ref: torch.Tensor, got: torch.Tensor) -> dict:
     return {"kl": kl.cpu(), "top1": (got.argmax(-1) == top).cpu(), "top5": (got.topk(5, -1).indices == top[:, None]).any(-1).cpu()}
 
 
+def route_spy(real, before=None, after=None, steps_only: bool = False):
+    """The engine's `route_r(x, li, lin=None)` with a look at each call: `before(x, li)` ahead of it, `after(idx)` on
+    the experts it picked. Every call's `lin` reaches the real router: the prompt pass on fixed-order kernels
+    (QWEN38_HY4_PREFILL_V2=1) sums its rows on `_rows_mm`, and a wrapper of `(x, li)` alone stopped the tolerance step
+    with a TypeError under --prefill-v2. `steps_only`: `after` sees the steps' calls only, the ones without `lin` (the
+    prompt pass's rows are not steps)."""
+    def spy(x, li, lin=None):
+        if before is not None:
+            before(x, li)
+        idx, wts = real(x, li, lin=lin)
+        if after is not None and not (steps_only and lin is not None):
+            after(idx)
+        return idx, wts
+    return spy
+
+
 def _kl_say(say, tag: str, parts: list, **more) -> None:
     kl = torch.cat([p["kl"] for p in parts]).double()
     q = lambda f: round(float(kl.quantile(f)), 5)
@@ -161,13 +177,10 @@ def quality(a, eng, cfg, say) -> None:
             k_parts.append(_kl(ref, full))
             if not L:
                 continue
-            # the same steps on plain torch sums, its experts recorded a (step, layer)
+            # the same steps on plain torch sums, its experts recorded a (step, layer); the prompt pass's calls (`lin`,
+            # under --prefill-v2) are not steps, and the forced run below reads one record a step's layer
             seen = []
-
-            def spy_route_r(x, li, _s=seen):
-                idx, wts = real_route_r(x, li)
-                _s.append(idx.clone())
-                return idx, wts
+            spy_route_r = route_spy(real_route_r, after=lambda idx, _s=seen: _s.append(idx.clone()), steps_only=True)
             eng.row_torch, eng.route_r = True, spy_route_r
             tor = run(L, None)
             eng.row_torch, eng.route_r = False, real_route_r
@@ -1238,9 +1251,8 @@ def main() -> int:
                 _s.append(scored(x, w, bias))
                 return real_router(x, w, bias, k, scale, renorm)
 
-            def spy_route_r(x, li, _s=sc_seen):
-                _s.append(scored(x, eng.w(f"layers.{li}.mlp.gate.weight"), eng.w(f"layers.{li}.mlp.gate.e_score_correction_bias")))
-                return real_route_r(x, li)
+            spy_route_r = route_spy(real_route_r, before=lambda x, li, _s=sc_seen: _s.append(scored(
+                x, eng.w(f"layers.{li}.mlp.gate.weight"), eng.w(f"layers.{li}.mlp.gate.e_score_correction_bias"))))
             E_.K_.router, eng.route_r = spy_router, spy_route_r
 
             def spy(z, idx, li, grouped=False, _seen=seen):

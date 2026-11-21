@@ -392,6 +392,71 @@ def test_the_prefill_checks_assert_their_counts():
     return "experts-equal: all layers and counts pass; a missing layer or an unreached row count fails; every --only name known"
 
 
+def test_the_checks_route_spies_hand_on_the_prompt_pass_lin():
+    """tools/hy4_check.py wraps the engine's `route_r(x, li, lin=None)` to see its calls (the quality step's torch run,
+    the tolerance step). The prompt pass on fixed-order kernels (QWEN38_HY4_PREFILL_V2=1, the default) calls it with
+    `lin=` (its row sums on `_rows_mm`), and the two wrappers took `(x, li)` only: under --prefill-v2 the tolerance
+    step stopped with a TypeError. Every wrapper of `route_r` in the tool now takes `lin` and hands it on; the quality
+    step's records the steps' calls only, the ones without `lin` (its forced kernel run reads them a (step, layer) in
+    order, and the prompt pass's rows are not steps)."""
+    import ast
+    from tools import hy4_check as HC
+    calls, looked, seen = [], [], []
+    mm = object()
+
+    def real(x, li, lin=None):
+        calls.append((li, lin))
+        return torch.tensor([[li]]), torch.ones(1, 1)
+    spy = HC.route_spy(real, before=lambda x, li: looked.append(li), after=lambda idx: seen.append(int(idx)))
+    assert spy(torch.zeros(1, 2), 3, lin=mm)[0].item() == 3 and spy(torch.zeros(1, 2), 5)[0].item() == 5
+    assert calls == [(3, mm), (5, None)] and looked == [3, 5] and seen == [3, 5], (calls, looked, seen)
+    calls.clear(), looked.clear(), seen.clear()
+    steps = HC.route_spy(real, after=lambda idx: seen.append(int(idx)), steps_only=True)
+    steps(torch.zeros(1, 2), 3, lin=mm)
+    steps(torch.zeros(1, 2), 5)
+    assert calls == [(3, mm), (5, None)] and seen == [5], (calls, seen)
+    # every value the tool sets `route_r` to: the engine's own (a name bound from `.route_r`), a `route_spy`, or a
+    # function that takes `lin`
+    tree = ast.parse(open(HC.__file__).read())
+    defs: dict = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef):
+            defs.setdefault(n.name, []).append(n)
+    bound: dict = {}
+    wrapped = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Assign):
+            continue
+        for t in n.targets:
+            pairs = (list(zip(t.elts, n.value.elts)) if isinstance(t, ast.Tuple) and isinstance(n.value, ast.Tuple)
+                     else [(t, n.value)])
+            for tt, vv in pairs:
+                if isinstance(tt, ast.Name):
+                    bound.setdefault(tt.id, []).append(vv)
+                elif isinstance(tt, ast.Attribute) and tt.attr == "route_r":
+                    wrapped.append(vv)
+
+    def takes_lin(fn) -> bool:
+        a = fn.args
+        return a.kwarg is not None or "lin" in [x.arg for x in a.args + a.kwonlyargs]
+
+    def ok(v) -> bool:
+        if isinstance(v, ast.Attribute):
+            return v.attr == "route_r"                     # the engine's own, kept to put back
+        if isinstance(v, ast.Call):
+            return isinstance(v.func, ast.Name) and v.func.id == "route_spy"
+        if isinstance(v, ast.Lambda):
+            return takes_lin(v)
+        if not isinstance(v, ast.Name):
+            return False
+        if v.id in defs:
+            return all(takes_lin(d) for d in defs[v.id])
+        return bool(bound.get(v.id)) and all(ok(b) for b in bound[v.id])
+    bad = [ast.unparse(v) for v in wrapped if not ok(v)]
+    assert len(wrapped) >= 4 and not bad, (len(wrapped), bad)
+    return f"route_spy hands lin on, the quality step's records steps only; {len(wrapped)} route_r settings, all take lin"
+
+
 class _CountingTable:
     """A table whose reads are logged (layer, ids) before they run."""
 

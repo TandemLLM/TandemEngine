@@ -219,14 +219,11 @@ def test_a_pack_without_limits_or_a_cap_keeps_its_arms():
 PINNED_PACKS = ("fake", "flashnext-3.05", "lfm25-exl3-4.0", "lfm25-exl3-2.5", "nemotron-bolt-exl3-4.0", "flint-exl3-4.0")
 
 
-def _server_limits() -> tuple:
-    """Hy4-flash's builder's test for the server's default limits (engine/models/hy4_flash/serving.py
-    `SERVER_LIMITS`), read from its source: a start that names these takes the pack's own."""
-    import ast
-    src = open(os.path.join(ROOT, "engine", "models", "hy4_flash", "serving.py")).read()
-    node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign) and
-                getattr(n.targets[0], "id", None) == "SERVER_LIMITS")
-    return ast.literal_eval(node.value)
+def _profile_limits(profile: str) -> tuple:
+    """MEM_CEILING_GIB and MEM_PEAK_GIB as the weight profile ops/profiles/<profile>.env sets them (OPS-308: every
+    family's ceiling and peak are its profile's)."""
+    text = open(os.path.join(ROOT, "ops", "profiles", f"{profile}.env")).read()
+    return tuple(float(re.search(rf"(?m)^{k}=([0-9.]+)", text).group(1)) for k in ("MEM_CEILING_GIB", "MEM_PEAK_GIB"))
 
 
 def _arm_limits(pack: dict, prof, variant: str = "main") -> tuple:
@@ -359,20 +356,24 @@ def test_a_gate_arm_serves_the_engine_alone():
     return "three packs: engine mode, conductor raw, no extension; a site's conductor copy: chat"
 
 
-def test_a_pack_with_its_own_limits_keeps_them_against_the_profiles():
-    """OPS-314: the gb10 profile's 66/77 GiB, written after the pack's profile, reached a Hy4-flash start, where the
-    model takes its pack's own limits only from serve.env's defaults (serving.py `SERVER_LIMITS`): it kept 66/77, under
-    what the 3.56 pack's load holds (72.7 GiB). With `limits: pack` the arm passes neither, and the start reads the
-    defaults the model replaces; a pack without the key keeps the profile's. Both Hy4-flash packs, both arms."""
+def test_a_pack_with_profile_limits_runs_them_on_both_sides():
+    """OPS-308: the gb10 profile's 66/77 GiB, written after the pack's profile, would run a Hy4-flash start under what
+    its load reserves (72.50 GiB at 8 lanes). With `limits: profile` both sides' arms get the ceiling and peak the
+    pack's weight profile serves it with (85/92 on both packs), read from this checkout's profile, so the base side's
+    tree, which names none, runs them too; a pack without the key keeps the hardware profile's. Both Hy4-flash packs,
+    both sides, both variants."""
     from tools.gate.hw.gb10 import GB10
     g = GB10(Fingerprint(name="NVIDIA GB10", memory_gib=119.7, cc="12.1", unified=True))
     packs = load_packs()
-    want = _server_limits()
     for pid in ("hy4-3.56", "hy4-3.08"):
         pack = dict(packs[pid], id=pid)
-        env = arm_env(g, pack, "head", "main")
-        assert "MEM_CEILING_GIB" not in env and "MEM_PEAK_GIB" not in env, env
-        assert env == {k: v for k, v in g.arm_env().items() if k not in ("MEM_CEILING_GIB", "MEM_PEAK_GIB")}, env
+        want = _profile_limits(pack["profile"])
+        assert want == (85.0, 92.0), (pid, want)
+        for side in ("base", "head"):
+            env = arm_env(g, pack, side, "main")
+            assert (float(env["MEM_CEILING_GIB"]), float(env["MEM_PEAK_GIB"])) == want, (pid, side, env)
+            assert {k: v for k, v in env.items() if not k.startswith("MEM_")} == \
+                {k: v for k, v in g.arm_env().items() if not k.startswith("MEM_")}, env
         for variant in ("main", "plain"):
             ceiling, peak, lanes, flags = _arm_limits(pack, g, variant)
             assert (ceiling, peak) == want and lanes == g.lanes(), (pid, variant, ceiling, peak, lanes)
@@ -381,7 +382,7 @@ def test_a_pack_with_its_own_limits_keeps_them_against_the_profiles():
         assert _arm_limits(before, g)[:2] == (g.ceiling_gib(), g.peak_gib()) != want, "the bypass, without the key"
     flash = dict(packs["flashnext-3.05"], id="flashnext-3.05")
     assert _arm_limits(flash, g)[:2] == (g.ceiling_gib(), g.peak_gib())
-    return f"both packs, both arms: {want[0]:g}/{want[1]:g} GiB reach the start (the model's own follow); without: 66/77"
+    return f"both packs, both sides and variants: the profile's {want[0]:g}/{want[1]:g} GiB reach the start; without the key: 66/77"
 
 
 def test_a_pack_capped_at_one_plans_c1_rows_only():
@@ -403,7 +404,8 @@ def test_a_pack_capped_at_one_plans_c1_rows_only():
         assert [s[0] for s in decode.shapes(ctx)] == ["c1", "c1-1k"]
         assert [(s, v) for s, v, _ in arms_of(p)] == [("base", "main"), ("head", "main"), ("head", "plain")]
         notes = pack_notes(pack, p.profile, True)
-        assert len(notes) == 3 and "limits: pack" in notes[0] and "none above c1" in notes[1], notes
+        assert len(notes) == 3 and "limits: profile" in notes[0] and "85/92 GiB" in notes[0], notes
+        assert "none above c1" in notes[1], notes
         assert pack["base"] == "7f2a41f51b9793dcc8fddb30316d8a0161d10072"
     assert plan("quick", [], g, dict(load_packs()["flashnext-3.05"], id="flashnext-3.05")).profile is g
     return "c1 and c1-1k, a burst of one, 8 lanes, base and head and head plain"

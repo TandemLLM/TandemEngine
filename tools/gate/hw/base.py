@@ -12,8 +12,8 @@ A profile answers:
     long_ctx(lv)         the longest prompt the long suite sends
     wide_chunk_ctx()     the prompt of the wide prefill chunk case
     ceiling_gib(), peak_gib()   the memory ceiling and peak flags each arm starts with
-    arm_env(pack)        the environment every arm's server gets for this GPU; for a pack that sets its own memory
-                         limits (packs.yaml `limits: pack`), without the ceiling and peak
+    arm_env(pack)        the environment every arm's server gets for this GPU; for a pack whose entry says
+                         `limits: profile`, the ceiling and peak its weight profile serves it with
     pack()               the reference pack (models/<pack>, tools/gate/packs.yaml)
     min_free_gib()       memory that must be free before an arm starts, and free_gib() what is
     mem_floor_gib()      MemAvailable under which the gate kills its own server (unified memory)
@@ -26,6 +26,8 @@ A profile answers:
 from __future__ import annotations
 
 import dataclasses
+import re
+from pathlib import Path
 
 from tools import gpu as _gpu
 
@@ -47,9 +49,22 @@ class Fingerprint:
         return dataclasses.asdict(self)
 
 
-def own_limits(pack: dict | None) -> bool:
-    """Whether a pack sets its own memory limits (packs.yaml `limits: pack`, OPS-314)."""
-    return (pack or {}).get("limits") == "pack"
+#: the checkout the gate runs from: its weight profiles are the head's, and `limits: profile` reads them for both sides
+REPO = Path(__file__).resolve().parents[3]
+
+
+def profile_limits(pack: dict | None) -> tuple | None:
+    """OPS-308: (ceiling, peak) in GiB a pack is served with, its weight profile's MEM_CEILING_GIB and MEM_PEAK_GIB
+    (ops/profiles/<profile>.env in this checkout), for a pack whose entry says `limits: profile`; None for any other
+    pack, whose arms take the hardware profile's. A pack that says so and whose profile names none is refused."""
+    if (pack or {}).get("limits") != "profile":
+        return None
+    path = REPO / "ops" / "profiles" / f"{pack.get('profile')}.env"
+    text = path.read_text() if path.is_file() else ""
+    got = [re.search(rf"(?m)^{k}=([0-9.]+)\s*$", text) for k in ("MEM_CEILING_GIB", "MEM_PEAK_GIB")]
+    if not all(got):
+        raise ValueError(f"pack {pack.get('id')}: limits: profile, and {path} names no MEM_CEILING_GIB and MEM_PEAK_GIB")
+    return float(got[0].group(1)), float(got[1].group(1))
 
 
 class Profile:
@@ -115,14 +130,12 @@ class Profile:
         return None
 
     def arm_env(self, pack: dict | None = None) -> dict:
-        """`pack`: the arm's packs.yaml entry. OPS-314: a pack whose entry says `limits: pack` sets its own memory
-        limits (its profile's, or its model's from its load where the start names the server's defaults), and the
-        profile's ceiling and peak, set after the pack's profile, would bypass them: its arms get neither."""
-        env = {"QSE_PARALLEL": str(self.lanes()), "MEM_CEILING_GIB": f"{self.ceiling_gib():g}",
-               "MEM_PEAK_GIB": f"{self.peak_gib():g}"}
-        if own_limits(pack):
-            del env["MEM_CEILING_GIB"], env["MEM_PEAK_GIB"]
-        return env
+        """`pack`: the arm's packs.yaml entry. The hardware profile's ceiling and peak, written after the pack's
+        weight profile, win over it. OPS-308: a pack whose entry says `limits: profile` gets its weight profile's in
+        their place (`profile_limits`), on the base side and the head alike, so its arms run what it is served with."""
+        lim = profile_limits(pack)
+        ceiling, peak = lim if lim else (self.ceiling_gib(), self.peak_gib())
+        return {"QSE_PARALLEL": str(self.lanes()), "MEM_CEILING_GIB": f"{ceiling:g}", "MEM_PEAK_GIB": f"{peak:g}"}
 
     # -- what runs --------------------------------------------------------------------------
     def pack(self) -> str | None:
