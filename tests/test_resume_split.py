@@ -11,6 +11,10 @@
      greedy tokens are compared                                    test_a_changed_row_is_reported
   3  the k list holds both sides of each class line and the run A prompt's cuts [349, 74], [390, 33]
                                                                    test_the_k_list
+  4  the decode-tail arm (G2d, the end read again): ids[:k] on the prompt pass and ids[k:] by decode steps or chain
+     blocks hold the exact parts (length, token history, the group-key mirror, the pooled rows) with layer 0 within
+     2^-7; read again on the prompt pass from k, every section and view, the logits and the greedy tokens equal the
+     cold read's                                                   test_the_decode_tail_arm
 
 CPU. Run: python tests/test_resume_split.py
 """
@@ -100,6 +104,21 @@ def test_the_k_list():
     assert RS.piece_class(74, 349, "prefill", until=128) == "skinny" and RS.piece_class(33, 390, "prefill", until=128) == "skinny"
     assert RS.piece_class(4500, 0, "prefill", until=128) == "slab x1, last chunk slab"
     return f"n 423: {ks}"
+
+
+def test_the_decode_tail_arm():
+    eng, srv = _setup()
+    ids = _ids(60, 9)
+    got = []
+    for mode in ("steps", "chain"):
+        for k in (33, 47):
+            line = RS.decode_tail(srv, ids, k, mode, 8, chunk=16)
+            a, b = line["a"], line["b"]
+            assert a["exact_ok"] and a["layer0_ok"], (mode, k, a)
+            assert b["equal"], (mode, k, b)
+            assert line["ok"], line
+            got.append(f"{mode} k{k}: (a) {'equal' if a['equal'] else 'unequal'}, logits {a['logits_max_abs']:.3g}")
+    return "; ".join(got) + "; (b) equal in every case"
 
 
 if __name__ == "__main__":

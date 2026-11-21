@@ -28,6 +28,16 @@ the cases by name, each its verdict and what differs), for a compare of the tree
 
 Arms: v2 (the served pass: HY4_PREFILL_V2=1, experts "group", grouped), and the passes before (v1-group, v1-grouped,
 v1-pair). The family is Hy4-flash; a later family adds its own loader here.
+
+`--decode-tail steps,chain` (the end read again, engine-arch/endanchor G2d): through the server's verbs, ids[:k] on the
+prompt pass, then ids[k:] by the row pass (`steps`: decode steps; `chain`: chain blocks of 4 rows committed as the loop
+commits them), against the cold read of ids. (a) Expected unequal; what must hold: the exact parts (the length, the
+token history, the group-key mirror against the closed groups' indexer keys, as written and rebuilt, and which rows
+hold a pooled key) and layer 0's latents and token keys of the tail rows within --layer0-bound (2^-7 by default; the
+box's own per-row figure where it is larger); the largest logit difference and the deeper layers' are recorded. (b) The
+read (engine/cache.py `reread_end`): the state at k back and ids[k:] read on the prompt pass, on the 0-anchored grid of
+--chunk: every section and view by sha, the logits and --steps greedy tokens equal the cold read's. One JSON line a
+case (kind "decode_tail"); its verdict `ok` is (a)'s exact parts and bound and (b)'s equality.
 """
 
 from __future__ import annotations
@@ -299,6 +309,86 @@ def record(cases: dict, family: str, source: str) -> dict:
             "torch": torch.__version__, "cases": {k: {x: v[x] for x in keep} for k, v in sorted(cases.items())}}
 
 
+# ------------------------------------------------------------------------------------------ the decode tail (G2d)
+def _read_on_grid(srv, ids: list, k: int, n: int, chunk: int):
+    """ids[k:n] on the prompt pass from a state at k, in the pieces a prompt read takes on the 0-anchored grid."""
+    lg, i = None, k
+    while i < n:
+        t = min((i // chunk + 1) * chunk - i, n - i)
+        lg = srv.forward(torch.tensor(ids[i:i + t]), start=i, prompt=True)
+        i += t
+    return lg
+
+
+def _structure(srv, k: int, n: int) -> dict:
+    """The exact parts of a state of `n` rows: its length, the mirror against the closed groups' keys (as written,
+    then after `touched()` and the rebuild), and the rows that hold a pooled key."""
+    from engine.models.hy4_flash.engine import _mirror
+    st, rr = srv.st, srv.cfg.index_kpool
+    G = n // rr
+    live = bool(torch.equal(st.gk_all[:, :G], st.ik_all[:, rr - 1::rr][:, :G]))
+    st.touched()
+    _mirror(st, rr)
+    rebuilt = bool(torch.equal(st.gk_all[:, :G], st.ik_all[:, rr - 1::rr][:, :G]))
+    pooled = [p for p in range(G * rr) if torch.equal(st.ik_all[:, p], st.gk_all[:, p // rr])]
+    return {"length": int(st.length), "mirror_live": live, "mirror_rebuilt": rebuilt,
+            "pooled_rows": pooled == list(range(rr - 1, G * rr, rr))}
+
+
+def decode_tail(srv, ids: list, k: int, mode: str, steps: int, chunk: int = 4096, bound: float = 2 ** -7) -> dict:
+    """One G2d case: (a) ids[:k] on the prompt pass and ids[k:] by the row pass (`mode` steps or chain) against the cold
+    read; (b) the read of ids[k:] on the prompt pass from the state at k against the cold read."""
+    from engine import cache
+    n, rr = len(ids), srv.cfg.index_kpool
+    srv.restart()
+    lg_c = _read_on_grid(srv, ids, 0, n, chunk).float().reshape(1, -1).clone()
+    s_c = serving_state(srv)
+    lat_c, ik_c, hist_c = srv.st.lat_all[:, :n].float().clone(), srv.st.ik_all[:, :n].float().clone(), srv.st.hist.clone()
+    d_c = greedy_forward(srv, lg_c, steps)
+    # (a) the tail by the row pass
+    srv.restart()
+    _read_on_grid(srv, ids, 0, k, chunk)
+    at_k = cache.state_clone(srv)
+    pos, lg = k, None
+    while pos < n:
+        if mode == "steps":
+            lg = srv.forward(torch.tensor([ids[pos]]), start=pos)
+            pos += 1
+        else:
+            m = min(4, n - pos)
+            lg = srv.forward_block(torch.tensor(ids[pos:pos + m]), start=pos)[-1:]
+            srv.settle()
+            pos += m
+    lg_d = lg.float().reshape(1, -1).clone()
+    s_d = serving_state(srv)
+    st = srv.st
+    tok_rows = [p for p in range(k, n) if p % rr != rr - 1]
+    l0 = {"lat": float((st.lat_all[0, k:n].float() - lat_c[0, k:n]).abs().max()),
+          "token_keys": float((st.ik_all[0, tok_rows].float() - ik_c[0, tok_rows]).abs().max()) if tok_rows else 0.0}
+    deeper = {str(i): float((st.lat_all[i, :n].float() - lat_c[i, :n]).abs().max()) for i in range(1, st.lat_all.shape[0])}
+    finite = bool(all(torch.isfinite(t.float()).all() for t in (st.lat_all[:, :n], st.ik_all[:, :n], st.win_all)))
+    hist = bool(torch.equal(st.hist, hist_c))
+    exact = _structure(srv, k, n)
+    a = {"equal": s_d == s_c and sha(lg_d) == sha(lg_c), "state_differing": sorted(x for x in s_c if s_c[x] != s_d.get(x)
+                                                                                 and not x.startswith("layer:")),
+         "first_lat_layer": first_layer(s_c, s_d, "layer:lat."), "logits_max_abs": float((lg_d - lg_c).abs().max()),
+         "layer0": l0, "layer0_ok": max(l0.values()) <= bound, "deeper_lat_max_abs": deeper, "finite": finite,
+         "hist_equal": hist, **exact,
+         "exact_ok": exact["length"] == n and exact["mirror_live"] and exact["mirror_rebuilt"] and exact["pooled_rows"]
+         and hist and finite}
+    # (b) the read: the state at k back, ids[k:] on the prompt pass
+    cache.state_load(srv, at_k)
+    srv.resume_at(k)
+    lg_r = _read_on_grid(srv, ids, k, n, chunk).float().reshape(1, -1).clone()
+    s_r = serving_state(srv)
+    d_r = greedy_forward(srv, lg_r, steps)
+    b = {"state_differing": sorted(x for x in s_c if s_c[x] != s_r.get(x)), "logits_equal": sha(lg_r) == sha(lg_c),
+         "decode_first_diff": next((i for i, (p, q) in enumerate(zip(d_c, d_r)) if p != q), None), "decode_steps": steps}
+    b["equal"] = not b["state_differing"] and b["logits_equal"] and b["decode_first_diff"] is None
+    return {"kind": "decode_tail", "mode": mode, "n": n, "k": k, "tail": n - k, "bound": bound, "a": a, "b": b,
+            "ok": a["exact_ok"] and a["layer0_ok"] and b["equal"]}
+
+
 # ------------------------------------------------------------------------------------------ the command
 def _ids(path: str) -> list:
     with open(path) as f:
@@ -319,6 +409,9 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--steps", type=int, default=64)
     ap.add_argument("--ops", action="store_true", help="the first op that differs (the prefill path)")
     ap.add_argument("--table", default="cold")
+    ap.add_argument("--decode-tail", default="", help="steps,chain: the G2d arm (the end read again) instead of the splits")
+    ap.add_argument("--layer0-bound", type=float, default=2 ** -7)
+    ap.add_argument("--chunk", type=int, default=4096, help="the grid the reads take (the served prefix chunk)")
     a = ap.parse_args(argv)
     arms = list(ARMS) if a.arms == "all" else a.arms.split(",")
     vias = a.via.split(",")
@@ -357,6 +450,19 @@ def main(argv: list | None = None) -> int:
     say({"case": "load", "pack": a.pack, "prompts": {k: len(v) for k, v in prompts.items()}, "arms": arms, "via": vias,
          "steps": a.steps, "graphs": srv.graphs is not None, "fused": bool(eng.fused), "experts_min": eng.experts_min,
          "chunk_until": X.CHUNK_UNTIL, "rowgrid": X.ROWGRID, "torch": torch.__version__, "load": timing.get("total_s")})
+    if a.decode_tail:
+        eng.prefill_v2, eng.prefill_experts, eng.prefill_grouped = ARMS["v2"]
+        ok = total = 0
+        for pname, ids in prompts.items():
+            for mode in a.decode_tail.split(","):
+                for k in ks_of(len(ids)):
+                    t0 = time.perf_counter()
+                    line = decode_tail(srv, ids, k, mode, a.steps, chunk=a.chunk, bound=a.layer0_bound)
+                    line.update(case=f"{pname}.decode_tail.{mode}.k{k}", seconds=round(time.perf_counter() - t0, 1))
+                    say(line)
+                    ok, total = ok + bool(line["ok"]), total + 1
+        say({"case": "done", "decode_tail_ok": ok, "of": total})
+        return 0 if ok == total else 1
     cases = run(eng, srv, prompts, arms, vias, ks_of, a.steps, say, ops=a.ops)
     rec = record(cases, "hy4_flash", os.path.basename(os.path.normpath(a.pack)))
     with open(os.path.join(a.out, "record.json"), "w") as f:
