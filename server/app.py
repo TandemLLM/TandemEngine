@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import collections
 import contextlib
+import functools
 import hashlib
 import json
 import re
@@ -4332,9 +4333,126 @@ def _remember(*args, **kw) -> None:
         cache.req_ms_add("remember", (time.perf_counter() - t0) * 1e3)
 
 
+#: the turn's close a request leaves for after its response (`_remember(defer=True)` on a family that reads its end
+#: again, `Capabilities.reread_end`): the handler runs it once the client has the answer's last bytes (the stream's
+#: last chunk, its usage and [DONE], or the JSON body), before its lane takes another request (`_turn_close`)
+_CLOSE = threading.local()
+
+
+def _reread_family(eng) -> bool:
+    """The served family reads a turn's answer again at its end (`Capabilities.reread_end`)."""
+    return bool(getattr(getattr(eng, "caps", None), "reread_end", False))
+
+
+def _turn_close(cid: str | None = None) -> str | None:
+    """The close `_remember(defer=True)` left: the end read and what is kept after it (`_close_read`), on the
+    request's own thread, slot and GPU turn, after its response is out and before its slot goes back. A close
+    whose rows moved since (`rows_gen`: a later choice's prefill) is dropped. Never raises."""
+    job = getattr(_CLOSE, "job", None)
+    _CLOSE.job = None
+    if job is None:
+        return None
+    fn, res, gen = job
+    if res is not STATE.get("resident") or int(getattr(res, "rows_gen", -1)) != gen:
+        return "moved"
+    try:
+        with torch.no_grad():
+            return fn(cid)
+    except Exception:                                              # noqa: BLE001
+        logbuf.print_exc()
+        return "error"
+
+
+def _reread_gate(cid: str | None):
+    """The end read's memory gate (`ResidentPrefix.reread_end`'s `gate(n, rows)`): the gate a prefill passes, by the
+    same prices. The policy's gate on the live reserve for `rows` forwarded onto `n` (`Budget.gate`, the rows'
+    workspace, `count` False: a refusal is no request's; a side slot's the peak stage only, as `_par_admit` runs it),
+    then, with side slots, the admission's floor for that workspace (`Admission.check`, nothing recorded). False:
+    the read does not run and no end is kept. Returns (gate, whether the policy holds a workspace for it)."""
+    mem = dict.get(STATE, "mem")
+    pool = dict.get(STATE, "pool")
+    adm = getattr(pool, "admission", None) if pool is not None else None
+    held: list = []
+
+    def gate(n: int, rows: int) -> bool:
+        if mem is not None and getattr(mem, "on", False):
+            try:
+                mem.gate(int(n), count=False, rows=int(rows), ceiling=slots_mod.current() is None)
+            except cache.MemoryRefused as exc:
+                print(f"[cache] {cid or '-'} end re-read refused by the memory gate: {exc}", flush=True)
+                return False
+            held.append(True)
+        if adm is not None:
+            ws = (mem.workspace_rows(int(n), int(rows), line=False) if mem is not None
+                  else max(cache.WORKSPACE_FLOOR, int(n) * cache.WORKSPACE_PER_TOKEN))
+            ok, d = adm.check(int(ws), count=False, rows=int(n), fwd=int(rows))
+            if not ok:
+                print(f"[cache] {cid or '-'} end re-read refused by the admission: "
+                      f"{slots_mod.Admission.describe(d)}", flush=True)
+                return False
+        return True
+    return gate, held
+
+
+def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: list, served_hidden,
+                cid: str | None = None) -> str:
+    """A turn's close on a family that reads its end again (`Capabilities.reread_end`): a guest on a side slot
+    promoted first (SPD-257, as below), then the answer's rows read again on the prompt pass (`reread_end`, under the
+    memory gate, the GPU turn offered between chunks as a prefill offers it), then the session snapshot and the end
+    anchor of that read's state (`keep_end(reread=True)`). Where the read did not run, nothing is kept: no session
+    snapshot, no end; the next turn resumes at the prompt end. Returns what `keep_end` said."""
+    eng, drafter = STATE["engine"], STATE["drafter"]
+    res = STATE.get("resident")
+    store = STATE.get("state_store")
+    t0 = time.perf_counter()
+    if getattr(res, "_stash", None) is not None and _guest_promotes(res, committed, conv_id):
+        old_valid, old_owner = int(res.valid), res.owner
+        if res.promote_guest(eng, drafter, committed, n_p, conv_id) and STATE.get("verbose"):
+            print(f"[parallel] guest kept as the slot's conversation: {n_p} prompt tokens, "
+                  f"{old_owner or 'the old one'} cut from {old_valid} to its shared head", flush=True)
+    gate, held = _reread_gate(cid)
+    pool = dict.get(STATE, "pool")
+    hook = _par_chunks(None) if pool is not None else None
+    try:
+        with _prefill_mark(max(0, min(len(committed), int(eng.kv.length)) - n_p)):
+            how = res.reread_end(eng, drafter, committed, n_p, device=STATE.get("device"), on_chunk=hook,
+                                 gate=gate)
+    finally:
+        if held:
+            dict.get(STATE, "mem").prefill_done()      # its workspace leaves the policy's prefills in flight
+    read = how == "read"
+    t_read = time.perf_counter()
+    if read and store is not None and STATE.get("session_cache"):
+        # the session snapshot is the read's state (a cold read's: `StateStore.put(exact=True)`)
+        est = cache._snapshot_estimate(eng, eng.kv.length, drafter)
+        mem = STATE.get("mem")
+        if store.reserve(est) and (mem is None or mem.admit("store", est)):
+            snap = cache.capture(eng, drafter, max_bytes=store.max_entry)
+            if snap is not None:
+                store.put(committed, snap, conv_id, kind="session", exact=True)
+            else:
+                store.stats["declined_big"] = store.stats.get("declined_big", 0) + 1
+        else:
+            store.stats["declined_mem"] = store.stats.get("declined_mem", 0) + 1
+    why = res.keep_end(eng, drafter, committed, n_p, hidden, reread=read)
+    if why == "kept" and res.end is not None:
+        res.end["served_hidden"] = [(int(a), int(b)) for a, b in (served_hidden or ()) if int(b) <= n_p]
+    al = STATE.get("end_align")
+    if al is not None:
+        al.kept(res, n_p, why)
+    last = (res.stats.get("end_reread_last") or {}) if read else {}
+    print(f"[cache] {cid or '-'} end re-read: {how}"
+          + (f", {last.get('rows')} rows ({last.get('answer_rows')} of the answer) from the {last.get('from')} at "
+             f"{last.get('at')} in {(t_read - t0) * 1e3:.1f} ms" if read else "")
+          + f"; end {why}; close {(time.perf_counter() - t0) * 1e3:.1f} ms", flush=True)
+    if slots_mod.current() is not None:
+        _side_note_end(res, why, conv_id)
+    return why
+
+
 def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | None,
                    mm=None, hidden=(), delta: int = 0, served_hidden=None, cold: bool = False,
-                   learn: bool = True, own: bool = False) -> None:
+                   learn: bool = True, own: bool = False, defer: bool = False, cid: str | None = None) -> None:
     """After a turn: keep the state it ended in, and add its tokens to the suffix store.
 
     `learn` (SPD-151): False leaves the suffix store as it was (`suffix_learns`: a request that
@@ -4359,6 +4477,12 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
     `own` (SRV-907): the conductor's own question. On a resident prefix with `chat_first` it keeps
     neither a session snapshot (nobody asks for one again: each took 42 to 81 MiB of the store) nor an
     end; when it was no guest, the rows it wrote are given back (`ResidentPrefix.release_own`).
+
+    A family that reads its end again (`Capabilities.reread_end`) keeps nothing decode steps wrote: the session
+    snapshot and the end anchor are kept after the answer's rows were read again on the prompt pass
+    (`_close_read`). `defer` (the handler's call): that close waits for the response to be out
+    (`_turn_close`, in the handler's `finally`); without it, it runs here. `cid`: the request's id, for its line.
+    Every other family keeps what it kept before, here, whatever `defer` says.
     """
     eng, drafter = STATE["engine"], STATE["drafter"]
     if cold:
@@ -4371,6 +4495,30 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
     if mm is not None and len(committed) >= mm.n:
         # the state is keyed by the images' content, not by their placeholders
         committed = list(mm.key_ids) + list(committed[mm.n:])
+    res = STATE.get("resident")
+    if not own_q and (getattr(res, "end_reread", False) if res is not None else _reread_family(eng)):
+        # the end read again (the prefix the server built from `Capabilities.reread_end`; a slot without one, the
+        # family's flag): nothing decode-written is kept, as a session snapshot or as an end
+        if (res is not None and getattr(res, "end_on", False) and committed and mm is None and not delta):
+            n_p = int(STATE.get("last_prompt_n") or 0)
+            spans = list(hidden) + list(STATE.get("hidden_spans") or [])
+            job = functools.partial(_close_read, list(committed), conv_id, n_p, spans, served_hidden)
+            if defer:
+                if getattr(_CLOSE, "job", None) is not None:
+                    res.stats["end_close_dropped"] = res.stats.get("end_close_dropped", 0) + 1   # a later choice's
+                _CLOSE.job = (job, res, int(res.rows_gen))
+            else:
+                with torch.no_grad():
+                    job(cid)
+        else:
+            if res is None and committed and mm is None and not delta:
+                _side_keep_end(committed, [], served_hidden, conv_id)     # a slot without a prefix: no carry
+            if STATE.get("verbose") and committed:
+                print(f"[cache] end not kept (reread: {'no resident prefix' if res is None else 'images'}): "
+                      f"kv.length={eng.kv.length} ctx={len(committed)}", flush=True)
+        if learn:
+            _suffix_add(prompt_ids, out_ids, mm, delta)
+        return
     if store is not None and STATE.get("session_cache") and eng.kv.length and not own_q:
         # `StateStore.put` declines when the snapshot is longer than the tokens it is given, which
         # is exactly the abandoned-mid-block case above -- and, before phase 9, was also the
@@ -4664,6 +4812,10 @@ def _side_keep_end(committed, hidden, served_hidden, conv_id) -> str:
         # slot 0 over the chat (which was parked) and kept the next guests off the side slot for
         # CARRY_KEEP_S (live 0.4.7-test b1, W01/W02)
         return "lane"
+    if _reread_family(STATE.get("engine")):
+        # what this slot's decode steps wrote is never carried on a family that reads its end again: the next
+        # turn on slot 0 reads the chat again (a slot with a resident prefix carries its read end, `_side_note_end`)
+        return "reread"
     eng, drafter = STATE["engine"], STATE["drafter"]
     n_prompt = int(STATE.get("last_prompt_n") or 0)
     e, n_c = int(eng.kv.length), len(committed)
@@ -4713,6 +4865,8 @@ def _side_note_end(res, why: str, conv_id) -> None:
                                     (res.end.get("served_hidden") or ())],
                   "mark": res.end.get("mark"), "owner": conv_id, "resident": True,
                   "regions": [tuple(x) for x in (al.regions(res) if al is not None else ())]}
+    if res.end.get("exact"):
+        slot.carry["exact"] = True         # the end read's state (`ResidentPrefix.reread_end`)
     if res.end.get("mm") or res.end.get("delta"):
         # SRV-629: an end kept after images keeps its rotary offset and its mark on slot 0, where
         # it is offered only to a request with these images and a compaction reads its offset
@@ -4841,7 +4995,8 @@ def _carry_from_side(ids: list[int], session=None) -> dict | None:
             if drafter is not None and hasattr(drafter, "state_resume"):
                 drafter.state_resume(e)    # again, over the rows carried in (`cache.drafter_resume`)
             pair = res.adopt_end(eng, {"at": e, "hidden": rec["hidden"], "mark": rec["mark"],
-                                       "delta": rec.get("delta"), "mm": rec.get("mm")})
+                                       "delta": rec.get("delta"), "mm": rec.get("mm"),
+                                       **({"exact": True} if rec.get("exact") else {})})
             if pair is not None:
                 # FX16: with a resident prefix on the side slot the state at the end is its end
                 # anchor's pair (a guest served there since wrote the live state); else the live
@@ -11147,6 +11302,7 @@ class Handler(BaseHTTPRequestHandler):
         deadline = Deadline(float(STATE.get("request_timeout", 0.0)))
         mm_end = None                      # SRV-629: the served images' context, for the view keep
         source = None                      # the token source the answer reads (`open_source`)
+        _CLOSE.job = None                  # a close this thread's last request left behind is not this one's
         try:
             prompt, _, in_think = build_prompt(body, client, left_out=left_out)
             if int(prompt.numel()) == 0:
@@ -11868,7 +12024,8 @@ class Handler(BaseHTTPRequestHandler):
                                   delta=comp["record"].delta if comp is not None else 0,
                                   served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
-                                  learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")))
+                                  learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")),
+                                  defer=True, cid=cid)
                         if rkey is not None and not ci and not (sup is not None and sup.acted) \
                                 and not mem_taken[0]:
                             rcache.put(rkey, ids, prompt_ids)
@@ -12517,7 +12674,8 @@ class Handler(BaseHTTPRequestHandler):
                           delta=comp["record"].delta if comp is not None else 0,
                           served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
-                                  learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")))
+                                  learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")),
+                                  defer=True, cid=cid)
                 if rkey is not None and not (sup is not None and sup.acted) and \
                         not mem_taken[0]:
                     rcache.put(rkey, ids, prompt_ids)
@@ -12578,6 +12736,15 @@ class Handler(BaseHTTPRequestHandler):
                     source.close()
                 except Exception:                                  # noqa: BLE001
                     logbuf.print_exc()
+            if not micro:
+                # the end read again (a family with `Capabilities.reread_end`): the client has its last bytes
+                # (the stream's [DONE], the JSON body); the read holds this lane alone, on its own GPU turn, before
+                # its pages are trimmed, the allocator's reserve goes back and the slot takes another request
+                try:
+                    self.wfile.flush()
+                except Exception:                                  # noqa: BLE001
+                    pass
+                _turn_close(cid)
             if micro:
                 # the side lane never held the engine past its job (server/preempt.py)
                 with QUEUE:
@@ -12887,6 +13054,15 @@ def _owners_gib(o: dict) -> dict:
     return out
 
 
+def _end_reread_state() -> bool | None:
+    """Whether the served family reads a turn's answer again at its end: None for a family that does not
+    (`Capabilities.reread_end` off), else QWEN38_END_REREAD's value (on: the read runs, off: no end is kept)."""
+    eng = STATE.get("engine")
+    if eng is None or not _reread_family(eng):
+        return None
+    return bool(cache.END_REREAD)
+
+
 def cache_stats() -> dict:
     """What `/v1/cache/stats` answers: what is held, what it costs, and what it bought.
 
@@ -12906,6 +13082,7 @@ def cache_stats() -> dict:
     out["state_store"] = store.report() if store is not None else None
     res = STATE.get("resident")
     out["resident"] = res.report() if res is not None else None
+    out["end_reread"] = _end_reread_state()          # the [limits] line's `end_reread`
     al = STATE.get("end_align")
     out["end_align"] = al.report() if al is not None else None
     sp = STATE.get("spill")
@@ -14244,7 +14421,9 @@ def _load_caches(a, eng, tok, drafter, rcache) -> dict:
                                      # SRV-907: the guest test knows the conversation's next turn
                                      chat_first=bool(getattr(getattr(eng, "caps", None), "chat_first", False)),
                                      # SRV-905: a guest resumes from the store's heads and keeps the chat's end
-                                     guest_store=bool(getattr(getattr(eng, "caps", None), "head_mark", False)))
+                                     guest_store=bool(getattr(getattr(eng, "caps", None), "head_mark", False)),
+                                     # the end read again on the prompt pass at a turn's end (`_close_read`)
+                                     end_reread=bool(getattr(getattr(eng, "caps", None), "reread_end", False)))
                 if resident_on else None)
     if store is not None:
         mem.register("store", store.shed)
@@ -14601,7 +14780,8 @@ def _side_resident(a, tok):
                                guest_max=a.resident_guest_max, guest_frac=1.0, pin_bytes=0,
                                park_bytes=0, mem=mem, end=res0.end_on,
                                chat_first=bool(getattr(res0, "chat_first", False)),     # SRV-907, as slot 0's
-                               guest_store=bool(getattr(res0, "guest_store", False)))   # SRV-905, as slot 0's
+                               guest_store=bool(getattr(res0, "guest_store", False)),   # SRV-905, as slot 0's
+                               end_reread=bool(getattr(res0, "end_reread", False)))     # as slot 0's
     res.glue = glue_ids(tok)
     res.keeper = _keep_parent             # ENG-371: a parent's rows to the NVMe before they go
     if mem is not None:
@@ -14903,7 +15083,10 @@ def _limits_line(a) -> str:
             "drafter": getattr(a, "drafter", None), "drafter_built": STATE.get("drafter") is not None,
             "round_runner": bool(_round_runner.ON), "runner_pipe": bool(_round_runner.PIPE),
             "max_queue": getattr(a, "max_queue", None), "queue_timeout_s": getattr(a, "queue_timeout", None),
-            "request_timeout_s": getattr(a, "request_timeout", None), "family": arch.name}
+            "request_timeout_s": getattr(a, "request_timeout", None), "family": arch.name,
+            # the end read again (`Capabilities.reread_end`, QWEN38_END_REREAD): on or off for a family that reads
+            # it, `-` for one that keeps its decode-written end as before
+            "end_reread": _end_reread_state()}
     tail.update(memlimits.family_knobs(_S.describe(), arch.package or f"models/{arch.name}"))
     return memlimits.start_line(head, STATE, tail)
 

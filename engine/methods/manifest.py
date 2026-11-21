@@ -184,7 +184,19 @@ SAME_ROWS = {("engine/loader.py", "823f9dd4c230ec45d133b52e0a5edc0343098184526d9
              # at Flash-Next's, LFM2.5's and Flint's shapes (tests/gpu/test_fn_moe_grouped_pin_gpu.py, recorded on the
              # tree before) passes on the Spark
              ("tools/fn_prefill_kernels.py", "b23e70023afaae0e171de76d4fe8abe7ead0b95dc06d67f22806a2365d0d3910"):
-             "fa037990b84862bdbae21a389095978c5dd853cf9ea93b488db6ba9b0712bffe"}
+             "fa037990b84862bdbae21a389095978c5dd853cf9ea93b488db6ba9b0712bffe",
+             # SRV-911: the end read again (`ResidentPrefix.reread_end`, a family's `Capabilities.reread_end`): which
+             # rows a family with the flag keeps as its end; every family without it runs the lines it ran, no row
+             ("engine/cache.py", "61a59f0c77caf5e0522ffe6fac4b483f3da138f8d509bf1f0989922d516f3ab2"):
+             "b6d30d155f5b79d6e440e9aac934d6ba1d7b74cb01184bbda0f811ca70b40523",
+             # SRV-911: the spill carries the end read's `exact` mark with an end and refuses an end without it on such
+             # a family; the rows it writes and reads are the same
+             ("engine/spill.py", "e17aee1ad4765b20a6d3ea282aa840da6938bfbf4984be365d0c9b217a395a31"):
+             "9e3cd7229aa7d241ce50530082656d84a89088cc2575591195dfdc0dd14f7236",
+             # SRV-911: QWEN38_END_REREAD, read only for a family with `Capabilities.reread_end` (whether its end read
+             # runs); no row of any family moves (the knobs' digest, as `disk_cache._arithmetic_knobs` reads them)
+             ("engine/settings.py", "0dd8d02d135e132c6fbddd92cbe49b34faeb007bc89e36ef0f80ad7fd44b846e"):
+             "b473716a6b7540a86fd149045376857882bd9df2f5cb6d3e627b1e8a6c27016e"}
 
 
 def adoption() -> str:

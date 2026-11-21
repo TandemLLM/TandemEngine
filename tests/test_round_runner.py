@@ -5,6 +5,10 @@ the tokens they write alone; the runner ran joint passes (the requests verified 
 leaves with its phase cleared and the turn free. ENG-485: with no meeting (a family whose lanes take turns, or
 --parallel-batch off) the runner verifies one lane a pass, never in another family's joint pass, never cut.
 
+The end read again (`Capabilities.reread_end`): a lane's turn close reads its answer's rows on the prompt pass on its
+own thread and GPU turn, offered between chunks as a prefill offers it, while another lane decodes through the
+runner: both write their alone tokens, the runner ran rounds during the read, and the read lane's end is kept.
+
 Run: python tests/test_round_runner.py
 """
 
@@ -47,6 +51,123 @@ def test_two_requests_through_the_runner_write_what_they_write_alone():
 
 def test_three_requests_through_the_runner_write_what_they_write_alone():
     return _check(3)
+
+
+def _lanes_with_prefixes(cfg, w, prompts, fulls, ns, close=None):
+    """`prompts` decoded at once on slots 0.. (slot 0 under the engine lock, the others on their side slots), each slot
+    with a resident prefix on the cache grid that reads its end again (`end_reread`), the engines' capabilities
+    saying so (the random model stands in for the family: what is under test is where the read runs). `close(i)`:
+    what slot i's thread does after its generation, holding its turn (the handler's turn close)."""
+    import dataclasses
+    import threading
+    import torch
+    from engine import cache
+    from server import app, slots
+    engines = [T._engine(cfg, w) for _ in prompts]
+    for e in engines:
+        e.caps = dataclasses.replace(type(e).caps, reread_end=True)
+    res = [cache.ResidentPrefix(1 << 30, 4, end=True, stash_bytes=1 << 30, end_reread=True) for _ in prompts]
+    pool = T._setup(engines, [T.OracleTree(f) for f in fulls]) if len(prompts) > 1 else None
+    if pool is None:
+        T._setup(engines, [T.OracleTree(f) for f in fulls])
+        T._teardown()
+    app.STATE.update(prefix_chunk=4, resident=res[0])
+    for i in range(1, len(prompts)):
+        pool.slots[i].values["resident"] = res[i]
+    outs, errs, got = {}, [], {}
+    go = threading.Barrier(len(prompts))
+
+    def run(i):
+        try:
+            go.wait()
+            if i == 0:
+                with app.LOCK:
+                    with torch.no_grad():
+                        outs[i] = list(app.generate_stream(torch.tensor(prompts[i]), ns[i], set()))
+                    if close is not None:
+                        got[i] = close(i)
+                return
+            s = pool.slots[i]
+            slots.bind(s)
+            pool.turn.reset(i)
+            pool.turn.acquire(i)
+            try:
+                with torch.no_grad():
+                    outs[i] = list(app.generate_stream(torch.tensor(prompts[i]), ns[i], set()))
+                if close is not None:
+                    got[i] = close(i)
+            finally:
+                if pool.turn.held_by(i):
+                    pool.turn.release(i)
+                slots.bind(None)
+        except BaseException as exc:                               # noqa: BLE001
+            errs.append(exc)
+
+    ths = [threading.Thread(target=run, args=(i,)) for i in range(len(prompts))]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(180)
+    phases = [s.phase for s in pool.slots] if pool is not None else []
+    if pool is not None:
+        T._teardown()
+    if errs:
+        raise errs[0]
+    return [outs[i] for i in range(len(prompts))], got, res, phases
+
+
+def test_a_lanes_end_read_runs_beside_another_lanes_decode():
+    """R1: lane 1 ends first and reads its answer again at its close (the handler's `_turn_close`) while lane 0 still
+    decodes through the runner. The read runs on lane 1's thread and GPU turn and offers the turn between its chunks
+    (`Turn.pause`, as a prefill's chunk hook does; the fair turn hands over to a waiter behind it); both lanes write
+    the tokens they write alone, and lane 1's end is the read's, kept."""
+    from server import app
+    cfg = T.tiny_config()
+    w = T.FakeWeights(cfg, seed=5)
+    prompts = [[(3 + 7 * i + 11 * j) % 96 + 1 for j in range(10 + 3 * i)] for i in range(2)]
+    ns = [80, 12]
+    refs = [T._greedy(cfg, w, p, n) for p, n in zip(prompts, ns)]
+    fulls = [p + r for p, r in zip(prompts, refs)]
+    alone = [_lanes_with_prefixes(cfg, w, [p], [f], [n])[0][0] for p, f, n in zip(prompts, fulls, ns)]
+    seen = {"pauses": 0}
+
+    def close(i):
+        if i != 1:
+            return None
+        res = app.STATE["resident"]
+        pool = dict.get(app.STATE, "pool")
+        real, real_pause = res.reread_end, pool.turn.pause
+
+        def pause(who):
+            if who == 1 and "lane0" in seen and "how" not in seen:
+                seen["pauses"] += 1
+            return real_pause(who)
+
+        def spy(*a, **kw):
+            seen["lane0"] = pool.slots[0].phase
+            seen["held"] = pool.turn.held_by(1)
+            got = real(*a, **kw)
+            seen["how"] = got
+            return got
+        res.reread_end, pool.turn.pause = spy, pause
+        try:
+            ctx = list(app.STATE["last_ctx"])
+            n_p = int(app.STATE["last_prompt_n"])
+            app._remember_turn(ctx[:n_p], ctx[n_p:], "B", defer=True, cid="lane1")
+            return app._turn_close("lane1")
+        finally:
+            pool.turn.pause = real_pause
+    R.RUNNER = None
+    together, got, res, phases = _lanes_with_prefixes(cfg, w, prompts, fulls, ns, close=close)
+    assert together == alone, (alone, together)
+    assert seen.get("lane0") == "runner", f"lane 0 was not decoding through the runner when the read began: {seen}"
+    assert seen.get("held") is True and seen["pauses"] >= 1, seen
+    assert seen.get("how") == "read" and got.get(1) == "kept", (seen, got)
+    assert res[1].end is not None and res[1].end.get("exact") is True, res[1].end
+    assert all(p == "" for p in phases), phases
+    assert R.RUNNER.stats["errors"] == 0, R.RUNNER.stats
+    return (f"lane 1 read {res[1].stats.get('end_reread_rows')} rows on its own turn ({seen['pauses']} turn offers) "
+            f"while lane 0 decoded through the runner; both lanes their alone tokens")
 
 
 class _Tok:

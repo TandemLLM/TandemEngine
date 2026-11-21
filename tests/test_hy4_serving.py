@@ -456,7 +456,7 @@ def test_the_store_entry_cap_is_the_familys_and_survives_a_refresh():
 
 _E32 = []
 #: a family's capabilities -> the resident prefix's arguments, as server/app.py `_load_caches` passes them
-CAPS_ARGS = (("chat_first", "chat_first"), ("head_mark", "guest_store"))
+CAPS_ARGS = (("chat_first", "chat_first"), ("head_mark", "guest_store"), ("reread_end", "end_reread"))
 
 
 def serving32(max_len: int = 512) -> Hy4FlashServing:
@@ -652,19 +652,25 @@ def test_a_question_whose_client_left_leaves_nothing_in_place():
     assert c[37:] == _cold_greedy(p, 10)
 
 
-def test_a_question_at_the_chats_prompt_end_stores_nothing():
-    """A guest that resumed at the chat's prompt end wrote a session's rows: the store takes no snapshot of them
-    (the guard that lets a guest store its head keeps this case out)."""
+def test_a_question_at_the_chats_prompt_end_stores_a_cold_reads_head():
+    """A guest that resumed at the chat's prompt end. Before the end read again that prompt end counted as a
+    session's rows and the store took no snapshot of the guest's prefill. On this family the prompt end is a cold
+    read's state (`pend["exact"]`, the row-invariant prompt pass), so what the guest reads from there is a cold
+    read's rows and the store keeps its grid lines (the ruling: `taint` clear where the rows are exact); the
+    chat's prompt end and its end stay as they were."""
     store = cache.StateStore(BIG, chunk=CH)
     with _prompt_end():
         res, eng = _prefix(), serving32()
         p1 = tokens(37, 115)
         c1, _ = _turn(eng, res, p1, 30, "chat", store=store)
-        puts = store.stats["puts"]
+        e, puts = res.end["at"], store.stats["puts"]
+        assert res.pend.get("exact") is True and res.taint is None, (res.pend, res.taint)
         q = p1 + [_other(c1[37])] + tokens(60, 116)
         _, tq = _turn(eng, res, q, 3, "q", own=True, store=store)
     assert tq["guest"] and (tq["kind"], tq["reused"]) == ("pend", 37), tq
-    assert store.stats["puts"] == puts, "a question resumed at the chat's prompt end stored a snapshot"
+    got = sorted(x.tokens.__len__() for x in store._d.values() if x.conv_id == "q" and x.kind == "prefix")
+    assert store.stats["puts"] > puts and got == [48, 64, 80, 96], (store.stats["puts"], puts, got)
+    assert res.end is not None and res.end["at"] == e and res.pend["at"] == 37, (res.end, res.pend)
 
 
 def test_the_chat_after_the_conductors_question_owns_the_rows():
@@ -742,7 +748,9 @@ def test_a_promoted_guests_next_turn_is_no_guest():
         lg, _, _ = cache.prefill(eng, None, y, "cpu", chunk=CH, resident=res, conv_id="Y")
         assert res._stash is not None, "the second chat was no guest of the first"
         cy = y + _greedy(eng, lg, 30, 120)
-        assert res.promote_guest(eng, None, cy, 30, "Y") and res.keep_end(eng, None, cy, 30, []) == "kept"
+        # the server's order at the close (`_close_read`): the promotion, the end read again, the end of that read
+        assert res.promote_guest(eng, None, cy, 30, "Y") and res.reread_end(eng, None, cy, 30) == "read"
+        assert res.keep_end(eng, None, cy, 30, [], reread=True) == "kept"
         y2 = y + [_other(cy[30])] + tokens(20, 42)
         assert len(y2) < res.valid
         c2, t2 = _turn(eng, res, y2, 6, "Y")
@@ -764,23 +772,128 @@ def test_a_turn_that_does_not_hold_the_last_prompt_stays_a_guest_by_size():
     assert t["guest"], t
 
 
+def _blocks(eng, lg, n0: int, chain: bool = True) -> list[int]:
+    """A turn's answer as the served loop writes it on this engine: decode steps, a verify block with a rejected
+    branch (rows 0, 2 and 3 committed), decode steps, then (`chain`) a chain block whose commit waits and whose
+    stream stopped at its second row (the engine ahead of the committed tokens). Greedy where the loop decides."""
+    out, pos = [int(lg.reshape(-1, lg.shape[-1])[-1].argmax())], n0
+    for _ in range(3):
+        lg = eng.forward(torch.tensor([out[-1]]), start=pos)
+        pos += 1
+        out.append(int(lg.reshape(-1, lg.shape[-1])[-1].argmax()))
+    lgt = eng.forward_tree(torch.tensor([out[-1], 5, 7, 9]), [-1, 0, 0, 2], start=pos)
+    eng.commit_tree([0, 2, 3])
+    pos += 3
+    out += [7, 9, int(lgt[3].argmax())]
+    for _ in range(2):
+        lg = eng.forward(torch.tensor([out[-1]]), start=pos)
+        pos += 1
+        out.append(int(lg.reshape(-1, lg.shape[-1])[-1].argmax()))
+    if chain:
+        eng.forward_block(torch.tensor([out[-1], 11, 13, 15]), start=pos)
+        out.append(11)
+    assert eng.stats["decode_steps"] >= 5 and eng.stats["verify_blocks"] >= 1, eng.stats
+    return out
+
+
 def test_the_end_anchor_and_the_session_snapshot_give_a_cold_reads_tokens():
-    """5.1 test 8 (passes before and after): a turn resumed at the end anchor and one resumed from a session
-    snapshot write the next 12 greedy tokens of a cold read."""
-    p1 = tokens(37, 60)
-    res, eng = _prefix(), serving32()
-    c1, _ = _turn(eng, res, p1, 20, "A")
-    p2 = c1 + tokens(6, 61)
-    want = _cold_greedy(p2, 12)
-    c2, t2 = _turn(eng, res, p2, 12, "A")
-    assert t2["kind"] == "end" and t2["reused"] == len(c1) - 1 and c2[len(p2):] == want, t2
-    store = cache.StateStore(BIG, chunk=CH)
-    res, eng = _prefix(), serving32()
-    _turn(eng, res, p1, 20, "A", store=store)
-    res.clear()                                   # the rows are gone: the store alone holds the turn
-    c2, t2 = _turn(eng, res, p2, 12, "A", store=store)
-    assert t2["kind"] == "session" and t2["reused"] == len(c1) - 1 and c2[len(p2):] == want, t2
-    return f"end and session resumes at {len(c1) - 1}: 12 greedy tokens equal a cold read's"
+    """5.1 test 8, made stronger with the end read again (`Capabilities.reread_end`): turn 1 writes its answer by
+    decode steps and verify blocks (a tree with a rejected branch, a chain cut back); a turn resumed at the end anchor
+    and one resumed from the session snapshot hold a cold read's whole state and logits, bit for bit, and write the
+    next 12 greedy tokens of a cold read. On the bf16 model: the served dtype, whose prompt pass gives the same bits at
+    every cut on the CPU (the fp32 one does not: its sums move by about 3e-7 with the chunk's rows)."""
+    with _prompt_end():
+        p1 = tokens(37, 60)
+        res, eng = _prefix(), serving()
+        lg, _, _ = cache.prefill(eng, None, p1, "cpu", chunk=CH, resident=res, conv_id="A")
+        c1 = p1 + _blocks(eng, lg, len(p1))
+        e = min(int(eng.kv.length), len(c1))
+        _remember(eng, res, c1, len(p1), "A")
+        assert res.end is not None and res.end["at"] == e, res.end
+        p2 = c1 + tokens(6, 61)
+        info: dict = {}
+        lg2, reused, _ = cache.prefill(eng, None, p2, "cpu", chunk=CH, resident=res, conv_id="A", info=info)
+        assert info["kind"] == "end" and reused == e, (info, reused)
+        ref, ref_lg = _cold(p2)
+        _same(eng, ref, len(p2), lg2, ref_lg)
+        assert res.end.get("exact") is True and res.taint is None, (res.end, res.taint)
+        want = _greedy(ref, ref_lg, len(p2), 12)
+        assert _greedy(eng, lg2, len(p2), 12) == want
+        store = cache.StateStore(BIG, chunk=CH)
+        res, eng = _prefix(), serving()
+        lg, _, _ = cache.prefill(eng, None, p1, "cpu", chunk=CH, resident=res, conv_id="A", store=store,
+                                 checkpoint=True)
+        c1 = p1 + _blocks(eng, lg, len(p1), chain=False)
+        e = min(int(eng.kv.length), len(c1))
+        _remember(eng, res, c1, len(p1), "A", store=store)
+        res.clear()                                   # the rows are gone: the store alone holds the turn
+        p2 = c1 + tokens(6, 61)
+        info = {}
+        lg2, reused, _ = cache.prefill(eng, None, p2, "cpu", chunk=CH, resident=res, conv_id="A", store=store,
+                                       info=info)
+        assert info["kind"] == "session" and reused == e, (info, reused)
+        ref, ref_lg = _cold(p2)
+        _same(eng, ref, len(p2), lg2, ref_lg)
+        assert _greedy(eng, lg2, len(p2), 12) == _greedy(ref, ref_lg, len(p2), 12)
+    return f"end and session resumes after verify blocks: the whole state and the logits equal a cold read's, 12 tokens"
+
+
+def test_decode_written_rows_have_the_prompt_passes_layout():
+    """The structure the end read relies on (engine-arch/endanchor design 1.3, passes before and after): rows written
+    by decode steps, a tree with a rejected branch and a chain cut back by `trim_pending`, against a prompt read of the
+    same ids, on the bf16 model. Exactly equal: the length, the token history, the group-key mirror against the
+    indexer keys of the closed groups (`gk[:G] == ik[rr-1::rr][:G]`, as the passes wrote it and after `touched()` and
+    the rebuild), and which rows hold a pooled key. Layer 0's latents and token keys of the tail rows (their inputs
+    are the embeddings, the same on both passes): every element within 0.0078 (2^-7, one bf16 step in [1, 2): the
+    largest difference Gate 0 a saw between two kernel classes). Deeper layers: finite, recorded."""
+    from engine.models.hy4_flash.engine import _mirror
+    s, ref = serving(), serving()
+    ids, k = tokens(60, 81), 37
+    s.forward(torch.tensor(ids[:k]), start=0)
+    pos = k
+    for _ in range(4):
+        s.forward(torch.tensor([ids[pos]]), start=pos)
+        pos += 1
+    s.forward_tree(torch.tensor([ids[pos], _other(ids[pos + 1]), ids[pos + 1], ids[pos + 2]]), [-1, 0, 0, 2],
+                   start=pos)
+    s.commit_tree([0, 2, 3])
+    pos += 3
+    s.forward_block(torch.tensor(ids[pos:pos + 4]), start=pos)
+    assert s.trim_pending(pos + 2)
+    pos += 2
+    for _ in range(3):
+        s.forward(torch.tensor([ids[pos]]), start=pos)
+        pos += 1
+    e = pos
+    ref.forward(torch.tensor(ids[:e]), start=0, prompt=True)
+    cfg = s.cfg
+    rr, G = cfg.index_kpool, e // cfg.index_kpool
+    assert s.kv.length == ref.kv.length == s.st.length == e, (s.kv.length, ref.kv.length, e)
+    assert torch.equal(s.st.hist, ref.st.hist), (s.st.hist, ref.st.hist)
+
+    def pooled(st):
+        return [p for p in range(G * rr) if torch.equal(st.ik_all[:, p], st.gk_all[:, p // rr])]
+    for st in (s.st, ref.st):
+        assert torch.equal(st.gk_all[:, :G], st.ik_all[:, rr - 1::rr][:, :G]), "the passes' mirror"
+        st.touched()
+        _mirror(st, rr)
+        assert torch.equal(st.gk_all[:, :G], st.ik_all[:, rr - 1::rr][:, :G]), "the rebuilt mirror"
+    want = list(range(rr - 1, G * rr, rr))
+    assert pooled(s.st) == pooled(ref.st) == want, (pooled(s.st), pooled(ref.st))
+    tail = range(k, e)
+    tok_rows = [p for p in tail if p % rr != rr - 1]
+    d_lat = float((s.st.lat_all[0, k:e].float() - ref.st.lat_all[0, k:e].float()).abs().max())
+    d_ik = float((s.st.ik_all[0, tok_rows].float() - ref.st.ik_all[0, tok_rows].float()).abs().max())
+    assert d_lat <= 2 ** -7 and d_ik <= 2 ** -7, (d_lat, d_ik)
+    deeper = []
+    for i, li in enumerate(cfg.sparse_layers[1:], start=1):
+        a, b = s.st.lat_all[i, :e].float(), ref.st.lat_all[i, :e].float()
+        assert torch.isfinite(a).all() and torch.isfinite(s.st.ik_all[i, :e].float()).all(), li
+        deeper.append(f"layer {li} {float((a - b).abs().max()):.3g}")
+    for li in cfg.window_layers:
+        assert torch.isfinite(s.st.win[li].float()).all(), li
+    return (f"{e} rows ({e - k} decode-written): length, history, mirror and pooled rows exact; layer 0 within "
+            f"{max(d_lat, d_ik):.3g}; deeper latents differ by {', '.join(deeper)} (recorded)")
 
 
 def test_a_guest_that_wraps_the_rings_leaves_the_chats_anchor_exact():
@@ -920,7 +1033,8 @@ def test_the_conductors_question_beside_a_chat_stores_its_head_and_keeps_the_cha
     stores its head although the chat is tainted (its kept end). The second resumes from that head in the store:
     its stash starts at row 0, not at the chunk line below what it shares (128), so every row the restore writes
     goes back, and the chat keeps its end. The chat's next turn resumes there and writes a cold read's greedy
-    tokens. Before: no head was stored, and once one was, the hit dropped the end."""
+    tokens. Before: no head was stored, and once one was, the hit dropped the end. With the end read again the chat
+    is no longer tainted by its end (a cold read's state), so its head is stored as any other prompt's."""
     ch = 128
     store = cache.StateStore(BIG, chunk=ch)
     q1, q2 = _question(90, 91), _question(90, 92)
@@ -931,7 +1045,7 @@ def test_the_conductors_question_beside_a_chat_stores_its_head_and_keeps_the_cha
         res, eng = _prefix(chunk=ch), serving32()
         c1, _ = _turn(eng, res, chat, 20, "chat", store=store, chunk=ch)
         e = res.end["at"]
-        assert res.taint is not None and e == len(c1) - 1, (res.taint, res.end)
+        assert res.taint is None and res.end.get("exact") is True and e == len(c1) - 1, (res.taint, res.end)
         _, t1 = _turn(eng, res, q1, 3, "q", own=True, store=store, chunk=ch, grid_mark=mark)
         assert t1["guest"] and (t1["kind"], t1["reused"]) == ("resident", ch), t1
         assert mark in store.report()["boundaries"], store.report()["boundaries"]
@@ -1014,7 +1128,8 @@ def test_a_chat_too_short_for_the_park_keeps_its_prefix_beside_a_short_second_ch
     """SRV-907, the size rule on one resident prefix (the interim one-lane rule that let a second chat the store
     remembers take it is gone with Hy4-flash's side slots, ENG-485). A chat under one chunk above what it shares
     with a short second chat keeps the prefix: the second chat runs as its guest, the chat's end stays, nothing is
-    parked, and the chat's next turn resumes at its end with a cold read's tokens."""
+    parked, and the chat's next turn resumes at its end with a cold read's tokens. A guest's own answer is never read
+    again (its rows go back to the stash), so on this family it keeps no session snapshot: nothing decode-written."""
     store = cache.StateStore(BIG, chunk=64)
     with _prompt_end():
         res, eng = _prefix(park_bytes=BIG, chunk=64), serving32()
@@ -1023,7 +1138,7 @@ def test_a_chat_too_short_for_the_park_keeps_its_prefix_beside_a_short_second_ch
         assert e < res.chunk
         b1 = tokens(8, 131)
         cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store, chunk=64)
-        assert tb1["guest"] and _held(store, "B"), tb1
+        assert tb1["guest"] and not _held(store, "B"), tb1
         b2 = b1 + [_other(cb1[8])] + tokens(2, 132)
         assert len(b2) < 0.25 * res.valid
         _, tb2 = _turn(eng, res, b2, 2, "B", store=store, chunk=64)
@@ -1034,10 +1149,12 @@ def test_a_chat_too_short_for_the_park_keeps_its_prefix_beside_a_short_second_ch
     assert (ta2["kind"], ta2["reused"]) == ("end", e) and c2[len(p2):] == want, ta2
 
 
-def test_a_second_chats_session_hit_takes_the_prefix():
-    """SRV-907. A second chat whose prompt matches its session snapshot resumes from the store, and the
-    conversation in place is dropped (it is written to the NVMe only from the spill's `min_tokens`), as on every
-    family; nothing is parked."""
+def test_a_second_chat_that_ran_as_a_guest_resumes_from_its_head():
+    """SRV-907, with the end read again. A second chat that ran as a guest keeps no session snapshot on this family
+    (its answer was never read again: decode-written rows are never resumed from), so its next turn does not resume
+    from one. It resumes from the head its guest prefill stored (a prompt read's grid line), is a guest again, and
+    writes a cold read's greedy tokens; the conversation in place stays, nothing is parked. Before, it resumed from
+    the guest's decode-written session snapshot and took the prefix."""
     store = cache.StateStore(BIG, chunk=CH)
     with _prompt_end():
         res, eng = _prefix(park_bytes=BIG), serving32()
@@ -1045,9 +1162,12 @@ def test_a_second_chats_session_hit_takes_the_prefix():
         b1 = tokens(20, 135)
         cb1, tb1 = _turn(eng, res, b1, 3, "B", store=store)
         assert tb1["guest"], tb1
-        _, tb2 = _turn(eng, res, cb1 + tokens(3, 136), 2, "B", store=store)
-    got = (tb2["kind"], tb2["reused"], res.owner, res.stats["parks"])
-    assert got == ("session", len(cb1) - 1, "B", 0), got
+        assert not any(x.kind == "session" and x.conv_id == "B" for x in store._d.values())
+        b2 = cb1 + tokens(3, 136)
+        want = _cold_greedy(b2, 2)
+        cb2, tb2 = _turn(eng, res, b2, 2, "B", store=store)
+    got = (tb2["kind"], tb2["reused"], tb2["guest"], res.owner, res.stats["parks"])
+    assert got == ("prefix", 16, True, "A", 0) and cb2[len(b2):] == want, (got, cb2[len(b2):], want)
 
 
 if __name__ == "__main__":

@@ -336,7 +336,7 @@ class Entry:
         return int(self.man.get("bytes") or 0)
 
     def offer(self, keys, max_len: int, glue=frozenset(), replay: bool = False,
-              mm_ok: bool = False, align=None) -> int:
+              mm_ok: bool = False, align=None, exact_only: bool = False) -> int:
         """The line a prompt would resume at after a restore of this entry: the end anchor when
         the prompt starts with all of it (the hidden spans put back when `replay`, or, with
         `align`, the copy aligned to the rows as the server's end alignment aligns it), else the
@@ -348,11 +348,16 @@ class Entry:
         `<think>`, the hidden spans alone did not replay it, no grid anchor lay below that point,
         and the whole chat was read again cold (about 4 minutes) with its 20 GB entry on the disk.
         In RAM the same copy resumes at the end anchor through server/endalign.py (SRV-239); the
-        offer now asks the same alignment, on the entry's own tokens, end anchor and regions."""
+        offer now asks the same alignment, on the entry's own tokens, end anchor and regions.
+
+        `exact_only` (a resident prefix with `end_reread`): an end that is no end read's state (no `exact`
+        in the manifest, written before or by decode steps) is not offered; the anchors are."""
         c = _common(keys, self.tokens)
         end = self.man.get("end")
         if end is not None and end.get("mm") and not mm_ok:
             end = None                     # an end after images: a compaction's alone
+        if end is not None and exact_only and not end.get("exact"):
+            end = None
         if end is not None:
             e = int(end["at"])
             if c >= e and e <= max_len:
@@ -837,6 +842,8 @@ class SessionSpill:
                                      (res.end.get("served_hidden") or ())]}
             if res.end.get("mm") or res.end.get("delta"):
                 end.update(delta=int(res.end.get("delta") or 0), mm=bool(res.end.get("mm")))
+            if res.end.get("exact"):
+                end["exact"] = True        # the end read's state (engine/cache.py `reread_end`)
         if end is None and not anchors:
             return None
         if reason in RESAVE_REASONS:
@@ -942,6 +949,8 @@ class SessionSpill:
                    "mark": pe.get("mark"), "pair": pe["pair"]}
             if pe.get("mm") or pe.get("delta"):
                 end.update(delta=int(pe.get("delta") or 0), mm=bool(pe.get("mm")))
+            if pe.get("exact"):
+                end["exact"] = True
             if self.park_extra_of is not None:
                 try:
                     extra = self.park_extra_of(res)
@@ -1214,7 +1223,8 @@ class SessionSpill:
                    "anchors": [int(b) for b in keep], "anchor_files": files,
                    "end": ({"at": int(end["at"]), "hidden": end["hidden"], "mark": end["mark"],
                             "served_hidden": list(end.get("served_hidden") or ()),
-                            **({"delta": end["delta"], "mm": end["mm"]} if "mm" in end else {})}
+                            **({"delta": end["delta"], "mm": end["mm"]} if "mm" in end else {}),
+                            **({"exact": True} if end.get("exact") else {})}
                            if end is not None else carried),
                    "blocks": blocks, "bytes": nbytes,
                    "extra": extra if carried is None else old.man.get("extra")}
@@ -1323,7 +1333,8 @@ class SessionSpill:
             if e.valid <= here + self.chunk:
                 continue
             line = e.offer(keys, max_len, res.glue, replay, mm_ok=mm_ok,
-                           align=self.offer_align if replay else None)
+                           align=self.offer_align if replay else None,
+                           exact_only=bool(getattr(res, "end_reread", False)))
             if line <= here + self.chunk:
                 note(e, line, _why_not(e, line, mm_ok))
                 continue
@@ -1500,7 +1511,8 @@ class SessionSpill:
                            "served_hidden": [(int(a), int(b)) for a, b in
                                              (man["end"].get("served_hidden") or ())],
                            **({"delta": int(man["end"].get("delta") or 0), "mm": True}
-                              if man["end"].get("mm") else {})}
+                              if man["end"].get("mm") else {}),
+                           **({"exact": True} if man["end"].get("exact") else {})}
                 res.adopt(e.tokens, n, man.get("taint"), man.get("owner"),
                           last_n=int(man.get("last_n") or 0))
                 low = 0 if low is None else low

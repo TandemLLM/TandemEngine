@@ -6,6 +6,7 @@
   3  thinking off: a model that opens its own block gets an empty block after the generation prompt; a
      template that opened the block gets it closed; anything else is the template's own prompt
   4  one default family (`default_arch`) serves a `--model` that names no checkpoint directory
+  5  `Capabilities.reread_end` (the end read again) implies `prompt_rows`, and only Hy4-flash sets it
 
 CPU, the fake engine in this process. Run: python tests/test_modelspec.py
 """
@@ -299,6 +300,34 @@ def test_one_default_family():
     d = default_arch()
     assert sum(a.default for a in REGISTRY.values()) == 1 and app._arch_of(None) is d
     assert app._arch_of("/nonexistent/dir") is d
+
+
+def _caps_holders(name: str, a) -> list:
+    """The classes of a family's serving module that carry its `Capabilities` (the 27B's engine class)."""
+    from engine.models.adapter import Capabilities
+    a.manifest_of()                                 # imports the family's serving module
+    if name == "qwen3_5":
+        from engine.model import Qwen38Engine
+        import engine.models.qwen3_5.adapter  # noqa: F401  (sets Qwen38Engine.caps)
+        return [Qwen38Engine]
+    mod = sys.modules.get(f"engine.models.{a.package.split('/')[-1]}.serving") if a.package else None
+    return [v for v in vars(mod).values() if isinstance(v, type) and isinstance(getattr(v, "caps", None), Capabilities)] \
+        if mod else []
+
+
+def test_reread_end_implies_prompt_rows_and_only_hy4_sets_it():
+    """The end read again needs a prompt pass that reads one row as a prompt row (`prompt_rows`): the read forwards
+    the answer's rows with `prompt=True`. Only Hy4-flash sets it; every other family keeps its end as before."""
+    got = {}
+    for name, a in REGISTRY.items():
+        holders = _caps_holders(name, a)
+        assert holders, name
+        for h in holders:
+            assert not h.caps.reread_end or h.caps.prompt_rows, (name, h)
+        got[name] = sorted({bool(h.caps.reread_end) for h in holders})
+    assert got.pop("hy_v4_flash") == [True], got
+    assert all(v == [False] for v in got.values()), got
+    return f"hy_v4_flash: True (with prompt_rows); {sorted(got)}: False"
 
 
 if __name__ == "__main__":

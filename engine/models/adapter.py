@@ -52,6 +52,11 @@ class Capabilities:
     # (engine/cache.py `_prefill`) calls `forward(..., prompt=True)`, so a prompt-end resume whose tail is one row
     # gives the cold read's bits. False: `forward` gets no `prompt` argument, the call it got before
     prompt_rows: bool = False
+    # the prompt pass is row-invariant and decode rows are not prompt rows, so an end is kept only after its rows
+    # were read again on the prompt pass (engine/cache.py `ResidentPrefix.reread_end`, QWEN38_END_REREAD): the
+    # end anchor and the session snapshot are then a cold read's state. Needs `prompt_rows`. False: the end
+    # anchor keeps the state decode steps and verify blocks wrote, held to the greedy-token gate, as before
+    reread_end: bool = False
 
 
 @dataclass(frozen=True)

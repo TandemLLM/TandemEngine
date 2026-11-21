@@ -18,6 +18,8 @@ The test matrix:
   4  the response store: off by default in every model's registry entry, in ops/serve.env, in ops/start.sh and
      in docs/caches.md, and opt-in by RESPONSE_CACHE=on alone; Hy4-flash's profiles leave it to serve.env
                                                                test_the_response_store_is_off_by_default_everywhere
+  5  the end read again: `end_reread` in the line and in /health's cache block, on, off (QWEN38_END_REREAD=0) or
+     `-` for a family without `Capabilities.reread_end`         test_the_end_read_is_named_in_the_line_and_health
 
 1, 2 and 4 need no torch; 3 starts server/app.py --fake-engine (CPU torch).
 Run: python tests/test_start_limits.py
@@ -143,9 +145,44 @@ def test_a_fake_engine_names_its_limits_before_it_listens():
             "max_queue": "5", "drafter_built": "off"}
     assert {k: got.get(k) for k in want} == want, {k: got.get(k) for k in want}
     for k in ("kv_pool", "MEM_CEILING_GIB", "MEM_PEAK_GIB", "MEM_CEILING_GIB_SET", "think_budget",
-              "answer_reserve", "drafter", "round_runner", "family", "queue_timeout_s", "request_timeout_s"):
+              "answer_reserve", "drafter", "round_runner", "family", "queue_timeout_s", "request_timeout_s",
+              "end_reread"):
         assert k in got, (k, sorted(got))
+    assert got["end_reread"] == "-", got["end_reread"]             # the fake engine keeps its end as before
     return f"{len(got)} pairs, the line before the listening one"
+
+
+def test_the_end_read_is_named_in_the_line_and_health():
+    """The end read again (`Capabilities.reread_end`, QWEN38_END_REREAD): the `[limits]` line and /health's cache
+    block say `end_reread`: on for a family that reads it, off with the knob at 0, `-` (None) for one without it."""
+    if not _torch():
+        return "skipped: no torch"
+    import contextlib as cl
+    import io as io_
+    from engine import cache
+    from engine.models.adapter import Capabilities
+    from server import app, fake_engine
+    a = app.parser().parse_args(["--fake-engine", "--fake-tps", "200000", "--max-len", "65536"])
+    saved = dict(app.STATE)
+    keep = cache.END_REREAD
+    app.STATE.clear()
+    try:
+        with cl.redirect_stdout(io_.StringIO()):
+            fake_engine.load(app, a)
+        eng = app.STATE["engine"]
+        got = {}
+        for label, caps, knob in (("none", None, True), ("on", True, True), ("off", True, False)):
+            cache.END_REREAD = knob
+            if caps is not None:
+                eng.caps = Capabilities(caches=True, side_slots=False, prompt_rows=True, reread_end=True)
+            line = _pairs(app._limits_line(a))
+            got[label] = (line["end_reread"], app.cache_stats()["end_reread"])
+        assert got == {"none": ("-", None), "on": ("on", True), "off": ("off", False)}, got
+    finally:
+        cache.END_REREAD = keep
+        app.STATE.clear()
+        app.STATE.update(saved)
+    return "end_reread: '-' without the capability, on, off with the knob at 0; /health's cache block the same"
 
 
 def test_the_response_store_is_off_by_default_everywhere():

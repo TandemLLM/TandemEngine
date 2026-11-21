@@ -1319,9 +1319,9 @@ class Budget:
 
 # --------------------------------------------------------------------------- the state store
 class _Entry:
-    __slots__ = ("tokens", "snap", "conv_id", "created", "hits", "kind", "mark", "stale")
+    __slots__ = ("tokens", "snap", "conv_id", "created", "hits", "kind", "mark", "stale", "exact")
 
-    def __init__(self, tokens, snap, conv_id, kind="prefix", mark=None):
+    def __init__(self, tokens, snap, conv_id, kind="prefix", mark=None, exact=False):
         self.tokens = tokens
         self.snap = snap
         self.conv_id = conv_id
@@ -1332,6 +1332,7 @@ class _Entry:
         self.kind = kind
         self.mark = mark          # SPD-249: the grid mark of the prefill that took it (`Grid`)
         self.stale = False        # SPD-249: a head a newer head of the same prompt replaced
+        self.exact = bool(exact)  # a session snapshot of the end read's state (`ResidentPrefix.reread_end`)
 
 
 class StateStore:
@@ -1370,7 +1371,10 @@ class StateStore:
 
     # --- writing ---------------------------------------------------------------------------
     def put(self, tokens, snap: StateSnapshot, conv_id: str | None = None,
-            hashes: list[int] | None = None, kind: str = "prefix", mark: int | None = None) -> None:
+            hashes: list[int] | None = None, kind: str = "prefix", mark: int | None = None,
+            exact: bool = False) -> None:
+        """`exact`: a session snapshot of a state the end read wrote (`ResidentPrefix.reread_end`), a cold
+        read's; a resume from it writes no session's rows (`ResidentPrefix.begin`)."""
         n = snap.length
         if self.max_entry and snap.nbytes > self.max_entry:
             self.stats["declined_big"] = self.stats.get("declined_big", 0) + 1
@@ -1395,7 +1399,7 @@ class StateStore:
                 self._lengths[n] -= 1
                 if not self._lengths[n]:
                     del self._lengths[n]
-            self._d[key] = new = _Entry(tuple(tokens[:n]), snap, conv_id, kind, mark)
+            self._d[key] = new = _Entry(tuple(tokens[:n]), snap, conv_id, kind, mark, exact)
             if mark is not None and n == mark:
                 self._stale_heads(key, new)
             self._lengths[n] = self._lengths.get(n, 0) + 1
@@ -1694,6 +1698,10 @@ def _kv_views(eng, drafter) -> list:
 
 #: SPD-215: the resident prefix keeps the state at the end of the last prompt (`keep_prompt_end`)
 PROMPT_END = _S.get("PROMPT_END") == "1"
+#: a family with `Capabilities.reread_end` (Hy4-flash): at a turn's end the answer's rows are read again on the
+#: prompt pass (`ResidentPrefix.reread_end`), so its end anchor and session snapshot are a cold read's state.
+#: 0: no read, and such a family keeps no end (its next turn resumes at the prompt end)
+END_REREAD = _S.get("END_REREAD") == "1"
 
 
 class ResidentPrefix:
@@ -1817,6 +1825,20 @@ class ResidentPrefix:
     `taint` with them; the end anchor goes to the park with its rows when they fit there, and is
     dropped otherwise.
 
+    THE END READ AGAIN (`end_reread`, a family's `Capabilities.reread_end`). On a family whose prompt pass is
+    row-invariant and whose decode rows are not prompt rows (Hy4-flash), the gate above cannot hold: a state
+    decode steps and verify blocks wrote shifts every later log-probability. On such a family a row a decode
+    step or a verify block wrote is never what a later turn resumes from. At the turn's end the answer's rows
+    are read again on the prompt pass (`reread_end`), from the highest exact point at or below the prompt's
+    end (the prompt end, else the last grid line below it), and only that read's state is kept as
+    the end (`keep_end(reread=True)`: `end["exact"]`) and as the session snapshot. The rows below the end are
+    then a cold read's bytes, so `taint` is cleared and the state store and the disk tier keep them again; a
+    resume at an exact end, an exact prompt end or an exact session snapshot leaves it clear. Where the read
+    does not run (QWEN38_END_REREAD=0, a guest, refused by memory, an error), no end is kept
+    and nothing decode-written is offered: the next turn resumes at the prompt end. An end without `exact`
+    (an NVMe entry, a park or a carry written before) is not offered on such a family. Without the flag,
+    every line below runs as before.
+
     THE MEMORY POLICY (`mem`, a `Budget`). Every buffer this allocates after the first is asked for
     first: an anchor that is refused reuses an evicted one, a stash that is refused leaves the
     guest to overwrite the rows (the prompt is cut there), a pin or a park that is refused is not
@@ -1828,7 +1850,7 @@ class ResidentPrefix:
                  guest_max: int = 16384, guest_frac: float = 0.25,
                  pin_bytes: int = 0, pin_anchors: int = 8, park_bytes: int = 0,
                  park_anchors: int = 4, mem: "Budget | None" = None, end: bool = False,
-                 chat_first: bool = False, guest_store: bool = False):
+                 chat_first: bool = False, guest_store: bool = False, end_reread: bool = False):
         self.budget = int(budget_bytes)
         self.chunk = int(chunk)
         self.tail = max(1, int(tail))
@@ -1893,6 +1915,10 @@ class ResidentPrefix:
         self.own_prev: tuple = (None, 0)
         # SRV-905 (`guest_store`): a guest that resumes from the store keeps the end; it stores its own head
         self.guest_store = bool(guest_store)
+        # the family reads the answer's rows again at a turn's end (`reread_end`); `_read`: the read that just
+        # ran (its end, the prompt's length, `rows_gen`), for the `keep_end` after it
+        self.end_reread = bool(end_reread)
+        self._read: dict | None = None
         # the end of the last generation (`keep_end`): its line `at`, the hidden spans below it
         # and the drafter's mark; its state in `_end_bufs`, allocated once and reused
         self.end_on = bool(end)
@@ -2038,17 +2064,22 @@ class ResidentPrefix:
 
     # --- the end of the last generation -------------------------------------------------------
     def keep_end(self, eng, drafter, tokens, n_prompt: int, hidden=(), delta: int = 0,
-                 mm: bool = False) -> str:
+                 mm: bool = False, reread: bool = False) -> str:
         """After a generation: the anchor at the last position the engine forwarded, with the
         rows in place valid up to it. `tokens` is the request's context -- its prompt as it was
         prefilled, then what the engine committed -- and `n_prompt` the prompt's length; `hidden`
         the spans `(position, ids)` of tokens in it the client's copy will not carry. Returns what
-        happened, for the log: kept, off, guest, not_resident, ahead or memory.
+        happened, for the log: kept, off, guest, not_resident, ahead, memory or reread.
 
         `mm`: the prompt had images (its tokens are their key ids) and `delta` is the
         rotary offset every row after them takes. Such an end is offered only to a request that
         says so (`end_offer(mm_ok=True)`: a compaction served as this conversation's continuation,
-        server/compaction.py); every other request resumes at the anchors in place, as before."""
+        server/compaction.py); every other request resumes at the anchors in place, as before.
+
+        `reread` (a prefix with `end_reread`): the answer's rows were read again on the prompt pass just
+        before (`reread_end` returned "read"), and the end kept is that read's state, marked `exact`, with
+        `taint` cleared. Without it such a prefix keeps nothing ("reread"): what decode steps wrote is never
+        an end there."""
         self.rows_gen += 1
         if not self.end_on or self.chunk <= 0 or not resident_capable(drafter):
             return "off"
@@ -2056,7 +2087,15 @@ class ResidentPrefix:
             return "guest"                 # the rows in place are the resident prompt's
         n_prompt = int(n_prompt)
         e = int(eng.kv.length)
-        if (self.valid != n_prompt or len(self.tokens) != n_prompt or e < n_prompt
+        if self.end_reread:
+            rd, self._read = self._read, None
+            if not reread or rd is None:
+                self.stats["end_unread"] = self.stats.get("end_unread", 0) + 1
+                return "reread"
+            if (int(rd["n"]) != n_prompt or int(rd["at"]) != e or int(rd["gen"]) + 1 != self.rows_gen
+                    or self.valid != e or len(self.tokens) != e or self.tokens != [int(t) for t in tokens[:e]]):
+                return "not_resident"     # something moved the rows between the read and here
+        elif (self.valid != n_prompt or len(self.tokens) != n_prompt or e < n_prompt
                 or self.tokens != [int(t) for t in tokens[:n_prompt]]):
             # a prefill from a session snapshot (nothing is resident), or one a client stopped
             return "not_resident"
@@ -2096,12 +2135,127 @@ class ResidentPrefix:
         self.tokens = [int(t) for t in tokens[:e]]
         self.valid = e
         self.capturing = False
-        if e > n_prompt:
+        if self.end_reread:
+            # every row below the end is a prompt read's now (`reread_end` started at an exact point)
+            self.end["exact"] = True
+            self.taint = None
+        elif e > n_prompt:
             self.taint = n_prompt if self.taint is None else min(self.taint, n_prompt)
         self.end_lost = None
         self.t_used = time.monotonic()
         self.stats["end_kept"] += 1
         return "kept"
+
+    def _read_start(self, n: int) -> tuple[int, str]:
+        """Where `reread_end` starts for a prompt of `n` rows in place: the prompt end when its state is a cold
+        read's (`pend["exact"]`, its tokens the rows'); else the highest grid anchor at or below both `n` and
+        `taint` (an anchor above an inexact row is a session's), row 0 the grid's first line (a cold start). The
+        prompt rows from there to `n` are read again too: the rows the next turn would read again from that same
+        point without the read (a promoted guest has no prompt end: its first turn's read starts at a grid line)."""
+        p = self.pend
+        if (p is not None and int(p["at"]) == n and p.get("exact") and self._pend_bufs is not None
+                and self.tokens[:n] == p["tokens"]):
+            return n, "pend"
+        lim = n if self.taint is None else min(n, int(self.taint))
+        b = max((x for x in self.anchors if x <= lim), default=0)
+        return b, ("resident" if b else "cold")
+
+    def reread_end(self, eng, drafter, tokens, n_prompt: int, device=None, on_chunk=None, gate=None) -> str:
+        """At a turn's end, on a prefix with `end_reread`: the rows from the highest exact point at or below the
+        prompt's end (`_read_start`) to the end `keep_end` would keep read again on the prompt pass, with the
+        calls a prompt read makes (`forward(..., prompt=True)` on a `prompt_rows` family, the drafter's `sync`,
+        the grid's anchors), so the state the engine stands in after it is a cold read's of the same ids. Then
+        `keep_end(..., reread=True)` keeps it. The prompt end's buffers are read, never written.
+
+        `tokens`: the request's context (the served prompt, then what was committed, hidden tokens included),
+        `n_prompt` the prompt's length. `on_chunk(done, total)` after every chunk (the server's GPU turn).
+        `gate(n, rows)`: the memory gate for the read's `rows` forwarded onto `n`; False and nothing is read.
+        Returns read, or why not: family (the flag off), off, guest, not_resident, memory, error. On an error the
+        rows in place stay valid up to the prompt's end (or the read's start, the prompt end dropped, when it started
+        below it) and nothing above is kept."""
+        self._read = None
+        if not self.end_reread:
+            return "family"
+        if not END_REREAD or not self.end_on or self.chunk <= 0 or not resident_capable(drafter):
+            return "off"
+        if self._stash is not None:
+            return "guest"
+        n = int(n_prompt)
+        toks = [int(t) for t in tokens]
+        if (self.valid != n or len(self.tokens) != n or int(eng.kv.length) < n or len(toks) < n
+                or self.tokens != toks[:n]):
+            return "not_resident"
+        e = min(int(eng.kv.length), len(toks))       # what `keep_end` keeps, taken before anything moves
+        start, how = self._read_start(n)
+        if gate is not None:
+            if not gate(e, max(1, e - start)):
+                self._unread("memory")
+                return "memory"
+            s2, how2 = self._read_start(n)          # the gate may have shed the anchor it was priced from
+            if s2 != start:
+                if not gate(e, max(1, e - s2)):
+                    self._unread("memory")
+                    return "memory"
+                start, how = s2, how2
+        if device is None:
+            device = model_views(eng)[0][0].device
+        prompt_rows = bool(getattr(getattr(eng, "caps", None), "prompt_rows", False))
+        t0 = time.perf_counter()
+        i = start
+        try:
+            if how == "pend":
+                state_load(eng, self._pend_bufs)
+                eng.resume_at(n)
+                if drafter is not None and hasattr(drafter, "state_resume"):
+                    drafter.state_resume(n)
+            elif how == "resident":
+                state_load(eng, self.anchors[start])
+                eng.resume_at(start)
+                if drafter is not None and hasattr(drafter, "state_resume"):
+                    drafter.state_resume(start)
+            else:
+                eng.reset()
+            for b in [b for b in self.anchors if b > start]:
+                self._free.append(self.anchors.pop(b))
+            self.tokens = toks[:e]
+            self.valid = start
+            self.capturing = True
+            while i < e:
+                t = min((i // self.chunk + 1) * self.chunk - i, e - i)
+                blk = torch.tensor(toks[i:i + t], device=device, dtype=torch.long)
+                if prompt_rows:
+                    eng.forward(blk, start=i, last_only=True, prompt=True)
+                else:
+                    eng.forward(blk, start=i, last_only=True)
+                if drafter is not None and hasattr(drafter, "sync"):
+                    drafter.sync(toks[i:i + t], eng.hidden_post_norm[0], i)
+                i += t
+                _after_chunk(eng, drafter, self, None, None, None, None, False, self.chunk, i, e, e, toks,
+                             None, None, None)
+                if on_chunk is not None and i < e:
+                    on_chunk(i, e)
+        except Exception:                                          # noqa: BLE001
+            self.capturing = False
+            self.tokens = toks[:n]
+            self.valid = n
+            if start < n:
+                self._cut(start)           # rows below the prompt's end were written again: not its state's
+                self.pend = None
+            self._unread("error")
+            return "error"
+        self.capturing = False
+        self._read = {"at": e, "n": n, "start": start, "from": how, "gen": self.rows_gen}
+        ms = (time.perf_counter() - t0) * 1e3
+        self.stats["end_rereads"] = self.stats.get("end_rereads", 0) + 1
+        self.stats["end_reread_rows"] = self.stats.get("end_reread_rows", 0) + (e - start)
+        self.stats["end_reread_ms"] = round(self.stats.get("end_reread_ms", 0.0) + ms, 1)
+        self.stats["end_reread_last"] = {"rows": e - start, "answer_rows": e - n, "from": how, "at": start,
+                                         "end": e, "ms": round(ms, 1)}
+        return "read"
+
+    def _unread(self, why: str) -> None:
+        k = f"end_reread_{why}"
+        self.stats[k] = self.stats.get(k, 0) + 1
 
     def reserve_end(self, eng) -> bool:
         """SPD-257: the end anchor's buffers now and for good, outside the memory policy. Called at the
@@ -2214,6 +2368,10 @@ class ResidentPrefix:
         eng.settle()
         state_save(self._pend_bufs, eng)
         self.pend = {"at": int(n), "tokens": [int(t) for t in tokens[:n]]}
+        if self.end_reread:
+            # a prompt read on a row-invariant prompt pass over rows no session's state wrote: a cold read's
+            # state, so a resume here writes a cold read's rows (`begin`) and the end read starts here
+            self.pend["exact"] = self.taint is None
         self.stats["pend_kept"] += 1
         return "kept"
 
@@ -2241,6 +2399,8 @@ class ResidentPrefix:
         images only with `mm_ok` (`keep_end`)."""
         if self.end is not None and self.end.get("mm") and not mm_ok:
             return 0
+        if self.end is not None and self.end_reread and not self.end.get("exact"):
+            return 0                       # decode-written rows: never resumed from on such a family
         e = self.end["at"] if self.end is not None else 0
         return e if (e and c >= e and e <= max_len and e > self.best(c, max_len)) else 0
 
@@ -2313,6 +2473,13 @@ class ResidentPrefix:
         self.stats["end_replayed"] += len(out) - len(copy)
         return out, [(p, list(h)) for p, h in end["hidden"]]
 
+    def _exact_at(self, kind: str) -> bool:
+        """With `end_reread`: the end (kind "end") or the prompt end (kind "pend") in place is a cold read's state."""
+        if not self.end_reread:
+            return False
+        held = self.end if kind == "end" else self.pend if kind == "pend" else None
+        return bool(held is not None and held.get("exact"))
+
     def _drop_end(self, why: str = "rows") -> None:
         """The end anchor's rows are not in place any more; its buffers stay for the next one.
         `why` stays for the words of the next turn's re-read (`reread_words`)."""
@@ -2324,7 +2491,7 @@ class ResidentPrefix:
     def begin(self, eng, drafter, ids, start: int, c: int, kind: str | None,
               session: str | None = None, compacting: bool = False,
               scratch: bool = False, reach: int | None = None, stay: bool = False,
-              continues: bool = False, own: bool = False) -> None:
+              continues: bool = False, own: bool = False, exact: bool = False) -> None:
         """What the rows will hold once this request's prefill has run.
 
         `start` is where the prefill resumes (a resident anchor, a store entry, or 0) and `c` how
@@ -2343,6 +2510,9 @@ class ResidentPrefix:
         `last_n`) is never a guest and replaces no other session's rows; `own` (the server's own question)
         is a guest whenever rows are in place and the stash has a budget, also when its prompt holds them
         all; when it is no guest, `own_from` says where its own rows start (`release_own`).
+
+        With `end_reread`: a resume at an exact end (`end["exact"]`), an exact prompt end (`pend["exact"]`) or a
+        session snapshot taken after the end read (`exact`) writes a cold read's rows: `taint` is not set.
         """
         self.rows_gen += 1
         self.capturing = False
@@ -2368,7 +2538,8 @@ class ResidentPrefix:
                 self.tokens = list(ids)
                 self.valid = start
                 self.capturing = self.chunk > 0
-                self.taint = 0
+                # a snapshot of the end read's state (`end_reread`) is a cold read's: no session's rows
+                self.taint = None if (exact and self.end_reread) else 0
                 self.last_n = len(ids)
             return
         n = len(ids)
@@ -2426,7 +2597,7 @@ class ResidentPrefix:
         if not scratch:
             self.t_used = time.monotonic()
             self.last_n = n                # SRV-907; a scratch prefill's caller puts the old bookkeeping back
-        if kind in ("end", "pend"):
+        if kind in ("end", "pend") and not self._exact_at(kind):
             # a prefill from the end of a generation (or of the last prompt: off the grid) writes a
             # session's rows
             self.taint = start if self.taint is None else min(self.taint, start)
@@ -2514,8 +2685,12 @@ class ResidentPrefix:
         return pair
 
     def adopt_end(self, eng, end: dict):
-        """The end anchor's buffers for a restored end at `end["at"]` (None: off or refused)."""
+        """The end anchor's buffers for a restored end at `end["at"]` (None: off or refused). On a prefix with
+        `end_reread` an end without `exact` (written before, or by decode steps) is not taken."""
         if not self.end_on or int(end["at"]) != self.valid:
+            return None
+        if self.end_reread and not end.get("exact"):
+            self.stats["end_inexact_refused"] = self.stats.get("end_inexact_refused", 0) + 1
             return None
         if self._end_bufs is None:
             if self.end_reserved:
@@ -2532,6 +2707,8 @@ class ResidentPrefix:
             self.end["served_hidden"] = [(int(a), int(b)) for a, b in end["served_hidden"]]
         if end.get("mm") or end.get("delta"):
             self.end.update(delta=int(end.get("delta") or 0), mm=bool(end.get("mm")))
+        if end.get("exact"):
+            self.end["exact"] = True
         return self._end_bufs
 
     def advanced(self, i: int) -> None:
@@ -2876,7 +3053,7 @@ class ResidentPrefix:
         the served notes), with its state buffers."""
         out = {"at": int(end["at"]), "hidden": [(int(p), list(h)) for p, h in end["hidden"]],
                "mark": end.get("mark"), "pair": pair}
-        for k in ("delta", "mm"):
+        for k in ("delta", "mm", "exact"):
             if k in end:
                 out[k] = end[k]
         if end.get("served_hidden") is not None:
@@ -2970,7 +3147,7 @@ class ResidentPrefix:
         if cp <= self.park_base:
             return 0
         bk = max((b for b in self.park_anchors if b <= min(cp, max_len)), default=0)
-        if pe is not None and (not pe.get("mm") or mm_ok):
+        if pe is not None and (not pe.get("mm") or mm_ok) and (not self.end_reread or pe.get("exact")):
             e = int(pe["at"])
             if cp >= e and e <= max_len:
                 bk = e
@@ -3360,6 +3537,8 @@ class ResidentPrefix:
                 "park_anchor_list": sorted(self.park_anchors),
                 "park_end_at": self.park_end["at"] if self.park_end else None,
                 "end_on": self.end_on, "end_at": self.end["at"] if self.end else None,
+                **({"end_reread": bool(END_REREAD),
+                    "end_exact": bool(self.end.get("exact")) if self.end else None} if self.end_reread else {}),
                 "end_hidden": sum(len(h) for _, h in self.end["hidden"]) if self.end else 0,
                 "end_bytes": self.end_bytes, "end_reserved": self.end_reserved,
                 "prompt_end_bytes": self.pend_bytes, "anchor_free_buffers": len(self._free),
@@ -3742,8 +3921,11 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
         # SRV-907: the request holds the whole last prompt in place, so it goes on with the conversation
         continues = res.chat_first and 0 < res.last_n <= c
         # decided before any row is written: a guest's stash must hold the rows as they are now
+        # a session snapshot taken after the end read (`StateStore.put(exact=True)`) is a cold read's state
+        exact = kind == "session" and hit is not None and bool(getattr(hit[1], "exact", False))
         res.begin(eng, drafter, keys, start, c, kind, session=conv_id, compacting=compacting,
-                  scratch=scratch, reach=reach, stay=stay, continues=continues, own=own)
+                  scratch=scratch, reach=reach, stay=stay, continues=continues, own=own,
+                  **({"exact": True} if exact else {}))
         res.end_hold = False               # ENG-371: held from the server's memory gate to here
         if kind in ("prefix", "disk") and not (res.guest_store and res._stash is not None):
             # the restore writes over the rows below it. dropped after `begin`, whose

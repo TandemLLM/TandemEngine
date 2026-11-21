@@ -211,6 +211,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QWEN38_END_ALIGN_CALLS` | `on` | `server/endalign.py` |
 | `QWEN38_END_ALIGN_MOVED` | `on` | `server/endalign.py` |
 | `QWEN38_END_ALIGN_REASONING` | `on` | `server/endalign.py` |
+| `QWEN38_END_REREAD` | `1` | `engine/cache.py` |
 | `QWEN38_END_RESERVE` | `on` | `server/app.py` |
 | `QWEN38_EXL3` | `none` | `engine/loader.py` |
 | `QWEN38_EXL3_CHUNK_UNTIL` | `128` | `tools/exl3_linear.py` |

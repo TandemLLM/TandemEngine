@@ -135,6 +135,11 @@ class Hy4FlashServing:
     # R83 (T5b): a one-row prompt chunk runs the prompt pass (`forward(..., prompt=True)`), whose products are in the
     # prompt order at every row count, so a prompt-end resume with a one-row tail equals the cold read
     caps = dataclasses.replace(caps, prompt_rows=True)
+    # the end read again: decode steps and verify blocks write the answer's rows with other arithmetic than the prompt
+    # pass, and this family turns that into log-probability shifts of 0.04 to 0.31 nats on a resume. At a turn's end
+    # the answer's rows are read again on the prompt pass, so the end anchor and the session snapshot are a cold
+    # read's state (engine/cache.py `ResidentPrefix.reread_end`)
+    caps = dataclasses.replace(caps, reread_end=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)
