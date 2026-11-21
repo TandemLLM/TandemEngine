@@ -25,7 +25,9 @@ Run: python tests/test_start_limits.py
 
 from __future__ import annotations
 
+import contextlib
 import glob
+import io
 import os
 import re
 import signal
@@ -164,6 +166,81 @@ def test_the_response_store_is_off_by_default_everywhere():
     with open(os.path.join(ROOT, "docs", "caches.md")) as fh:
         assert "| response cache | the tokens of an identical greedy request | memory | off |" in fh.read()
     return "off in every model.yaml, serve.env, start.sh and the caches docs; on only by RESPONSE_CACHE=on"
+
+
+
+#: slot 0's window as the pool reserves it (B's start on 70c250f6: "-4.12 GiB (slot 0's window is the pool's now)")
+WINDOW = int(4.12 * GIB)
+
+
+def _after_the_pool(ceiling: float, peak: float, own: bool) -> tuple:
+    """(ceiling, peak, fixed) in GiB of the memory policy after `_kv_after_load`, on a stand-in engine whose slot 0
+    window is the KV pool's (WINDOW of addresses). The start's limits are `ceiling`/`peak`: a configured figure
+    (serve.env, a weight profile), or with `own` the model's builder's own from its load (`_build_with_limits`, as
+    Hy4-flash's serving.memory_limits sets them)."""
+    import test_forward_tree  # noqa: F401  (the CPU environment before the server imports)
+    from engine import cache, kvpool
+    from server import app
+    a = types.SimpleNamespace(mem_ceiling_gib=70.0, mem_peak_gib=77.0, store_entry_gb=4.0)
+    saved = {k: app.STATE.get(k) for k in ("mem", "engine", "serve_flags", "limits_from_load")}
+    pool0, reclaim0 = kvpool.POOL, app._add_kv_reclaimers
+    try:
+        app.STATE.pop("limits_from_load", None)
+        app.STATE["serve_flags"] = {"mem_ceiling_gib": 70.0, "mem_peak_gib": 77.0, "store_entry_gb": 4.0}
+        if own:
+            def build(a, ctx):
+                a.mem_ceiling_gib, a.mem_peak_gib = ceiling, peak
+                return {}
+            with contextlib.redirect_stdout(io.StringIO()):
+                app._build_with_limits(build, a, None)
+        else:
+            a.mem_ceiling_gib, a.mem_peak_gib = ceiling, peak
+        mem = cache.Budget(int(a.mem_ceiling_gib * GIB), int(a.mem_peak_gib * GIB), 2 * GIB,
+                           probe=lambda: (0, 0), empty=lambda: None)
+        bufs = [types.SimpleNamespace(nbytes=WINDOW, page=2 << 20)]
+        app.STATE.update(mem=mem, engine=types.SimpleNamespace(kv=types.SimpleNamespace(
+            pages=types.SimpleNamespace(bufs=bufs), max_len=262144)))
+        kvpool.POOL = types.SimpleNamespace(hard_floor=10 * GIB, margin_rows=256)
+        app._add_kv_reclaimers = lambda pool: None
+        with contextlib.redirect_stdout(io.StringIO()):
+            app._kv_after_load(a)
+        return round(mem.ceiling / GIB, 4), round(mem.peak / GIB, 4), round(mem.fixed / GIB, 4)
+    finally:
+        kvpool.POOL, app._add_kv_reclaimers = pool0, reclaim0
+        for k, v in saved.items():
+            if v is None:
+                app.STATE.pop(k, None)
+            else:
+                app.STATE[k] = v
+
+
+def _configured_figures() -> dict:
+    """Every configured ceiling and peak: serve.env's (the 27B's and every profile that sets none) and each weight
+    profile's own MEM_CEILING_GIB / MEM_PEAK_GIB."""
+    def figures(path):
+        text = open(path).read()
+        c = re.search(r"(?m)^MEM_CEILING_GIB=([0-9.]+)", text)
+        p_ = re.search(r"(?m)^MEM_PEAK_GIB=([0-9.]+)", text)
+        return (float(c.group(1)), float(p_.group(1))) if c and p_ else None
+    out = {"serve.env": figures(os.path.join(ROOT, "ops", "serve.env"))}
+    for f in sorted(glob.glob(os.path.join(ROOT, "ops", "profiles", "*.env"))):
+        got = figures(f)
+        if got:
+            out[os.path.basename(f)] = got
+    return out
+
+
+def test_a_configured_limit_loses_slot_0s_window_to_the_pool():
+    """The KV pool holds slot 0's window outside the allocator, which the memory policy measures, so a configured
+    ceiling and peak (serve.env's 70/77, Flash-Next 3.05's 66/77 with "slot 0's KV at 262,144 tokens (7.58)" in it,
+    every profile's) go down by the window: the caches keep the room they were sized for. Recorded on 5c89764b:
+    each figure less the window, the policy's fixed bytes less it too."""
+    figs = _configured_figures()
+    assert figs["serve.env"] == (70.0, 77.0) and figs["flashnext-3.05.env"] == (66.0, 77.0), figs
+    w = round(WINDOW / GIB, 4)
+    for name, (c, p_) in figs.items():
+        assert _after_the_pool(c, p_, own=False) == (round(c - w, 4), round(p_ - w, 4), -w), name
+    return f"{len(figs)} configured figures, each less the window ({w} GiB)"
 
 
 if __name__ == "__main__":
