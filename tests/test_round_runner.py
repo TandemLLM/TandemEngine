@@ -9,6 +9,15 @@ The end read again (`Capabilities.reread_end`): a lane's turn close reads its an
 own thread and GPU turn, offered between chunks as a prefill offers it, while another lane decodes through the
 runner: both write their alone tokens, the runner ran rounds during the read, and the read lane's end is kept.
 
+SRV-885 (the P6 3.08 illegal memory access, 2026-11-21): a client leaves while the runner waits for the turn behind
+another lane's prefill chunk, its tasks picked, and the leaving lane's teardown gets the turn first:
+  R2  no drafter or engine call on the lane after its teardown; its task ends "cancelled" (with and without the
+      tails' queued drafts, QSE_RUNNER_PIPE)          test_a_lane_torn_down_while_the_runner_waits_gets_no_round
+  R3  when the stream's close returns, the task is done and out of the runner
+                                                      test_a_closed_streams_task_is_out_of_the_runner_when_the_close_returns
+  R4  the slot given to a second request before the runner's turn: the new request's rows do not move
+                                                      test_a_slot_given_to_the_next_request_keeps_its_rows
+
 Run: python tests/test_round_runner.py
 """
 
@@ -374,6 +383,180 @@ def test_a_stream_read_half_way_and_closed_after_its_slot_went_back_leaves_the_t
     assert owner is None, f"the turn held by {owner!r} after both requests ended"
     assert len(out0) == n, len(out0)
     return f"slot 1 read 5 of {n} tokens and closed late; slot 0 wrote its {len(out0)}; the turn free"
+
+
+def _until(cond, what: str, limit_s: float = 30.0) -> None:
+    import time
+    t0 = time.monotonic()
+    while not cond():
+        if time.monotonic() - t0 > limit_s:
+            raise AssertionError(f"waited {limit_s:.0f} s for {what}")
+        time.sleep(0.002)
+
+
+def _leave_behind_a_chunk(pipe: bool, regrant: bool = False) -> dict:
+    """SRV-885, the order of 2026-11-21 (engine-arch/ima-1121/design.md 3). Slot 0 decodes through the runner; slot
+    1's client leaves after its third token. A third holder (a prefill chunk, stood in for) takes the turn as soon as
+    the runner gives it up, so the runner, its tasks picked, waits for it. Slot 1's handler then closes its stream and
+    queues for the turn behind the holder, at a lower virtual time than the runner's (slots 1 and 6 were 0.04 s
+    behind it): its teardown gets the turn first. The teardown holds the turn as the handler's does
+    (`kv_trim_current`, then `_par_end`); `regrant`: it gives the slot to a second request (5 rows) before it lets
+    the turn go. What lane 1's drafter and engine were asked after the teardown, the task's state when the close
+    returned, and lane 1's rows at the teardown and at the end."""
+    import threading
+    import torch
+    from engine import model as M
+    from server import app, slots
+    cfg = T.tiny_config()
+    w = T.FakeWeights(cfg, seed=5)
+    ns = (60, 40)
+    prompts = [[(3 + 7 * i + 11 * j) % 96 + 1 for j in range(10 + 3 * i)] for i in range(2)]
+    fulls = [p + T._greedy(cfg, w, p, n) for p, n in zip(prompts, ns)]
+    R.RUNNER = None
+    engines = [T._engine(cfg, w) for _ in prompts]
+    drafters = [T.OracleTree(f) for f in fulls]
+    pool = T._setup(engines, drafters)
+    turn, eng1 = pool.turn, engines[1]
+    seen: dict = {"torn": False, "calls": [], "errs": []}
+
+    def spy(name, fn):
+        def call(*a, **kw):
+            if seen["torn"]:
+                seen["calls"].append(name)
+            return fn(*a, **kw)
+        return call
+    for name in ("forward", "forward_tree", "commit_tree"):
+        setattr(eng1, name, spy(name, getattr(eng1, name)))
+    drafters[1].propose_tree = spy("propose_tree", drafters[1].propose_tree)
+    real_multi = M.forward_tree_multi
+
+    def multi(items):
+        if seen["torn"] and any(it[0] is eng1 for it in items):
+            seen["calls"].append("forward_tree_multi")
+        return real_multi(items)
+    held, go, closing = threading.Event(), threading.Event(), threading.Event()
+    out0: list = []
+
+    def chunk():
+        turn.acquire("chunk")
+        held.set()
+        go.wait(60)
+        turn.release("chunk")
+
+    def slot0():
+        try:
+            with app.LOCK:
+                with torch.no_grad():
+                    for t in app.generate_stream(torch.tensor(prompts[0]), ns[0], set()):
+                        out0.append(t)
+        except BaseException as exc:                               # noqa: BLE001
+            seen["errs"].append(exc)
+
+    def slot1():
+        s = pool.slots[1]
+        try:
+            slots.bind(s)
+            s.owner = "req-1"
+            turn.reset(1)
+            turn.acquire(1)
+            gen = app.generate_stream(torch.tensor(prompts[1]), ns[1], set())
+            with torch.no_grad():
+                for j, _ in enumerate(gen):
+                    if j == 2:
+                        break                                     # the client left: the handler's write failed
+            threading.Thread(target=chunk, daemon=True).start()
+            held.wait(60)
+            _until(lambda: "runner" in turn.report()["waiting"], "the runner to wait for the turn")
+            with R.RUNNER.cv:
+                task = next(t for t in R.RUNNER.tasks if t.slot is s)
+            with turn._cv:
+                turn._v[1] = turn._v.get("runner", 0.0) - 1.0      # behind the runner
+            closing.set()
+            gen.close()                                           # `_runner_decode`'s finally: cancel, the turn
+            with R.RUNNER.cv:
+                seen["closed"] = (task.done, task in R.RUNNER.tasks)
+            seen["task"] = task
+            if regrant:
+                eng1.kv.length = 5                                # the next request's rows on the slot
+            seen["len0"] = eng1.kv.length
+            seen["torn"] = True                                   # `kv_trim_current`: the lane's pages go back
+            if turn.held_by(1):                                   # `_par_end`
+                turn.release(1)
+            s.phase, s.owner = "", None
+            slots.bind(None)
+        except BaseException as exc:                               # noqa: BLE001
+            seen["errs"].append(exc)
+        finally:
+            closing.set()
+
+    saved_pipe = R.PIPE
+    R.PIPE = pipe
+    M.forward_tree_multi = multi
+    ths = [threading.Thread(target=slot0, daemon=True), threading.Thread(target=slot1, daemon=True)]
+    try:
+        for th in ths:
+            th.start()
+        closing.wait(60)
+        _until(lambda: 1 in turn.report()["waiting"] or not ths[1].is_alive(), "slot 1's teardown to wait")
+        go.set()
+        for th in ths:
+            th.join(60)
+        _until(lambda: not R.RUNNER.tasks, "the runner to be idle", 10)
+    finally:
+        go.set()
+        R.PIPE = saved_pipe
+        M.forward_tree_multi = real_multi
+        seen.update(len1=eng1.kv.length, owner=turn.owner, alive=[th.is_alive() for th in ths], out0=len(out0),
+                    errors=R.RUNNER.stats["errors"] if R.RUNNER else None)
+        T._teardown()
+    ends = []
+    task = seen.get("task")
+    while task is not None and not task.q.empty():
+        m = task.q.get()
+        if m[0] == "end":
+            ends.append(m[1])
+    seen["ends"] = ends
+    return seen
+
+
+def test_a_lane_torn_down_while_the_runner_waits_gets_no_round():
+    """R2 (SRV-885): the runner picks its tasks, waits for the turn behind a prefill chunk, and the lane whose client
+    left gets the turn first and tears down. No proposal, verify or commit may run on that lane after its teardown
+    (on the box the stale round's draft read rows on pages the trim had just unmapped), with the tails' queued drafts
+    (QSE_RUNNER_PIPE, the default) and without (P6's setting); the task ends "cancelled"."""
+    got = []
+    for pipe in (False, True):
+        seen = _leave_behind_a_chunk(pipe)
+        assert not seen["errs"], seen["errs"]
+        assert seen["calls"] == [], (f"pipe {pipe}: {len(seen['calls'])} call(s) on the lane after its teardown: "
+                                     f"{seen['calls']}")
+        assert seen["ends"] == ["cancelled"] and seen["task"].done, (pipe, seen["ends"])
+        assert seen["alive"] == [False, False] and seen["owner"] is None and seen["errors"] == 0, seen
+        assert seen["out0"] == 60, seen["out0"]
+        got.append(f"pipe {int(pipe)}: 0 calls after the teardown")
+    return "; ".join(got) + "; the task ended cancelled; slot 0 wrote its 60; the turn free"
+
+
+def test_a_closed_streams_task_is_out_of_the_runner_when_the_close_returns():
+    """R3 (SRV-885): `_runner_decode`'s finally takes the turn back and the runner's task with it: when the stream's
+    close returns (the handler holds the turn, no round is in flight), the task is done and no longer the runner's, so
+    nothing the handler tears down after it can be read by a round."""
+    seen = _leave_behind_a_chunk(False)
+    assert not seen["errs"], seen["errs"]
+    done, kept = seen["closed"]
+    assert done and not kept, f"when the close returned the task was done={done}, still the runner's={kept}"
+    return "when the close returned: the task done and out of runner.tasks"
+
+
+def test_a_slot_given_to_the_next_request_keeps_its_rows():
+    """R4 (SRV-885): the stale round's second effect needs no page at all. The leaving lane's slot goes to the next
+    request (its 5 rows) before the runner gets the turn; no round of the old task may write into it."""
+    seen = _leave_behind_a_chunk(False, regrant=True)
+    assert seen["len1"] == seen["len0"] == 5 and seen["calls"] == [], (
+        f"the next request's rows {seen['len0']} -> {seen['len1']}; calls on the lane after: {seen['calls']}; "
+        f"errors {seen['errs']}")
+    assert not seen["errs"] and seen["errors"] == 0, (seen["errs"], seen["errors"])
+    return "the next request's 5 rows unchanged; no call on the lane after the old request's teardown"
 
 
 def test_the_familys_rows_at_a_lane_count_bound_the_joint_cut():

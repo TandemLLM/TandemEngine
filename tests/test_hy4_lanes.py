@@ -37,6 +37,9 @@ of its own, paged through the KV pool when the server opened one; its lanes take
     the same sequence over a head that does keep rows writes onto the given-back pages, which the check sees. The end
     read again drops what it synced into the drafter: a snapshot after it feeds nothing
                                                        test_a_lanes_draft_backlog_never_lands_on_pages_given_back
+  * H10 (SRV-885): the round runner's proposal commits the rows its draft gathers before it launches it, as the
+    engine's passes commit theirs: after a trim, a short lane's draft reads held rows only
+                                                       test_a_runner_proposal_after_a_trim_reads_held_rows_only
 
 Run: python tests/test_hy4_lanes.py
 """
@@ -434,6 +437,80 @@ def test_a_lanes_draft_backlog_never_lands_on_pages_given_back():
     assert kept and all(hi > held for _, hi, held in kept), kept
     return (f"DFly keeps no rows: the warm-up's backlog fed after trim(0) wrote nothing; a head that keeps rows wrote "
             f"{kept[0][0]}..{kept[0][1]} onto {kept[0][2]} held rows (the check sees it); the end read's rows: none fed")
+
+
+@torch.no_grad()
+def test_a_runner_proposal_after_a_trim_reads_held_rows_only():
+    """H10 (SRV-885): a short state's sparse layers and its DFly head gather the first `index_topk` positions before
+    they mask the ones past the length (engine.py: picks 0 to index_topk - 1). The engine's passes commit that floor
+    first (`_ensure`), but a round drafts before it verifies, so after a trim (a lane's teardown) only the order of the
+    calls kept those rows committed. On the box (2026-11-21) a 46-row lane trimmed to its rows and a margin drafted
+    rows up to 2,047 from an unmapped page. Here, at index_topk 8: a 5-row request, its pages trimmed to its rows,
+    then one proposal through `Runner._propose`; the control head records the rows its draft layers gather against
+    the rows held when it runs."""
+    import types
+    from engine import kvpool
+    from engine.methods import draft_meet
+    from engine.models.hy4_flash.dfly import DFlyHead
+    from engine.tree import DraftTree
+    from server import app, slots
+    from server import round_runner as R
+    import test_hy4_dfly as D
+    cfg, eng, s0, _ = D.setup(torch.bfloat16)
+    reads = []
+
+    class Control(DFlyHead):
+        """T08's control head here: every row its draft layers gather (`_hidden`: `lat[pick_q]`, masked after), checked
+        against the slot's pages at the moment it runs."""
+
+        def run(self, st):
+            for i in range(self.d.layers):
+                pi = st.pick_layers.index(self.d.index_layers[i])
+                lat = st.lat[self.d.kv_layers[i]]
+                reads.append((int(st.pick_q[pi].clamp(0, lat.shape[0] - 1).max()) + 1, ps.rows))
+            return super().run(st)
+
+    class Proposer:
+        """The MTP drafter's proposal as far as the pages go: the head launched on the lane's last row and the anchor
+        (the generator stops after the launch), then its block read."""
+
+        def __init__(self, srv, head):
+            self.srv, self.head = srv, head
+
+        def propose_tree_steps(self, context, k):
+            self.head.launch(self.srv.last_streams(), [int(context[-1])])
+            yield
+            tok, _ = self.head.read()
+            block = [int(context[-1])] + [int(t[0]) for t in tok][:max(0, k)]
+            return DraftTree(block, list(range(-1, len(block) - 1)))
+
+    s1, _ = s0.side_slot(256, None)
+    head = s1.heads["dfly"] = Control(s1)
+    ps = s1.st.pages = _Pages()
+    ids = tokens(5, 61)
+    lg = s1.forward(torch.tensor(ids), start=0)                          # the request: its floor committed first
+    nxt = int(lg[0, 0].argmax())
+    assert len(ids) < cfg.index_topk <= ps.rows, (len(ids), cfg.index_topk, ps.rows)
+    ps.trim(s1.kv.length)                                               # the teardown's trim: the lane's own rows
+    held = ps.rows
+    task = R.Task(types.SimpleNamespace(index=1), s1, Proposer(s1, head), None, None, None, ids + [nxt],
+                  s1.kv.length, nxt, 0, 8, set(), 1, 4, None, "cpu")
+    runner = R.Runner(types.SimpleNamespace(turn=None, meeting=None, slots=[]), app)
+    saved = (kvpool.POOL, draft_meet.MEET)
+    kvpool.POOL = object()                                              # the server opened a KV pool
+    try:
+        runner._propose([task], 0.0)
+        if task.steps is not None:
+            task.steps.close()
+    finally:
+        kvpool.POOL, draft_meet.MEET = saved
+        slots.bind(None)
+    assert reads and task.err is None, (reads, task.err)
+    past = [(hi, rows) for hi, rows in reads if hi > rows]
+    assert not past, (f"the draft gathered rows 0 to {past[0][0] - 1} with {past[0][1]} held (the lane trimmed to "
+                      f"{held} rows, index_topk {cfg.index_topk})")
+    return (f"trimmed to {held} rows; the proposal committed {ps.rows} before its draft gathered rows 0 to "
+            f"{max(h for h, _ in reads) - 1} ({len(reads)} draft layers)")
 
 
 def test_the_state_goes_through_the_pool_and_the_graph_set():
