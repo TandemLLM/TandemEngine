@@ -24,8 +24,8 @@ start does: its PY and its paths) unless `serve_env` names one; a checkout's is 
 `--head-patch FILE` plants a change in the head's tree and `--head-env K=V` a setting in the head's
 servers (a dry run of the gate itself); the report says so and the CI check refuses it.
 
-A pack's entry may say three more things (OPS-314): `limits: pack`, it sets its own memory limits and the
-hardware profile's do not override them (tools/gate/hw/base.py `arm_env`); `at_once: N`, no row with more than N
+A pack's entry may say three more things (OPS-314): `limits: profile` (OPS-308), its arms run the memory ceiling and
+peak its weight profile serves it with, not the hardware profile's (tools/gate/hw/base.py `arm_env`); `at_once: N`, no row with more than N
 requests at once is planned (`AtOnce`); `base: REF`, the base side when --base is not given (a family that is not
 on main yet). The run says each one.
 """
@@ -45,7 +45,7 @@ from pathlib import Path
 
 from tools.gate import LEVEL_SUITES, LEVELS, SCHEMA, VERSION, level_index
 from tools.gate import hw as hwmod
-from tools.gate.hw.base import own_limits
+from tools.gate.hw.base import profile_limits
 from tools.gate import pathmap, server
 from tools.gate.client import client, prompts
 from tools.gate.suites import Ctx, Plan, module
@@ -117,9 +117,10 @@ def plan_of(a, prof, pack: dict, files: list[str]) -> Plan:
 def pack_notes(pack: dict, prof, base_from_pack: bool) -> list[str]:
     """What a pack's entry changes in the run, one line each (OPS-314)."""
     out = []
-    if own_limits(pack):
-        out.append(f"pack {pack['id']}: its own memory limits (limits: pack); the {prof.id} profile's ceiling and "
-                   "peak are not passed (the report's knobs say which won)")
+    lim = profile_limits(pack)
+    if lim:
+        out.append(f"pack {pack['id']}: the memory ceiling and peak of its profile, {lim[0]:g}/{lim[1]:g} GiB, on both "
+                   f"sides (limits: profile), in place of the {prof.id} profile's")
     if pack.get("at_once"):
         out.append(f"pack {pack['id']}: rows of at most {pack['at_once']} request(s) at once (at_once); decode "
                    f"levels {prof.decode_levels() or 'none above c1'}, burst {prof.burst()[0]} x {prof.burst()[1]}")
