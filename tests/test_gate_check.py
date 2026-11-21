@@ -16,7 +16,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-from tools.gate import render  # noqa: E402
+from tools.gate import pathmap, render  # noqa: E402
 from tools.gate.check import check  # noqa: E402
 from tools.gate.verdict import overall, speed_row, text_row  # noqa: E402
 from test_gate_report import SHA_B, SHA_H, report  # noqa: E402
@@ -44,6 +44,9 @@ def rows_ok():
 
 
 ENGINE = ["engine/models/flashnext/engine.py"]
+#: the GPU tests tools/gate/map.yaml assigns to that diff, read from the map as the check reads it: a good report ran
+#: all of them, whatever the map adds (SPD-317's tests/gpu/test_fn_moe_grouped_pin_gpu.py on the flashnext paths)
+KERNELS = pathmap.required(ENGINE)["kernels"]
 
 
 def run_check(rep, files=ENGINE, head=SHA_H, git=None, extra=()):
@@ -57,14 +60,10 @@ def test_docs_only_needs_no_report():
 
 
 def test_good_report_passes():
-    rep = report(rows_ok(), kernels=["tests/gpu/test_fn_kernels_gpu.py", "tests/gpu/test_fn_prefill_kernels_gpu.py",
-                                     "tests/gpu/test_fn_seq_kernels_gpu.py", "tests/gpu/test_fn_attn_multi_gpu.py",
-                                     "tests/gpu/test_fn_gemv_nb_gpu.py", "tests/gpu/test_fn_mixer_mma_gpu.py",
-                                     "tests/gpu/test_fn_joint_graph_gpu.py", "tests/gpu/test_fn_joint_prefill_gpu.py",
-                                     "tests/gpu/test_fn_attn_rows_big_gpu.py", "tests/gpu/test_fn_attn_stages_gpu.py",
-                                     "tests/gpu/test_fn_pf_hc_gpu.py", "tests/gpu/test_fn_pf_nocopy_gpu.py",
-                                     "tests/gpu/test_fn_pf_window_gpu.py", "tests/gpu/test_fn_prefill_mm_gpu.py",
-                                     "tests/gpu/test_fn_pack_graph_gpu.py", "tests/gpu/test_fn_route_gpu.py"])
+    assert KERNELS and "tests/gpu/test_fn_kernels_gpu.py" in KERNELS, KERNELS
+    for t in KERNELS:                                # every test the map names is in the tree
+        assert os.path.isfile(os.path.join(ROOT, t)), t
+    rep = report(rows_ok(), kernels=list(KERNELS))
     res = run_check(rep)
     assert res["ok"], res["problems"]
 
@@ -108,9 +107,10 @@ def test_failing_rows_and_unexplained_changes():
     rows.append(text_row("lossless.p2", "lossless", "prompt 2", {"ids": [1, 2]}, {"ids": [1, 3]}))
     rows.append(speed_row("decode.c4", "decode", "c4", "tok/s", True, [1, 2], [1, 2],
                           invalid="at most 2 decoded at once, 4 sent"))
-    rep = report(rows)
+    rep = report(rows, kernels=list(KERNELS))          # every GPU test the diff maps to ran: the rows alone fail it
     res = run_check(rep)
     probs = "\n".join(res["problems"])
+    assert not res["ok"] and "GPU tests the diff maps to did not run" not in probs, probs
     assert "INVALID decode.c4" in probs
     assert "WORSE decode.c1 has no written reason" in probs
     assert "CHANGED_TEXT lossless.p2 has no written reason" in probs
@@ -118,20 +118,14 @@ def test_failing_rows_and_unexplained_changes():
     rows = [r for r in rows if r["id"] != "decode.c4"]
     rep = report(rows, reasons={"decode.c1": "the c1 path now runs the checked kernel, 30 % slower",
                                 "lossless.p2": "a near tie at position 1 flips with the new reduction order"},
-                 kernels=["tests/gpu/test_fn_kernels_gpu.py", "tests/gpu/test_fn_prefill_kernels_gpu.py",
-                          "tests/gpu/test_fn_seq_kernels_gpu.py", "tests/gpu/test_fn_attn_multi_gpu.py",
-                          "tests/gpu/test_fn_gemv_nb_gpu.py", "tests/gpu/test_fn_mixer_mma_gpu.py",
-                          "tests/gpu/test_fn_joint_graph_gpu.py", "tests/gpu/test_fn_joint_prefill_gpu.py",
-                          "tests/gpu/test_fn_attn_rows_big_gpu.py", "tests/gpu/test_fn_attn_stages_gpu.py",
-                          "tests/gpu/test_fn_pf_hc_gpu.py", "tests/gpu/test_fn_pf_nocopy_gpu.py",
-                          "tests/gpu/test_fn_pf_window_gpu.py", "tests/gpu/test_fn_prefill_mm_gpu.py",
-                          "tests/gpu/test_fn_pack_graph_gpu.py", "tests/gpu/test_fn_route_gpu.py"])
+                 kernels=list(KERNELS))
     res = run_check(rep)
     assert res["ok"], res["problems"]
     assert any("explained" in n for n in res["notes"])
     # a too-short reason does not count
     rep["reasons"]["decode.c1"] = "slower"
-    assert not run_check(rep)["ok"]
+    res = run_check(rep)
+    assert not res["ok"] and any("decode.c1" in p for p in res["problems"]), res["problems"]
 
 
 def test_level_suites_kernels_and_planted():
