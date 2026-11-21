@@ -1850,6 +1850,11 @@ class ResidentPrefix:
     order.
     """
 
+    #: the end read again (`end_reread`, set by the constructor): off, and no read waiting for `keep_end`, for an
+    #: object that never ran it (a view a caller builds over its own rows, as tests/test_memory_wait.py's)
+    end_reread = False
+    _read = None
+
     def __init__(self, budget_bytes: int, chunk: int, *, tail: int = 4, stash_bytes: int = 0,
                  guest_max: int = 16384, guest_frac: float = 0.25,
                  pin_bytes: int = 0, pin_anchors: int = 8, park_bytes: int = 0,

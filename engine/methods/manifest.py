@@ -187,7 +187,7 @@ SAME_ROWS = {("engine/loader.py", "823f9dd4c230ec45d133b52e0a5edc0343098184526d9
              "fa037990b84862bdbae21a389095978c5dd853cf9ea93b488db6ba9b0712bffe",
              # SRV-911: the end read again (`ResidentPrefix.reread_end`, a family's `Capabilities.reread_end`): which
              # rows a family with the flag keeps as its end; every family without it runs the lines it ran, no row
-             ("engine/cache.py", "78442637eb7752b362a5bddcd7712568d6d4542d2af147196038746022e9586e"):
+             ("engine/cache.py", "e40c48c999b6ec7cf5f6e1e4f252ee82a00314875c19fb4f7eff2fa62406ae04"):
              "b6d30d155f5b79d6e440e9aac934d6ba1d7b74cb01184bbda0f811ca70b40523",
              # SRV-911: the spill carries the end read's `exact` mark with an end and refuses an end without it on such
              # a family; the rows it writes and reads are the same
