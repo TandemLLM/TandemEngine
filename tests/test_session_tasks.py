@@ -767,8 +767,10 @@ def _http_session():
 
 def test_the_session_tasks_over_http_note_hidden_and_counted():
     """Scenario 3 over HTTP: the note reaches the model, never the client; usage counts what
-    the client sent; the journal holds the note's exact text and the ledger its hidden tokens."""
-    port, proc, ledger = _server(_policy_file(S4={"minutes": 600}))
+    the client sent; the journal holds the note's exact text and the ledger its hidden tokens. The answer reserve is off
+    (`--answer-reserve 0`): with it, the reserve's hidden close (ENG-468 / M1.5) joins the note's hidden tokens on the
+    fake engine's one-character tokens, and this counts the note's alone."""
+    port, proc, ledger = _server(_policy_file(S4={"minutes": 600}), extra=("--answer-reserve", "0"))
     try:
         msgs, step = _http_session()
         for v in (3.5, 12.3):
@@ -784,7 +786,7 @@ def test_the_session_tasks_over_http_note_hidden_and_counted():
         usage = [u for u in usage if u][-1]
         # the same request on a server whose session tasks are off: the prompt it counts
         port2, proc2, _ = _server(_policy_file(S1={"mode": "off"}, S2={"mode": "off"},
-                                               S4={"mode": "off"}))
+                                               S4={"mode": "off"}), extra=("--answer-reserve", "0"))
         try:
             base = _post(port2, plain)["usage"]
         finally:

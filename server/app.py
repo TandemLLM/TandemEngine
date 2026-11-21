@@ -11402,7 +11402,7 @@ class Handler(BaseHTTPRequestHandler):
             rec.max_tokens = max_new
             # A client that asked for a budget, in any shape, gets its reasoning closed early
             # enough to leave the answer its reserve of the output limit: the limit never ends
-            # its turn inside the block. A request that asked for none is served as before.
+            # its turn inside the block. ENG-468 / M1.5: so does a request that asked for none, last below.
             # SRV-899: a family's own default level (`ReasoningSpec.effort.default`) caps a request that nobody else
             # decided: no client budget, no plan that decides the effort, no --think-budget. It closes with
             # ThinkBudget's close (the family's, `_think_close`), after the answer reserve below
@@ -11416,7 +11416,7 @@ class Handler(BaseHTTPRequestHandler):
             if eff.default and in_think and not budget and not client.asked and not decides:
                 default_cap = budget = int(_effort_caps().get(eff.default) or 0)
                 print(f"[think] {cid} server default {eff.default}: cap {budget}", flush=True)
-            lowered = False
+            lowered = reserved = False
             if json_answer and in_think and not client.asked:
                 # SRV-169: a JSON answer gets the answer reserve as a client's budget does, so
                 # the thinking cannot spend the whole output limit and cut the JSON (UT1: a
@@ -11432,7 +11432,7 @@ class Handler(BaseHTTPRequestHandler):
                     plan.row.setdefault("extra", {})["json_reserve"] = {
                         "reserve": reserve, "max_tokens": max_new, "cap": cap,
                         "lowered": lowered}
-                budget = cap
+                budget, reserved = cap, True
             if client.asked and in_think:
                 # the close is counted in (`close_text`): it streams where no monitor hides it
                 closer = len(tok(close_text, add_special_tokens=False).input_ids)
@@ -11447,7 +11447,7 @@ class Handler(BaseHTTPRequestHandler):
                         "field": client.source, "kind": client.kind, "asked": client.budget,
                         "reserve": reserve, "max_tokens": max_new, "cap": cap,
                         "lowered": lowered}
-                budget = cap
+                budget, reserved = cap, True
             if default_cap and in_think and not json_answer:
                 # the family's default cap leaves the answer its reserve, as a client's budget does; `lowered`
                 # stays as it is, so the close is ThinkBudget's own
@@ -11456,6 +11456,23 @@ class Handler(BaseHTTPRequestHandler):
                     budget, max_new, STATE.get("answer_reserve", thinking_mod.AUTO), closer)
                 print(f"[think] {cid} server default: answer reserve {reserve} of {max_new} -> cap {cap}",
                       flush=True)
+                budget, reserved = cap, True
+            reserve_setting = STATE.get("answer_reserve", thinking_mod.AUTO)
+            if in_think and not reserved and thinking_mod.reserve(max_new, reserve_setting) > 0:
+                # ENG-468 / M1.5 (hold 1a, 2026-11-21): thinking on and nothing above left the answer its room: no
+                # client budget, no JSON answer, no family default (a plan that decides the effort, or a family that
+                # declares none). The cap in force -- the class's, --think-budget's, or none -- still leaves the
+                # answer its reserve, for every family: a chat-mode request with 200 tokens under a class cap of 8,192
+                # reasoned all 200 and answered nothing. The reserve and the close are a client budget's (`lowered`:
+                # a monitor that acts closes it hidden); `--answer-reserve 0` keeps none, as for a client's budget
+                closer = len(tok(close_text, add_special_tokens=False).input_ids)
+                cap, reserve = thinking_mod.with_reserve(budget, max_new, reserve_setting, closer)
+                lowered = cap != budget
+                print(f"[think] {cid} answer reserve {reserve} of {max_new}, in force {budget or 'none'} -> cap "
+                      f"{cap or 'none'}", flush=True)
+                if plan is not None and plan.row is not None:
+                    plan.row.setdefault("extra", {})["answer_reserve"] = {
+                        "reserve": reserve, "max_tokens": max_new, "cap": cap, "lowered": lowered}
                 budget = cap
             # The cap in force -- the router's for the turn's effort level, the client's, or
             # the reserve's -- closes with the monitor's hidden close (SP1), so ThinkBudget gets

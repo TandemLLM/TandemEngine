@@ -293,6 +293,9 @@ def test_the_header_lowers_the_mode_and_never_raises_it():
     for mode, header, want in (("on", "off", "raw"), ("on", "raw", "raw"),
                                ("shadow", "on", "shadow"), ("on", None, "on")):
         serve(None)
+        # the answer reserve off (--answer-reserve 0): this tests the monitor's own acts, at a limit
+        # where the reserve for a request with nothing asked (ENG-468 / M1.5) would close first
+        app.STATE["answer_reserve"] = 0
         app.STATE["tok"] = MonTok()
         mon = app.STATE["monitor"] = monitor(mode, backstop(4))
         req = Req("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}],
@@ -336,6 +339,9 @@ def test_shadow_journals_the_close_and_writes_what_raw_writes():
 
 def _chat(fmt: str, stream: bool, mode: str = "on", tasks=None, **extra):
     serve(FixedDrafter(97, 5, tree_mode=False))
+    # the answer reserve off (--answer-reserve 0): this tests the monitor's own acts, at a limit
+    # where the reserve for a request with nothing asked (ENG-468 / M1.5) would close first
+    app.STATE["answer_reserve"] = 0
     app.STATE["tok"] = MonTok()
     app.STATE["reasoning_format"] = fmt
     mon = app.STATE["monitor"] = monitor(mode, backstop(6) if tasks is None else tasks)
@@ -401,6 +407,9 @@ def test_a_hidden_close_is_not_counted_and_not_cached():
             self.got.append(([], list(out)))
 
     serve(FixedDrafter(97, 5, tree_mode=False))
+    # the answer reserve off (--answer-reserve 0): this tests the monitor's own acts, at a limit
+    # where the reserve for a request with nothing asked (ENG-468 / M1.5) would close first
+    app.STATE["answer_reserve"] = 0
     app.STATE["tok"] = MonTok()
     app.STATE["monitor"] = monitor("on", backstop(6))
     app.STATE["response_cache"] = rc = ResponseCache(1 << 20, 3600)
