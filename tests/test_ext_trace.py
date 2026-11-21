@@ -28,6 +28,8 @@ request with `X-Tandem: raw` and one naming a profile that does not exist (the p
 A mismatch prints the first paths that differ. Recording (only on the tree the record is of):
   python -c "import sys; sys.path[:0]=['tests','.']; import test_ext_trace as t; t.record()"
 prints the record as `EXTTRACE` lines (zlib, base64) for tests/fixtures/ext_trace.json.
+Recorded again on hy4-m1 aa596e81 (2026-11-21, TandemApp 7207618): only the journal rows' engine_version
+(0.16.0) and the answer reserve's `extra.answer_reserve` (ENG-468 / M1.5, six chat-mode monitor rows) moved.
 
 Needs CPU torch (the fake engine). Run: python tests/test_ext_trace.py
 """
