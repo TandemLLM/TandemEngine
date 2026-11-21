@@ -375,7 +375,8 @@ class _Spy:
 
     def __call__(self, prompt, max_new, eos, think, *a, **k):
         call = {"budget": think.budget, "max_new": max_new, "prompt": prompt.tolist(),
-                "sup": k.get("sup"), "pen": k.get("pen"), "ids": []}
+                "sup": k.get("sup"), "pen": k.get("pen"), "ids": [],
+                "watch": getattr(think, "watch", ())}
         self.calls.append(call)
         for t in self.real(prompt, max_new, eos, think, *a, **k):
             call["ids"].append(t)
@@ -423,6 +424,7 @@ def test_no_field_hands_the_loop_what_it_had():
                    "chat_template_kwargs": {"enable_thinking": True}}):
             raw, calls, log = _handler(b, mode=mode, think_budget=tb)
             assert len(calls) == 1 and calls[0]["budget"] == tb and calls[0]["max_new"] == 40
+            assert calls[0]["watch"] == (), (mode, tb, calls[0]["watch"])   # no cap SP1 closes at
             sup = calls[0]["sup"]
             assert sup is None or sup.think_budget is None, mode
             assert "client budget" not in log, log
@@ -564,6 +566,8 @@ def test_over_the_handler_a_client_number_closes_hidden_with_the_monitor():
         assert PHRASE not in json.dumps(msg) and msg["content"], (b, msg)
         assert _acts() == [("client", "budget(4)")], (b, _acts())
         assert calls[0]["budget"] == 0 and calls[0]["sup"].think_budget == 4
+        # ENG-476: the cap routed to the monitor is the loop's `watch`, where a drafted block stops
+        assert calls[0]["watch"] == (4,), (b, calls[0]["watch"])
         ids = calls[0]["ids"]
         assert got["usage"]["completion_tokens_details"]["reasoning_tokens"] == \
             _reasoning_count(ids)
