@@ -3809,6 +3809,7 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
         mem.mark(rows=n - start)           # SRV-773: a continuation teaches the workspace line nothing
     lines = res is not None or job is not None or (store is not None and checkpoint and chunk > 0)
     win = PREFILL_WINDOW if lines else PREFILL_WINDOW_FREE
+    prompt_rows = bool(getattr(getattr(eng, "caps", None), "prompt_rows", False))      # R83 (T5b)
     try:
         while i < n:
             cap = WINDOW_CAP() if WINDOW_CAP is not None else None
@@ -3884,7 +3885,14 @@ def _prefill(eng, drafter, ids, device, *, store, chunk, conv_id, checkpoint, re
             # a chunk before the last one returns logits nobody reads: one row, not `t` of them
             got = (FIRST_FORWARD(eng, blk, i, i + t == n) if FIRST_FORWARD is not None and i == start
                    else None)
-            logits = got if got is not None else eng.forward(blk, start=i, last_only=True)
+            if got is not None:
+                logits = got
+            elif prompt_rows:
+                # R83 (T5b): a one-row piece is a prompt chunk here, never the decode step the family's `forward`
+                # takes a lone token at a start past 0 for
+                logits = eng.forward(blk, start=i, last_only=True, prompt=True)
+            else:
+                logits = eng.forward(blk, start=i, last_only=True)
             if drafter is not None and hasattr(drafter, "sync"):
                 drafter.sync(ids[i:i + t], eng.hidden_post_norm[0], i)
             i += t

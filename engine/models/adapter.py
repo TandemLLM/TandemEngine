@@ -48,6 +48,10 @@ class Capabilities:
     # `_grid_mark`, SPD-249's marked grid), and a guest keeps the conversation's end and stores its own head
     # when it resumes from the state store (`ResidentPrefix(guest_store=True)`). False: the mark from a plan only
     head_mark: bool = False
+    # R83 (T5b): a prompt chunk of one row is read on the prompt pass, not as a decode step. The prompt read
+    # (engine/cache.py `_prefill`) calls `forward(..., prompt=True)`, so a prompt-end resume whose tail is one row
+    # gives the cold read's bits. False: `forward` gets no `prompt` argument, the call it got before
+    prompt_rows: bool = False
 
 
 @dataclass(frozen=True)

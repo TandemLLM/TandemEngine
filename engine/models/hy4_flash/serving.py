@@ -132,6 +132,9 @@ class Hy4FlashServing:
     # prompt without a plan is marked where its first user turn starts, so a repeated head is read once
     # (SRV-905, server/app.py `_head_mark`)
     caps = dataclasses.replace(caps, chat_first=True, head_mark=True)
+    # R83 (T5b): a one-row prompt chunk runs the prompt pass (`forward(..., prompt=True)`), whose products are in the
+    # prompt order at every row count, so a prompt-end resume with a one-row tail equals the cold read
+    caps = dataclasses.replace(caps, prompt_rows=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)
@@ -312,16 +315,17 @@ class Hy4FlashServing:
 
     # --- the loop's verbs ------------------------------------------------------------------------
     @torch.no_grad()
-    def forward(self, ids: torch.Tensor, start: int, last_only: bool = True) -> torch.Tensor:
+    def forward(self, ids: torch.Tensor, start: int, last_only: bool = True, prompt: bool = False) -> torch.Tensor:
         """Rows `ids` at positions start..: one token through the row path, more through the prefill.
-        Logits [1, 1, vocab] of the last row (fp32)."""
+        `prompt` (R83, `Capabilities.prompt_rows`): the rows are a prompt's, so one row is a one-row prompt chunk
+        on the prefill too, not a decode step. Logits [1, 1, vocab] of the last row (fp32)."""
         self._settle_chain()
         ids = ids.view(-1)
         self._at(start)
         T = ids.numel()
         self._ensure(start + T + BLOCK)
         self.graph_set.used()
-        if T == 1 and start > 0:
+        if T == 1 and start > 0 and not prompt:
             n0 = len(self.graphs) if self.graphs is not None else 0
             lg, n = self.fn.rows([int(ids[0])], [-1], self.st, graphs=self.graphs, clone=False)
             self.plain_captured = self.graphs is not None and len(self.graphs) != n0
@@ -448,6 +452,10 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
     if eng.prefill_experts not in ("group", "rows"):
         raise ValueError(f"QWEN38_HY4_PREFILL_EXPERTS={eng.prefill_experts!r}: group or rows")
     eng.prefill_v2 = _S.get("HY4_PREFILL_V2") == "1"
+    # R83: every packed projection of the prompt pass checked in its prompt order once a shape, here: a shape whose
+    # kernels are not one order's bits fails the start (tools/exl3_rows.py `RowOrderError`), never a request
+    order = eng.bind_prompt_order() if eng.prefill_v2 else {"skipped": "QWEN38_HY4_PREFILL_V2=0: the pass before"}
+    log(f"[hy4] prompt order (R83): {order}")
     if kv_pool is not None:
         kv_pool()                           # ENG-485: the KV pool, before the state that pages through it
     srv = Hy4FlashServing(eng, max_len)
@@ -464,7 +472,8 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
         prompt = [int(text[i % len(text)]) for i in range(max(n, 8))]
         res = eng.self_check(prompt, widths=(2, 4, 6), log=log, graphs=srv.graphs is not None)
         srv.restart()
-    info = {"pack": path, "load": timing, "device": device, "self_check": res, "quant": pack.quant, "dfly": pack.has_dfly,
+    info = {"pack": path, "load": timing, "device": device, "self_check": res, "prompt_order": order, "quant": pack.quant,
+            "dfly": pack.has_dfly,
             "formats": timing.get("notes"), "tables": [t.report() for t in tables.values()]}
     return srv, info
 

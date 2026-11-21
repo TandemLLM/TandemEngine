@@ -922,7 +922,11 @@ def v2_cuts(a, eng, cfg, say) -> bool:
             y = eng.linr(x2, w if torch.is_tensor(w) else w.bf16_cached()).to(x.dtype)
         return y.view(*x.shape[:-1], -1)
     set_arm(eng, "v2")
+    # the V2 pass's packed products run on `lin_prompt` (R83): pinned too, so the trunk is the row kernels' as the
+    # line says
     eng.lin = pinned
+    if hasattr(type(eng), "lin_prompt"):
+        eng.lin_prompt = pinned
     runs = {}
     try:
         for name, cuts in (("one", [3000]), ("cut_1000", [1000, 2000]), ("chunks_257", [257] * 11 + [173]), ("tail_1", [2999, 1])):
@@ -937,6 +941,8 @@ def v2_cuts(a, eng, cfg, say) -> bool:
                           "hist": _sha(st.hist), "gk_all": _sha(st.gk_all[:, :L // rr])}
     finally:
         del eng.lin
+        if "lin_prompt" in eng.__dict__:
+            del eng.lin_prompt
     base = runs["one"]
     diff = {k: sorted(x for x in v if v[x] != base[x]) for k, v in runs.items() if k != "one"}
     ok = not any(diff.values())
