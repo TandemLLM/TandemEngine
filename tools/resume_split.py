@@ -118,7 +118,9 @@ class Ops:
         real_fc = eng.forward_chunk
 
         def fc(tokens, st, _r=real_fc):
-            self.L0, self.T, self.cnt = int(st.length), int(tokens.shape[0]), {}
+            # a chunk starts at layer 0: an op without a layer argument (lin) belongs to the last layer an op named,
+            # so the cold run's keys and the resumed run's are the same
+            self.L0, self.T, self.cnt, self.li = int(st.length), int(tokens.shape[0]), {}, 0
             return _r(tokens, st)
         eng.forward_chunk = fc
         for name in OPS:
@@ -134,8 +136,7 @@ class Ops:
             if li is None:
                 s = next((x for x in a if isinstance(x, str) and x.startswith("layers.")), None)
                 li = int(s.split(".")[1]) if s else self.li
-            else:
-                self.li = li
+            self.li = li
             t = o[0] if isinstance(o, tuple) else o
             if not torch.is_tensor(t) or t.dim() == 0 or t.shape[0] != self.T:
                 return o
