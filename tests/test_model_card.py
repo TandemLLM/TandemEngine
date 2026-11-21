@@ -108,6 +108,35 @@ def test_every_weight_profile_has_its_card():
     return f"{len(names)} profiles, each with its card"
 
 
+def test_a_card_states_its_familys_engine_alone_effort():
+    """ENG-468: a card's `effort_default` is the level its family's spec declares as its own default
+    (`ReasoningSpec.effort.default`, engine/models/<family>/arch.py), the one a request with no effort gets
+    where no client, no conductor plan and no --think-budget decided; a family that declares one has a card
+    that says so, and a card without the key has a family without one (the server's --reasoning-effort
+    word, no cap). The card's file states it for its readers; the served card (`card()`) does not carry
+    it."""
+    import glob
+
+    import yaml
+
+    from engine.models import REGISTRY
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    seen = {}
+    for path in sorted(glob.glob(os.path.join(root, "models", "*", "card.json"))):
+        with open(os.path.join(os.path.dirname(path), "model.yaml")) as fh:
+            family = yaml.safe_load(fh)["engine"]
+        with open(path) as fh:
+            stated = json.load(fh).get("effort_default")
+        want = REGISTRY[family].spec.reasoning.effort.default
+        assert stated == want, (path, family, stated, want)
+        if want:
+            seen[family] = stated
+        assert "effort_default" not in model_card.card(_facts(pack=json.load(open(path))["packs"][0]))
+    assert seen == {f: e.spec.reasoning.effort.default for f, e in REGISTRY.items()
+                    if e.spec.reasoning.effort.default}, seen
+    return f"stated by {sorted(seen)}: {sorted(set(seen.values()))}"
+
+
 def test_annotate_leaves_proxy_models_their_own_card():
     entries = [{"id": "TandemLLM", "object": "model"},
                {"id": "openai/gpt", "tandem": {"backend": "openai", "context_length": 128000}}]

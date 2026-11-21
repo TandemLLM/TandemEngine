@@ -4,6 +4,7 @@
   "packs": ["hy4-*"],
   "context_limit": 262144,
   "max_output": 32768,
+  "effort_default": "medium",
   "capabilities": {
     "thinking": true,
     "tools": true,

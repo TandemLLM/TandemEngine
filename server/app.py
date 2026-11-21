@@ -10356,12 +10356,17 @@ class Handler(BaseHTTPRequestHandler):
             """The budget under the plan: where the router decides the effort, a client's effort
             word is a ceiling (the owner, 2026-10-03 12:30): the router's level, never above the
             word's cap (0 is no cap); under a profile whose `thinking.client_word` is `ignore`
-            (opencode, which sends `medium` every turn) the router's level alone. A client's
-            number always wins (server/api/thinking.py)."""
+            (opencode, which sends `medium` every turn) the router's level alone; under `wins`
+            (SRV-899: a person picked the word, TandemApp's chat-app, chat and general) the word's
+            level and its cap, as on the engine alone, and a switch without a word the router's
+            level, as under `ignore` (the router took the word as the turn's level and left a
+            switch to the class). A client's number always wins (server/api/thinking.py)."""
             if client.asked and client.kind != "number" and plan.decides_effort:
                 rb = plan.think_budget(server_budget)
                 if plan.client_word == "ignore":
                     return rb
+                if plan.client_word == "wins":
+                    return int(client.budget or 0) if client.kind == "effort" else rb
                 cw = int(client.budget or 0)
                 out = rb if not cw else cw if not rb else min(rb, cw)
                 if out != rb and plan.row is not None:
@@ -14108,9 +14113,7 @@ def _load_caches(a, eng, tok, drafter, rcache) -> dict:
                                      # SRV-907: the guest test knows the conversation's next turn
                                      chat_first=bool(getattr(getattr(eng, "caps", None), "chat_first", False)),
                                      # SRV-905: a guest resumes from the store's heads and keeps the chat's end
-                                     guest_store=bool(getattr(getattr(eng, "caps", None), "head_mark", False)),
-                                     # INTERIM (SRV-907): goes with Capabilities.solo when the family has side slots
-                                     solo=bool(getattr(getattr(eng, "caps", None), "solo", False)))
+                                     guest_store=bool(getattr(getattr(eng, "caps", None), "head_mark", False)))
                 if resident_on else None)
     if store is not None:
         mem.register("store", store.shed)
@@ -14743,6 +14746,37 @@ def _gib(b) -> str:
     return "-" if b is None else f"{b / (1 << 30):.2f}"
 
 
+def _limits_line(a) -> str:
+    """OPS-310: every limit this server runs with, once, after the load and every change the start makes to them
+    (the model's own limits, the side slots', the window's and the KV pool's moves of the memory policy), before
+    it listens (server/memlimits.py `start_line`): the lanes and their windows, the pool, the limits table as it
+    runs, the caches that are on, the effort a request that names none gets (the family's own level and its cap,
+    else the server's word), the drafter asked for and whether one was built, the round runner and its pipe, the
+    queue, and the knobs the model family's own code reads (its package's, from engine/settings.py)."""
+    pool = STATE.get("pool")
+    side = [int(sl.max_len) for sl in pool.slots[1:]] if pool is not None else []
+    eff = _spec().reasoning.effort
+    arch = _arch_of(getattr(a, "model", None))
+    head = {"lanes": pool.n if pool is not None else 1, "slot0_window": int(a.max_len),
+            "side_window": max(side) if side else None, "kv_pool": kvpool.POOL is not None}
+    reserve = STATE.get("answer_reserve", thinking_mod.AUTO)
+    tail = {"state_store": STATE.get("state_store") is not None, "resident": STATE.get("resident") is not None,
+            "disk_tier": STATE.get("disk_cache") is not None, "spill": STATE.get("spill") is not None,
+            "response_store": STATE.get("response_cache") is not None,
+            "effort_default": (f"{eff.default}:{int(_effort_caps().get(eff.default) or 0)}" if eff.default
+                               else STATE.get("reasoning_effort") or "-"),
+            "effort_source": "family" if eff.default else "server",
+            "thinking_default": STATE.get("thinking_default", "on"),
+            "think_budget": int(STATE.get("think_budget") or 0),
+            "answer_reserve": "auto" if reserve is None or reserve < 0 else int(reserve),
+            "drafter": getattr(a, "drafter", None), "drafter_built": STATE.get("drafter") is not None,
+            "round_runner": bool(_round_runner.ON), "runner_pipe": bool(_round_runner.PIPE),
+            "max_queue": getattr(a, "max_queue", None), "queue_timeout_s": getattr(a, "queue_timeout", None),
+            "request_timeout_s": getattr(a, "request_timeout", None), "family": arch.name}
+    tail.update(memlimits.family_knobs(_S.describe(), arch.package or f"models/{arch.name}"))
+    return memlimits.start_line(head, STATE, tail)
+
+
 def _load_vision(a, path: str, tower_of=None, config_of=None) -> None:
     """The checkpoint's vision tower (bf16, as stored; or `tower_of(vision config)`, the tower a
     model's builder makes in its own weight format, VIS-97), its image processor and the embedding
@@ -14945,6 +14979,10 @@ def _serve(a, led) -> None:
     STATE["refwatch"] = refwatch_mod.start(log=lambda s: print(s, flush=True))
     # SPD-249 (QSE_RUNNER_GC): what the load and the warm-up left is frozen out of every later collection
     _round_runner.gc_after_load(log=lambda s: print(s, flush=True))
+    try:
+        print(_limits_line(a), flush=True)
+    except Exception as exc:                                       # noqa: BLE001  (a log line never stops a start)
+        print(f"[limits] not written: {type(exc).__name__}: {exc}", flush=True)
     print(f"[server] listening on http://{a.host}:{a.port}  model {a.served_model}", flush=True)
     print(f"[server] queue max {a.max_queue} wait {a.queue_timeout:.0f}s "
           f"request timeout {a.request_timeout:.0f}s", flush=True)
