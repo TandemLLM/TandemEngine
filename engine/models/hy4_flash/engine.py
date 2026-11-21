@@ -58,8 +58,10 @@ SUB_LIST = 32
 EXPERT_SUB = 256
 #: SPD-321: rows from which a prompt chunk's routed experts take the shared prefill kernel
 #: (tools/fn_prefill_kernels.moe_grouped, one call for the chunk) instead of the row kernels in EXPERT_SUB launches.
-#: 0 until the device's crossover is measured (tools/hy4_check.py --only experts-crossover): every chunk takes it
-EXPERTS_MIN = 0
+#: The device's crossover (tools/hy4_check.py --only experts-crossover, 41 MoE layers summed, GB10, 2026-11-21): 128 rows
+#: on the 3.56 pack, 256 on the 3.08 pack. 128 for both: between 128 and 255 rows the 3.08 pack loses at most 41 ms a
+#: chunk on the prefill kernel, where 256 would cost the 3.56 pack up to about 140 ms. The bits are the same either way
+EXPERTS_MIN = 128
 #: SPD-321: the prefill kernel's item GEMM sums its K range over 4 warps in order (prefill.cu `GG_WK`); the row kernels
 #: give the same bits only where they split K over as many (`moe_launch()`'s warps), so only then may a chunk's row
 #: count choose between the two
