@@ -1095,10 +1095,12 @@ def test_a_json_answer_keeps_half_its_limit_for_the_json_when_the_model_thinks_p
         assert cap == thinking.with_reserve(int(_effort_caps_of(spec)), 150, 75, closer)[0], (name, cap, closer)
         assert 150 - cap - closer >= 75 or cap == 1, (name, cap, closer)       # the JSON's room after the close
         seen[name] = (cap, closer)
-        # last: the turn was served, the model closed where the cap says (the close runs a forward: triton)
+        # last: the turn was served, the model closed where the cap says: the cap's reasoning, then the close's own
+        # tokens, `</think>` last of them (Hy4-flash's one tag; the others' phrase of `closer` tokens)
         assert head.startswith("HTTP/1.1 200"), (name, head[:60])
         ids = loop[0]["ids"]
-        assert frame.CLOSE in ids and ids.index(frame.CLOSE) <= cap + 1, (name, ids[:12])
+        assert frame.CLOSE in ids and ids.index(frame.CLOSE) <= cap + closer, (name, cap, closer, ids.index(frame.CLOSE)
+                                                                              if frame.CLOSE in ids else None)
     return ", ".join(f"{k} cap {c} close {n}" for k, (c, n) in seen.items())
 
 
