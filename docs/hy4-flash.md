@@ -34,7 +34,7 @@ Each KL column compares a pack with the unquantized BF16 checkpoint (revision `d
 
 ## Limits
 
-Up to 8 chats at once (ENG-485). Each lane is a side slot with the whole 262,144-token window on the shared KV pool: a lane's latents and indexer keys take pages only for the rows it holds, and an idle conversation goes to the park and the NVMe spill under memory pressure. The lanes take turns, a whole round each, with no joint pass yet, so two chats at once share the decode rate. How the lanes measure is not recorded yet.
+Up to 8 chats at once (ENG-485). Each lane is a side slot with the whole 262,144-token window on the shared KV pool: a lane's latents and indexer keys take pages only for the rows it holds, and an idle conversation goes to the park and the NVMe spill under memory pressure. The lanes take turns, a whole round each, with no joint pass yet, so two chats at once share the decode rate. The profiles run the round runner without its pipe (`QSE_RUNNER_PIPE=0`): with the pipe the drafter accepted fewer tokens a round on this family and one chat decoded 5.6 to 6.6 % slower on `hy4-3.56`, with the same text.
 
 The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
 

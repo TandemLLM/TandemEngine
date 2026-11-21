@@ -676,7 +676,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_RUNNER_LANE_PLAIN` | `engine/models/nemotron_h/serving.py, server/round_runner.py` |
 | `QSE_RUNNER_LANE_PROBE` | `server/round_runner.py` |
 | `QSE_RUNNER_MTP_PACK` | `server/round_runner.py` |
-| `QSE_RUNNER_PIPE` | `engine/models/flashnext/engine.py, server/round_runner.py` |
+| `QSE_RUNNER_PIPE` | `engine/models/flashnext/engine.py, ops/profiles/_hy4.env, server/round_runner.py` |
 | `QSE_RUNNER_PRICED_CUT` | `server/round_runner.py` |
 | `QSE_RUNNER_PRICED_EXPLORE` | `server/round_runner.py` |
 | `QSE_RUNNER_ROWCAP` | `server/app.py` |
