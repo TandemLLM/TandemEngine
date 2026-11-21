@@ -243,6 +243,8 @@ class _Plan:
         self.context = None                          # no in-context stage due
         self.ask, self.acts, self.outcome = None, [], None   # J1: no outcome, no act
         self.side = None                             # S1: not a client's side request
+        # SRV-899: a plan with a class budget decides the effort; a client's word is a ceiling (the default rule)
+        self.decides_effort, self.client_word = True, "ceiling"
 
     def think_budget(self, budget):
         return self.budget if self.budget is not None else budget
