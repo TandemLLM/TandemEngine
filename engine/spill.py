@@ -373,7 +373,8 @@ class Entry:
                 out, spans = ResidentPrefix.replay(shim, list(keys))
                 if spans and len(out) > e:
                     return e
-            if replay and align is not None and c < e:
+            if replay and align is not None and c < e and not exact_only:
+                # (an end read's end: served only to a copy that holds its rows, never an aligned one)
                 try:
                     if align(self.tokens, end, self.man.get("extra"), list(keys)):
                         return e

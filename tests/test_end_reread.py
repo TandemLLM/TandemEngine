@@ -50,8 +50,29 @@ device.
        chunk from it), and the next prompt with that head resumes at one of them, equal to a cold read
                                                      test_the_read_takes_the_prompts_grid
 
-E1 and E6 pass before the fix and after; E2 to E18 fail before it. E13 and E14 run the handler on the tiny Hy4-flash
-(tests/hy4_tiny.py), which sets the capability.
+  E19  thinking on, no tools: the template drops the answer's reasoning, the next prompt parts at the prompt end, and
+       the close reads 0 rows; no end, the prompt end exact, the next turn equal to cold
+                                                     test_a_turn_whose_reasoning_the_template_drops_reads_nothing
+  E20  thinking off: the next prompt holds the whole answer, read and kept as the end
+                                                     test_a_thinking_off_turn_reads_its_answer
+  E21  a tool chain: what the template keeps of a call's reasoning, as the client sends it back or not, is read
+                                                     test_a_tool_chain_reads_what_the_template_keeps
+  E22  one line a close: rows read again, milliseconds, the rows the next prompt holds
+                                                     test_the_close_says_its_cost_on_one_line
+  E23  a read to where the next prompt parts inside the answer keeps the end there, a cold read's
+                                                     test_a_read_to_where_the_next_prompt_parts_keeps_the_end_there
+  E24  the end alignment, the park's and the disk's aligned offers are not asked on an end read's end
+                                                     test_an_end_reads_end_is_never_aligned
+  E25  with HY4_TOKENIZER, the pack's own template: thinking on, off, a call with and without reasoning sent back
+                                                     test_the_real_template_decides_the_rows
+  E26  a stream's keep-alive client: `Connection: close`, its follow-up on a new connection, served after the read
+                                                     test_a_streams_keep_alive_client_reconnects_for_its_follow_up
+  E27  a JSON keep-alive follow-up written on the same socket during the read waits and is served after it
+                                                     test_a_json_keep_alive_follow_up_on_the_same_socket_waits_and_is_served
+
+E1 and E6 pass before the fix and after; E2 to E18 fail before it. E19 to E25 fail on the tree before the rows the
+next prompt holds were asked (f8f6a4c1); E25 says "skipped" without HY4_TOKENIZER. E13 and E14 run the handler on the
+tiny Hy4-flash (tests/hy4_tiny.py), which sets the capability.
 
 Run: python tests/test_end_reread.py
 """
@@ -867,13 +888,16 @@ class _Served:
         real = self.res.reread_end
 
         def spy(*a, **kw):
-            self.seen["t0"] = time.monotonic()
+            t0 = time.monotonic()
+            self.seen.setdefault("t0", t0)           # the first close's (a follow-up's close comes after it)
             hook = self.seen.pop("during", None)
             if hook is not None:
                 hook()
             time.sleep(slow_s)
             got = real(*a, **kw)
-            self.seen["t1"], self.seen["how"] = time.monotonic(), got
+            self.seen.setdefault("t1", time.monotonic())
+            self.seen.setdefault("how", got)
+            self.seen.setdefault("calls", []).append((t0, time.monotonic(), got))
             return got
         self.res.reread_end = spy
         app.STATE.clear()
@@ -985,6 +1009,452 @@ def test_a_follow_up_during_the_read_waits_and_resumes_at_its_end():
     assert follow["raw"].rstrip().endswith(b"data: [DONE]"), follow["raw"][-200:]
     return (f"the follow-up waited ({sv.app.INFLIGHT.get('served')} served), then resumed at the end {e} and forwarded "
             f"{last.get('forwarded')} rows")
+
+
+
+# ------------------------------------------------------------------ E19 to E25: the rows the next prompt holds
+
+class TplTok:
+    """A tokenizer with Hy4-flash's chat template rule (the pack's chat_template.jinja) over a small vocabulary: a
+    character an id (32..127 as 4..99), each tag one id. An answer's reasoning is rendered when the effort is not
+    no_think, the client sent it, and `preserved_thinking` (on when tools are passed) or the answer comes after the last
+    user message; else the block is empty. Calls are `<tool_calls><tool_call>NAME<arg_key>K</arg_key><arg_value>V
+    </arg_value></tool_call></tool_calls>`, the wrapper left out of the text as Hy4-flash's tokenizer leaves it."""
+
+    TAGS = {"<think>": 100, "</think>": 101, "<|s|>": 102, "<|m|>": 103, "<|e|>": 104, "<tool_call>": 105,
+            "</tool_call>": 106, "<arg_key>": 107, "</arg_key>": 108, "<arg_value>": 109, "</arg_value>": 110,
+            "<tool_response>": 111, "</tool_response>": 112, "<tool_calls>": 113, "</tool_calls>": 114}
+    SPECIAL = (102, 103, 104)
+    eos_token_id = 104
+    unk_token_id = -1
+
+    def __init__(self):
+        self.names = {v: k for k, v in self.TAGS.items()}
+
+    def convert_tokens_to_ids(self, text):
+        return self.TAGS.get(text, -1)
+
+    def encode(self, text: str) -> list[int]:
+        out, i = [], 0
+        while i < len(text):
+            for tag, t in self.TAGS.items():
+                if text.startswith(tag, i):
+                    out.append(t)
+                    i += len(tag)
+                    break
+            else:
+                out.append(ord(text[i]) - 28 if 32 <= ord(text[i]) < 128 else 4)
+                i += 1
+        return out
+
+    def __call__(self, text, add_special_tokens=False, return_tensors=None):
+        ids = self.encode(text)
+        if return_tensors == "pt":
+            ids = torch.tensor([ids])
+        return types.SimpleNamespace(input_ids=ids)
+
+    def decode(self, seq, skip_special_tokens=True):
+        out = []
+        for t in seq:
+            t = int(t)
+            if t in (113, 114) or (skip_special_tokens and t in self.SPECIAL):
+                continue
+            out.append(self.names[t] if t in self.names else chr(t + 28))
+        return "".join(out)
+
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=False, tools=None,
+                            enable_thinking=True, reasoning_effort=None, preserved_thinking=None, return_tensors=None,
+                            return_dict=False, **kw):
+        effort = "no_think" if not enable_thinking else (reasoning_effort or "high")
+        keep = bool(tools) if preserved_thinking is None else bool(preserved_thinking)
+        last_user = max((i for i, m in enumerate(messages) if m["role"] == "user"), default=-1)
+        text = "<|s|>system<|m|>" + ("TOOLS " if tools else "") + f"EFFORT:{effort}<|e|>"
+        for i, m in enumerate(messages):
+            if m["role"] == "assistant":
+                r = m.get("reasoning") or m.get("reasoning_content") or ""
+                body = ("<think>" + r + "</think>" if effort != "no_think" and r and (keep or i > last_user)
+                        else "<think></think>") + (m.get("content") or "")
+                if m.get("tool_calls"):
+                    body += "<tool_calls>" + "".join(
+                        "<tool_call>" + c["function"]["name"] + "".join(
+                            f"<arg_key>{k}</arg_key><arg_value>{v if isinstance(v, str) else json.dumps(v)}</arg_value>"
+                            for k, v in c["function"]["arguments"].items()) + "</tool_call>"
+                        for c in m["tool_calls"]) + "</tool_calls>"
+                text += "<|s|>assistant<|m|>" + body + "<|e|>"
+            elif m["role"] == "tool":
+                text += "<|s|>tool<|m|><tool_response>" + str(m.get("content") or "") + "</tool_response><|e|>"
+            else:
+                text += f"<|s|>{m['role']}<|m|>" + str(m.get("content") or "") + "<|e|>"
+        if add_generation_prompt:
+            text += "<|s|>assistant<|m|><think>" + ("</think>" if effort == "no_think" else "")
+        if not tokenize:
+            return text
+        ids = self.encode(text)
+        return {"input_ids": torch.tensor([ids])} if return_dict else ids
+
+
+TOOLS = [{"type": "function", "function": {"name": "get_time", "description": "the time",
+                                           "parameters": {"type": "object", "properties": {"tz": {"type": "string"}}}}}]
+
+
+class _chat:
+    """The server's state for a chat on `Marked` with `TplTok` and Hy4-flash's serving spec (its tool form and
+    efforts), the prefix `res`, the prompt end kept (SPD-215)."""
+
+    def __init__(self, res, eng=None):
+        from engine.models.hy4_flash.arch import ARCH
+        from server import app
+        self.app, self.res = app, res
+        self.eng = eng if eng is not None else Marked()
+        self.tok = TplTok()
+        self.state = dict(engine=self.eng, drafter=None, resident=res, state_store=None, session_cache=False,
+                          hidden_spans=[], suffix_store=None, verbose=False, tok=self.tok, spec=ARCH.spec,
+                          cfg_eos=None, device="cpu", segments=None, reasoning_effort=None)
+
+    def __enter__(self):
+        self.keep = dict(self.app.STATE)
+        self.app.STATE.clear()
+        self.app.STATE.update(self.state)
+        self.pend = _pend().__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self.pend.__exit__()
+        self.app.STATE.clear()
+        self.app.STATE.update(self.keep)
+        return False
+
+    def prompt(self, body) -> list[int]:
+        return self.app.build_prompt(body, self.app.thinking_mod.read(body, strict=False), count="ids")
+
+    def turn(self, body, said: str) -> tuple[list[int], int, str]:
+        """One turn: the prompt read through the caches, `said` written by decode steps (its last token decided and not
+        forwarded, as the loop leaves it), the turn's close with this request. Returns (context, n, the close's line)."""
+        import contextlib
+        import io
+        app = self.app
+        prompt = self.prompt(body)
+        cache.prefill(self.eng, None, list(prompt), "cpu", chunk=CH, resident=self.res, conv_id="A")
+        gen = self.tok.encode(said) + [self.tok.eos_token_id]
+        n = len(prompt)
+        for i, t in enumerate(gen[:-1]):
+            self.eng.forward(torch.tensor([t]), start=n + i)
+        ctx = list(prompt) + gen
+        app.STATE.update(last_ctx=list(ctx), last_prompt_n=n)
+        turn = (body, app.thinking_mod.read(body, strict=False), 0)
+        kw = {"turn": turn} if "turn" in app._remember_turn.__code__.co_varnames else {}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            app._remember_turn(list(prompt), gen, "A", **kw)
+        lines = [ln for ln in buf.getvalue().splitlines() if "end re-read" in ln]
+        return ctx, n, "\n".join(lines)
+
+    def next_turn(self, ids):
+        """The next prompt read through the caches, as a turn's prefill: (logits, where it resumed)."""
+        return _next(self.eng, self.res, ids)
+
+
+def _held(tok, msgs, ctx, n, **kw) -> int:
+    """How many of the answer's tokens the template's rendering of `msgs` holds (the test's own count)."""
+    cur = tok.apply_chat_template(msgs[:-2], add_generation_prompt=True, **kw)
+    nxt = tok.apply_chat_template(msgs, add_generation_prompt=True, **kw)
+    assert nxt[:len(cur)] == cur
+    gen, rest, g = ctx[n:], nxt[len(cur):], 0
+    while g < min(len(gen), len(rest)) and gen[g] == rest[g]:
+        g += 1
+    return g
+
+
+def test_a_turn_whose_reasoning_the_template_drops_reads_nothing():
+    """E19: thinking on (the default), no tools: the template renders this answer back with an empty block, whatever
+    the client sends, so the next prompt parts from the rows at the prompt end. The close reads nothing (skip), keeps no
+    end and no decode-written row; the prompt end stays exact, and the next turn resumes there, equal to a cold read."""
+    res = _prefix()
+    reason = "LET ME THINK ABOUT THE GREETING AND WHAT TO SAY BACK TO IT"
+    body = {"messages": [{"role": "user", "content": "HELLO THERE"}]}
+    with _chat(res) as ch:
+        ctx, n, line = ch.turn(body, reason + "</think>HI.")
+        rows = int((res.stats.get("end_reread_last") or {}).get("rows", -1))
+        assert res.end is None and rows == 0, (res.end, res.stats.get("end_reread_last"))
+        assert res.stats.get("end_reread_skip") == 1 and res.stats.get("end_rereads", 0) == 0, res.stats
+        assert res.pend is not None and res.pend["at"] == n and res.pend.get("exact"), res.pend
+        nxt = ch.prompt({"messages": body["messages"] + [
+            {"role": "assistant", "content": "HI.", "reasoning_content": reason},
+            {"role": "user", "content": "AND NOW"}]})
+        assert ctx[n] != nxt[n] and nxt[:n] == ctx[:n], "the copy parts from the rows at the prompt end"
+        lg, last = ch.next_turn(nxt)
+    assert last["kind"] == "pend" and last["reused"] == n, last
+    cold, ref_lg = _cold(nxt)
+    assert torch.equal(lg, ref_lg) and _same_state(ch.eng, cold, len(nxt)) == []
+    return f"{len(ctx) - n - 1} answer rows, {len(reason)} of them reasoning: 0 read; resumed at the prompt end {n}"
+
+
+def test_a_thinking_off_turn_reads_its_answer():
+    """E20: thinking off: the prompt closes the block and the template renders the answer back as it was written, so
+    the next prompt holds every answer row: the close reads them all and keeps the end there, exact, and the next turn
+    resumes at it, equal to a cold read."""
+    res = _prefix()
+    body = {"messages": [{"role": "user", "content": "HELLO THERE"}], "chat_template_kwargs": {"enable_thinking": False}}
+    with _chat(res) as ch:
+        ctx, n, line = ch.turn(body, "HI. WHAT CAN I DO FOR YOU TODAY?")
+        e = len(ctx) - 1
+        last = res.stats.get("end_reread_last") or {}
+        assert res.end is not None and res.end["at"] == e and res.end.get("exact"), res.end
+        assert last.get("answer_rows") == e - n and last.get("held") == e - n, last
+        assert f"the next prompt holds {e - n} of the answer's {e - n} rows" in line, line
+        nxt = ch.prompt({"messages": body["messages"] + [{"role": "assistant", "content": "HI. WHAT CAN I DO FOR YOU TODAY?"},
+                                                         {"role": "user", "content": "AND NOW"}],
+                         "chat_template_kwargs": {"enable_thinking": False}})
+        assert nxt[:e] == ctx[:e]
+        lg, got = ch.next_turn(nxt)
+    assert got["kind"] == "end" and got["reused"] == e, got
+    cold, ref_lg = _cold(nxt)
+    assert torch.equal(lg, ref_lg) and _same_state(ch.eng, cold, len(nxt)) == []
+    return f"{e - n} answer rows read from the {last.get('from')} at {last.get('at')}; the next turn resumed at the end {e}"
+
+
+def test_a_tool_chain_reads_what_the_template_keeps():
+    """E21: tools passed (`preserved_thinking` on) and an answer that calls one. The template keeps a chain's reasoning
+    after the last user message when the client sends it back. (a) The chain's first call, no earlier answer to tell:
+    the answer goes back as the server gave it, and the read covers what the template renders of it, the reasoning and
+    the call. (b) The next call, the client's earlier answer without its reasoning: the template renders an empty
+    block, the next prompt parts at the prompt end, and nothing is read. (c) The same with the earlier answer's
+    reasoning sent back: read as (a). Each read is the count of the answer's tokens the template's own rendering of
+    the next conversation holds, and the next turn equal to a cold read."""
+    call = {"id": "c1", "type": "function", "function": {"name": "get_time", "arguments": {"tz": "UTC"}}}
+    said = "I SHOULD ASK FOR THE TIME</think><tool_calls><tool_call>get_time<arg_key>tz</arg_key><arg_value>UTC" \
+           "</arg_value></tool_call></tool_calls>"
+    user = {"role": "user", "content": "WHAT TIME IS IT"}
+    out = []
+    for case, earlier in (("a", None), ("b", False), ("c", True)):
+        res = _prefix()
+        msgs = [user]
+        if earlier is not None:
+            first = {"role": "assistant", "content": "", "tool_calls": [call]}
+            if earlier:
+                first["reasoning_content"] = "I SHOULD ASK FOR THE TIME"
+            msgs = [user, first, {"role": "tool", "tool_call_id": "c1", "content": "12:00"}]
+        body = {"messages": msgs, "tools": TOOLS}
+        with _chat(res) as ch:
+            ctx, n, line = ch.turn(body, said)
+            e = len(ctx) - 1
+            back = {"role": "assistant", "content": "", "tool_calls": [dict(call, id="c2")]}
+            if earlier is not False:
+                back["reasoning_content"] = "I SHOULD ASK FOR THE TIME"
+            nmsgs = msgs + [back, {"role": "tool", "tool_call_id": "c2", "content": "12:01"}]
+            want = min(e, n + _held(ch.tok, nmsgs, ctx, n, tools=TOOLS)) - n
+            last = res.stats.get("end_reread_last") or {}
+            if case == "b":
+                assert want == 0 and res.end is None and res.stats.get("end_reread_skip") == 1, (want, res.end, last)
+            else:
+                assert want == e - n and res.end is not None and res.end["at"] == n + want, (want, e - n, res.end)
+                assert last.get("held") == want and res.end.get("exact"), last
+            nxt = ch.prompt({"messages": nmsgs, "tools": TOOLS})
+            lg, got = ch.next_turn(nxt)
+        assert got["kind"] == ("pend" if case == "b" else "end") and got["reused"] == n + want, (case, got)
+        cold, ref_lg = _cold(nxt)
+        assert torch.equal(lg, ref_lg) and _same_state(ch.eng, cold, len(nxt)) == [], case
+        out.append(f"({case}) {want} of {e - n} read")
+    return "; ".join(out)
+
+
+def test_the_close_says_its_cost_on_one_line():
+    """E22: every turn's close is one log line: what it did, the rows read again and the milliseconds, how many of the
+    answer's rows the next prompt holds and why, the end and the whole close's time."""
+    import re
+    lines = []
+    for body, said in (({"messages": [{"role": "user", "content": "HI"}]}, "SOME REASONING</think>HELLO."),
+                       ({"messages": [{"role": "user", "content": "HI"}],
+                         "chat_template_kwargs": {"enable_thinking": False}}, "HELLO.")):
+        res = _prefix()
+        with _chat(res) as ch:
+            ctx, n, line = ch.turn(body, said)
+        lines.append(line)
+    pat = (r"^\[cache\] \S+ end re-read: (\w+), (\d+) rows in [0-9.]+ ms( from the \w+ at \d+)?; the next prompt holds "
+           r"(\d+) of the answer's (\d+) rows \([^)]*\); end \w+; close [0-9.]+ ms$")
+    got = [re.match(pat, ln) for ln in lines]
+    assert all(ln.count("\n") == 0 for ln in lines) and all(got), lines
+    assert got[0].group(1) == "skip" and got[0].group(2) == "0" and got[0].group(4) == "0", lines[0]
+    assert got[1].group(1) == "read" and int(got[1].group(2)) > 0 and got[1].group(4) == got[1].group(5), lines[1]
+    return " | ".join(lines)
+
+
+def test_a_read_to_where_the_next_prompt_parts_keeps_the_end_there():
+    """E23: a next prompt that parts from the answer's rows inside it (`upto`): the read stops there and the end is kept
+    there, the engine cut back to it, a cold read's state; a copy that holds those rows resumes at that end, equal to a
+    cold read. At or below the prompt's end nothing is read and nothing moves."""
+    res = _prefix()
+    prompt, said = tokens(40, seed=91), tokens(12, seed=92)
+    n, eng = len(prompt), Marked()
+    with _pend():
+        cache.prefill(eng, None, list(prompt), "cpu", chunk=CH, resident=res, conv_id="A")
+        for i, t in enumerate(said[:-1]):
+            eng.forward(torch.tensor([t]), start=n + i)
+        ctx, e = prompt + said, n + len(said) - 1
+        assert res.reread_end(eng, None, ctx, n, device="cpu", upto=n) == "skip"
+        assert res.valid == n and int(eng.kv.length) == e and res.stats.get("end_reread_skip") == 1
+        c = n + 5
+        assert res.reread_end(eng, None, ctx, n, device="cpu", upto=c) == "read"
+        assert int(eng.kv.length) == c and res.keep_end(eng, None, ctx, n, reread=True) == "kept"
+        assert res.end["at"] == c and res.end.get("exact") and res.taint is None, res.end
+        cold, _ = _cold(ctx[:c])
+        assert _same_state(eng, cold, c) == []
+        nxt = list(ctx[:c]) + NEW
+        lg, got = _next(eng, res, nxt)
+    assert got["kind"] == "end" and got["reused"] == c and got["forwarded"] == len(NEW), got
+    cold, ref_lg = _cold(nxt)
+    assert torch.equal(lg, ref_lg) and _same_state(eng, cold, len(nxt)) == []
+    return f"read to {c} of {e}: the end at {c}, the next turn resumed there, equal to cold"
+
+
+def test_an_end_reads_end_is_never_aligned():
+    """E24: the end alignment (server/endalign.py) serves a copy that differs from the rows (whitespace, a dropped
+    reasoning, a rewritten call) as the rows; that is not a cold read of the copy. On a prefix that reads its end again
+    it is not asked: the copy is served as sent. The park's and the disk's offers likewise."""
+    from server import endalign
+    NL = 95
+
+    def tb(i):
+        return b"\n" if int(i) == NL else b"<%d>" % int(i)
+    out = {}
+    for flag in (False, True):
+        res = _prefix(reread=flag)
+        prompt, ans = tokens(30, seed=5), tokens(20, seed=6)
+        res.tokens, res.valid = prompt + ans, 50
+        res.end = {"at": 50, "hidden": [], "mark": None}
+        copy = prompt + ans[:8] + [NL] + ans[8:] + [41, 43]
+        al = endalign.EndAlign(tb, on=True)
+        al.kept(res, 30, "kept")
+        ids, spans, aligned = al.replay(res, copy)
+        out[flag] = (ids == copy, aligned)
+        res.park_end, res.park_tokens, res.park_regions = dict(res.end, exact=True), list(res.tokens), []
+        res.park_align = lambda toks, end, regions, keys: True
+        out[flag] += (res._continues_park(copy),)
+    assert out[False] == (False, 20, True), out
+    assert out[True] == (True, 0, False), out
+    ent = spill.Entry.__new__(spill.Entry)
+    ent.tokens, ent.man = list(range(50)), {"end": {"at": 50, "hidden": [], "exact": True}, "anchors": [32]}
+    probe = list(range(40)) + [7, 8]
+    kw = dict(replay=True, max_len=99, glue=frozenset(), align=lambda *a: True)
+    assert ent.offer(probe, **kw) == 50 and ent.offer(probe, exact_only=True, **kw) == 32
+    return f"without the flag aligned {out[False][1]} tokens and the park continued; with it served as sent"
+
+
+
+def _keepalive(json_first: bool) -> dict:
+    """A keep-alive client (`http.client`, which keeps a connection open unless the response says `Connection:
+    close`, and opens a new one when it does): turn 1, then turn 2 sent the moment turn 1 is read, while the end read
+    runs (made to take a second). Returns what each saw."""
+    import http.client
+    sv = _Served(slow_s=1.0)
+    got: dict = {}
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", sv.port, timeout=60)
+        first = {"prompt": "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG", "max_tokens": 9, "temperature": 0,
+                 "stream": not json_first}
+        c.request("POST", "/v1/completions", json.dumps(first), {"Content-Type": "application/json",
+                                                                  "Connection": "keep-alive"})
+        r1 = c.getresponse()
+        got["h1"], got["b1"], got["port1"] = dict(r1.getheaders()), r1.read(), c.sock.getsockname()[1] if c.sock else None
+        got["t_read1"] = sv.time.monotonic()
+        follow = dict(first, prompt=sv.app.STATE["tok"].decode(list(sv.app.STATE["last_ctx"])) + " AND THEN",
+                      max_tokens=4, stream=False)
+        got["t_send2"] = sv.time.monotonic()
+        c.request("POST", "/v1/completions", json.dumps(follow), {"Content-Type": "application/json",
+                                                                   "Connection": "keep-alive"})
+        got["port2"] = c.sock.getsockname()[1]
+        r2 = c.getresponse()
+        got["status2"], got["b2"], got["t2"] = r2.status, r2.read(), sv.time.monotonic()
+        got["e"] = sv.res.end["at"] if sv.res.end is not None else None
+        got["last"] = dict(sv.app.STATE.get("last_prefill") or {})
+        got["seen"] = dict(sv.seen)
+        c.close()
+    finally:
+        sv.close()
+    return got
+
+
+def test_a_streams_keep_alive_client_reconnects_for_its_follow_up():
+    """E26 (the half-close and keep-alive): a streamed response says `Connection: close` (both stream paths send it,
+    as before this change), so the server never reads a second request on that socket; the half-close only moves the
+    connection's end (FIN) from after the turn's close to before it. A keep-alive client that sends its follow-up the
+    moment it has [DONE] opens a new connection for it; the follow-up waits for the lane while the read runs and is
+    served after it, resuming at the end the read kept."""
+    got = _keepalive(json_first=False)
+    seen = got["seen"]
+    assert got["h1"].get("Connection") == "close" and got["b1"].rstrip().endswith(b"data: [DONE]"), got["h1"]
+    assert got["t_read1"] < seen["t1"] - 0.5 and got["t_send2"] < seen["t1"], (got["t_send2"] - seen["t0"],
+                                                                             seen["t1"] - seen["t0"])
+    assert got["port2"] != got["port1"], "a new connection for the follow-up"
+    assert got["status2"] == 200 and got["t2"] > seen["t1"], (got["status2"], got["t2"] - seen["t1"])
+    assert got["last"].get("kind") == "end" and got["last"].get("reused") == got["e"], (got["last"], got["e"])
+    return (f"Connection: close; the follow-up sent {got['t_send2'] - seen['t0']:+.2f} s from the read's start on a new "
+            f"connection, served {got['t2'] - seen['t1']:.2f} s after it ended, resumed at the end {got['e']}")
+
+
+def test_a_json_keep_alive_follow_up_on_the_same_socket_waits_and_is_served():
+    """E27: a JSON response keeps the connection (no `Connection: close`, its length in Content-Length). A follow-up the
+    client writes on that same socket while the read runs is not dropped: the handler reads it once the turn's close is
+    done, serves it, and it resumes at the end the read kept."""
+    got = _keepalive(json_first=True)
+    seen = got["seen"]
+    assert "Connection" not in got["h1"] and json.loads(got["b1"])["choices"], got["h1"]
+    assert got["t_send2"] < seen["t1"] - 0.5, (got["t_send2"] - seen["t0"], seen["t1"] - seen["t0"])
+    assert got["port2"] == got["port1"], "the follow-up went on the same socket"
+    assert got["status2"] == 200 and json.loads(got["b2"])["choices"] and got["t2"] > seen["t1"], got["status2"]
+    assert got["last"].get("kind") == "end" and got["last"].get("reused") == got["e"], (got["last"], got["e"])
+    return (f"the follow-up written {got['t_send2'] - seen['t0']:+.2f} s from the read's start on the same socket, "
+            f"served {got['t2'] - seen['t1']:.2f} s after it ended, resumed at the end {got['e']}")
+
+
+def test_the_real_template_decides_the_rows():
+    """E25 (HY4_TOKENIZER: a directory with the pack's tokenizer.json, tokenizer_config.json and chat_template.jinja):
+    `_next_rows` on Hy4-flash's own template and ids. Thinking on without tools: the next prompt parts at the prompt end
+    (its answer's reasoning dropped). Thinking off: it holds the whole answer. A call with tools passed: the whole
+    answer, reasoning and call, when the client sends reasoning back (a first turn, or an earlier answer that carries
+    it); the prompt end when the client's earlier answer came back without it."""
+    d = os.environ.get("HY4_TOKENIZER")
+    if not d or not os.path.isfile(os.path.join(d, "tokenizer.json")):
+        return "skipped: HY4_TOKENIZER names no tokenizer"
+    from transformers import AutoTokenizer
+    from engine.models.hy4_flash.arch import ARCH
+    from engine.models.hy4_flash.tokenizer import Hy4Tokenizer
+    from server import app
+    tok = Hy4Tokenizer(AutoTokenizer.from_pretrained(d))
+    S = ":opensource"
+    end = tok._tok.convert_tokens_to_ids(f"<｜hy_end{S}｜>")
+    call_text = (f"<tool_calls{S}><tool_call{S}>get_time<arg_key{S}>tz</arg_key{S}><arg_value{S}>UTC</arg_value{S}>"
+                 f"</tool_call{S}></tool_calls{S}>")
+    call = {"id": "c1", "type": "function", "function": {"name": "get_time", "arguments": {"tz": "UTC"}}}
+    user = {"role": "user", "content": "What time is it?"}
+    keep = dict(app.STATE)
+    app.STATE.clear()
+    app.STATE.update(tok=tok, spec=ARCH.spec, cfg_eos=None, device="cpu", segments=None, reasoning_effort=None)
+    out = []
+    try:
+        cases = [("on", {"messages": [user]}, f"The user asks the time.</think{S}>I cannot know it.", 0),
+                 ("off", {"messages": [user], "chat_template_kwargs": {"enable_thinking": False}},
+                  "I cannot know it.", None),
+                 ("call", {"messages": [user], "tools": TOOLS}, f"I should ask the tool.</think{S}>" + call_text, None),
+                 ("call, no reasoning back", {"messages": [user, {"role": "assistant", "content": "", "tool_calls": [call]},
+                                                          {"role": "tool", "tool_call_id": "c1", "content": "12:00"}],
+                                              "tools": TOOLS}, f"Again.</think{S}>" + call_text, 0),
+                 ("call, reasoning back", {"messages": [user, {"role": "assistant", "content": "", "tool_calls": [call],
+                                                               "reasoning_content": "I should ask the tool."},
+                                                       {"role": "tool", "tool_call_id": "c1", "content": "12:00"}],
+                                           "tools": TOOLS}, f"Again.</think{S}>" + call_text, None)]
+        for name, body, said, want in cases:
+            client = app.thinking_mod.read(body, strict=False)
+            prompt = app.build_prompt(body, client, count="ids")
+            gen = list(tok._tok(said, add_special_tokens=False).input_ids) + [end]
+            got, why = app._next_rows((body, client, 0), prompt + gen, len(prompt))
+            held = got - len(prompt)
+            assert held == (len(gen) if want is None else want), (name, held, len(gen), why)
+            out.append(f"{name}: {held} of {len(gen)}")
+    finally:
+        app.STATE.clear()
+        app.STATE.update(keep)
+    return "; ".join(out)
 
 
 if __name__ == "__main__":

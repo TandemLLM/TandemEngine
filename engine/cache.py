@@ -1836,8 +1836,12 @@ class ResidentPrefix:
     resume at an exact end, an exact prompt end or an exact session snapshot leaves it clear. Where the read
     does not run (QWEN38_END_REREAD=0, a guest, refused by memory, an error), no end is kept
     and nothing decode-written is offered: the next turn resumes at the prompt end. An end without `exact`
-    (an NVMe entry, a park or a carry written before) is not offered on such a family. Without the flag,
-    every line below runs as before.
+    (an NVMe entry, a park or a carry written before) is not offered on such a family. The read covers only the
+    rows the next turn's prompt holds, as the template renders the conversation (`upto`, the server's
+    `_next_rows`): an answer whose reasoning the template drops parts at the prompt end, so nothing is read and
+    the prompt end alone is kept. Such an end is served only to a copy that holds its rows (the hidden spans put
+    back): the end alignment, which serves a copy that differs from the rows, is not asked for it. Without the
+    flag, every line below runs as before.
 
     THE MEMORY POLICY (`mem`, a `Budget`). Every buffer this allocates after the first is asked for
     first: an anchor that is refused reuses an evicted one, a stash that is refused leaves the
@@ -2160,7 +2164,8 @@ class ResidentPrefix:
         b = max((x for x in self.anchors if x <= lim), default=0)
         return b, ("resident" if b else "cold")
 
-    def reread_end(self, eng, drafter, tokens, n_prompt: int, device=None, on_chunk=None, gate=None) -> str:
+    def reread_end(self, eng, drafter, tokens, n_prompt: int, device=None, on_chunk=None, gate=None,
+                   upto: int | None = None) -> str:
         """At a turn's end, on a prefix with `end_reread`: the rows from the highest exact point at or below the
         prompt's end (`_read_start`) to the end `keep_end` would keep read again on the prompt pass, with the
         calls a prompt read makes (`forward(..., prompt=True)` on a `prompt_rows` family, the drafter's `sync`,
@@ -2171,7 +2176,10 @@ class ResidentPrefix:
         `tokens`: the request's context (the served prompt, then what was committed, hidden tokens included),
         `n_prompt` the prompt's length. `on_chunk(done, total)` after every chunk (the server's GPU turn).
         `gate(n, rows)`: the memory gate for the read's `rows` forwarded onto `n`; False and nothing is read.
-        Returns read, or why not: family (the flag off), off, guest, not_resident, memory, error. On an error the
+        `upto`: where the next turn's prompt parts from these rows, as the template renders the conversation (the
+        server's `_next_rows`; None: it holds them all). The read stops there and the end is kept there, the engine cut
+        back to it; at or below the prompt's end nothing is read ("skip": the next prompt resumes at the prompt end).
+        Returns read, or why not: family (the flag off), off, guest, not_resident, skip, memory, error. On an error the
         rows in place stay valid up to the prompt's end (or the read's start, the prompt end dropped, when it started
         below it) and nothing above is kept."""
         self._read = None
@@ -2187,6 +2195,14 @@ class ResidentPrefix:
                 or self.tokens != toks[:n]):
             return "not_resident"
         e = min(int(eng.kv.length), len(toks))       # what `keep_end` keeps, taken before anything moves
+        answer = e - n
+        if upto is not None and int(upto) < e:
+            e = max(n, int(upto))                    # the rows the next prompt holds; the rest is never offered
+            if e <= n:
+                self._unread("skip")
+                self.stats["end_reread_last"] = {"rows": 0, "answer_rows": 0, "answer": answer, "held": 0,
+                                                 "from": None, "at": n, "end": n, "ms": 0.0}
+                return "skip"
         start, how = self._read_start(n)
         if gate is not None:
             if not gate(e, max(1, e - start)):
@@ -2249,6 +2265,8 @@ class ResidentPrefix:
             self._unread("error")
             return "error"
         self.capturing = False
+        if int(eng.kv.length) != e:
+            eng.resume_at(e)               # the read stopped where the next prompt parts: the rows above are not kept
         if drafter is not None and hasattr(drafter, "state_resume"):
             # the drafter at the end, as a resume there puts it (`resume_end`): its rows valid to the last one, the
             # last row's streams held for the next token, so a session snapshot covers the answer. The rows the read
@@ -2261,8 +2279,8 @@ class ResidentPrefix:
         self.stats["end_rereads"] = self.stats.get("end_rereads", 0) + 1
         self.stats["end_reread_rows"] = self.stats.get("end_reread_rows", 0) + (e - start)
         self.stats["end_reread_ms"] = round(self.stats.get("end_reread_ms", 0.0) + ms, 1)
-        self.stats["end_reread_last"] = {"rows": e - start, "answer_rows": e - n, "from": how, "at": start,
-                                         "end": e, "ms": round(ms, 1)}
+        self.stats["end_reread_last"] = {"rows": e - start, "answer_rows": e - n, "answer": answer, "held": e - n,
+                                         "from": how, "at": start, "end": e, "ms": round(ms, 1)}
         return "read"
 
     def _unread(self, why: str) -> None:
@@ -3177,7 +3195,8 @@ class ResidentPrefix:
             out, spans = ResidentPrefix.replay(_EndRows(pe, self.park_tokens, self.glue), list(ids))
             if spans and len(out) > e:
                 return True
-        if self.park_align is None:
+        if self.park_align is None or self.end_reread:
+            # an end read's end is served only to a copy that holds its rows: an aligned copy is not a cold read's
             return False
         try:
             return bool(self.park_align(self.park_tokens, pe, self.park_regions, list(ids)))

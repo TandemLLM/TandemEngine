@@ -4394,17 +4394,83 @@ def _reread_gate(cid: str | None):
     return gate, held
 
 
+def _next_rows(turn, committed: list[int], n_p: int) -> tuple[int | None, str]:
+    """Where the next turn's prompt parts from this turn's rows, as the template renders the conversation: the
+    request's messages, this answer as the client gets it back (its text split as the response splits it, its calls
+    parsed, its reasoning as `reasoning_content`), then a next message (the calls' results, else a user's), rendered by
+    `build_prompt` with this request's thinking, effort and tools. The rows are compared from the prompt's end on (the
+    answer's region; the served prompt may hold spans the client never sent), as the end anchor's own test compares a
+    copy (`_shared_head`, the "re-read ahead ... parts from the end anchor's rows" line). `(position, why)`; None: the
+    next prompt holds the whole answer (a completion's text, a continued answer, no request to render).
+
+    Hy4-flash's template drops an earlier answer's reasoning unless `preserved_thinking` (on by default when tools are
+    passed) and the client sends it back, and keeps the reasoning of the answers after the last user message (a tool
+    chain's). Whether the client sends it back is read from this request: an earlier answer that carries `reasoning`
+    or `reasoning_content` says it does; earlier answers that all lack it say it does not; with none (a first turn)
+    the answer goes back as the server gave it, its reasoning included. A wrong guess costs time, never exactness:
+    the end kept is served only to a copy that holds its rows."""
+    if turn is None:
+        return None, "no request"
+    body, client, left_out = turn
+    if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
+        return None, "a completion"
+    msgs = list(body["messages"])
+    if not msgs or continues_final(body, msgs):
+        return None, "a continued answer"
+    tok = STATE["tok"]
+    gen = [int(t) for t in committed[n_p:]]
+    in_think = opens_think(tok.decode([int(t) for t in committed[max(0, n_p - 8):n_p]], skip_special_tokens=False))
+    text = tok.decode(gen, skip_special_tokens=True)
+    head, answer = _reasoning_head(text, in_think)
+    calls: list = []
+    mode, _ = compat.tool_choice(body)
+    if body.get("tools") and mode != "none":
+        ended = bool(gen) and gen[-1] in eos_ids(body)
+        answer, calls = parse_tool_calls(rewrite_native(answer, _tool_format(), eos=ended), eos=ended)
+    off_mode = bool(getattr(client, "off", False)) and not in_think
+    moved = off_full(head + answer, "reasoning_content") if off_mode else None
+    content, reasoning = moved if moved is not None else split_full(
+        head + answer, "reasoning_content", in_think=in_think,
+        self_open=_spec().reasoning.opens_itself or off_mode)
+    prev = [m for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"]
+    echo = not prev or any(m.get("reasoning") or m.get("reasoning_content") for m in prev)
+    reply: dict = {"role": "assistant", "content": content or ""}
+    if calls:
+        reply["tool_calls"] = [dict(c, id=c.get("id") or f"call_{i}") for i, c in enumerate(calls)]
+    if reasoning and echo:
+        reply["reasoning_content"] = reasoning
+    after = ([{"role": "tool", "tool_call_id": c["id"], "content": "."} for c in reply["tool_calls"]] if calls
+             else [{"role": "user", "content": "."}])
+    cur = build_prompt(body, client, count="ids", left_out=left_out)
+    nxt = build_prompt(dict(body, messages=msgs + [reply] + after), client, count="ids", left_out=left_out)
+    k = _shared_head(nxt, cur)
+    if k < len(cur):
+        return n_p, f"the next prompt parts inside this one (token {k} of {len(cur)})"
+    g = _shared_head(nxt[len(cur):], gen)
+    why = ("it holds the whole answer" if g >= len(gen) else "it parts at the prompt end" if g == 0 else
+           f"it parts {g} tokens into the answer")
+    return n_p + g, why + ("" if echo or not reasoning else "; the client sends no reasoning back")
+
+
 def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: list, served_hidden,
-                cid: str | None = None) -> str:
+                cid: str | None = None, turn=None) -> str:
     """A turn's close on a family that reads its end again (`Capabilities.reread_end`): a guest on a side slot
     promoted first (SPD-257, as below), then the answer's rows read again on the prompt pass (`reread_end`, under the
     memory gate, the GPU turn offered between chunks as a prefill offers it), then the session snapshot and the end
     anchor of that read's state (`keep_end(reread=True)`). Where the read did not run, nothing is kept: no session
-    snapshot, no end; the next turn resumes at the prompt end. Returns what `keep_end` said."""
+    snapshot, no end; the next turn resumes at the prompt end. `turn` (the request's body, thinking and left-out
+    images): the read stops where the next prompt parts from the rows (`_next_rows`); an answer it holds none of is not
+    read ("skip"). One line says the turn's close: what was read, the rows and the milliseconds. Returns what
+    `keep_end` said."""
     eng, drafter = STATE["engine"], STATE["drafter"]
     res = STATE.get("resident")
     store = STATE.get("state_store")
     t0 = time.perf_counter()
+    try:
+        upto, parts = _next_rows(turn, committed, n_p)
+    except Exception:                                              # noqa: BLE001
+        logbuf.print_exc()
+        upto, parts = None, "not rendered"
     if getattr(res, "_stash", None) is not None and _guest_promotes(res, committed, conv_id):
         old_valid, old_owner = int(res.valid), res.owner
         if res.promote_guest(eng, drafter, committed, n_p, conv_id) and STATE.get("verbose"):
@@ -4414,9 +4480,10 @@ def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: lis
     pool = dict.get(STATE, "pool")
     hook = _par_chunks(None) if pool is not None else None
     try:
-        with _prefill_mark(max(0, min(len(committed), int(eng.kv.length)) - n_p)):
+        top = min(len(committed), int(eng.kv.length))
+        with _prefill_mark(max(0, (top if upto is None else min(top, int(upto))) - n_p)):
             how = res.reread_end(eng, drafter, committed, n_p, device=STATE.get("device"), on_chunk=hook,
-                                 gate=gate)
+                                 gate=gate, upto=upto)
     finally:
         if held:
             dict.get(STATE, "mem").prefill_done()      # its workspace leaves the policy's prefills in flight
@@ -4441,10 +4508,12 @@ def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: lis
     if al is not None:
         al.kept(res, n_p, why)
     last = (res.stats.get("end_reread_last") or {}) if read else {}
-    print(f"[cache] {cid or '-'} end re-read: {how}"
-          + (f", {last.get('rows')} rows ({last.get('answer_rows')} of the answer) from the {last.get('from')} at "
-             f"{last.get('at')} in {(t_read - t0) * 1e3:.1f} ms" if read else "")
-          + f"; end {why}; close {(time.perf_counter() - t0) * 1e3:.1f} ms", flush=True)
+    answer = max(0, top - n_p)
+    kept = answer if upto is None else max(0, min(answer, int(upto) - n_p))
+    print(f"[cache] {cid or '-'} end re-read: {how}, {int(last.get('rows') or 0)} rows in {(t_read - t0) * 1e3:.1f} ms"
+          + (f" from the {last.get('from')} at {last.get('at')}" if read else "")
+          + f"; the next prompt holds {kept} of the answer's {answer} rows ({parts}); end {why}; "
+          f"close {(time.perf_counter() - t0) * 1e3:.1f} ms", flush=True)
     if slots_mod.current() is not None:
         _side_note_end(res, why, conv_id)
     return why
@@ -4452,7 +4521,8 @@ def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: lis
 
 def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | None,
                    mm=None, hidden=(), delta: int = 0, served_hidden=None, cold: bool = False,
-                   learn: bool = True, own: bool = False, defer: bool = False, cid: str | None = None) -> None:
+                   learn: bool = True, own: bool = False, defer: bool = False, cid: str | None = None,
+                   turn=None) -> None:
     """After a turn: keep the state it ended in, and add its tokens to the suffix store.
 
     `learn` (SPD-151): False leaves the suffix store as it was (`suffix_learns`: a request that
@@ -4482,6 +4552,7 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
     snapshot and the end anchor are kept after the answer's rows were read again on the prompt pass
     (`_close_read`). `defer` (the handler's call): that close waits for the response to be out
     (`_turn_close`, in the handler's `finally`); without it, it runs here. `cid`: the request's id, for its line.
+    `turn`: `(body, thinking, left-out images)`, for where the next prompt parts from the rows (`_next_rows`).
     Every other family keeps what it kept before, here, whatever `defer` says.
     """
     eng, drafter = STATE["engine"], STATE["drafter"]
@@ -4502,7 +4573,7 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
         if (res is not None and getattr(res, "end_on", False) and committed and mm is None and not delta):
             n_p = int(STATE.get("last_prompt_n") or 0)
             spans = list(hidden) + list(STATE.get("hidden_spans") or [])
-            job = functools.partial(_close_read, list(committed), conv_id, n_p, spans, served_hidden)
+            job = functools.partial(_close_read, list(committed), conv_id, n_p, spans, served_hidden, turn=turn)
             if defer:
                 if getattr(_CLOSE, "job", None) is not None:
                     res.stats["end_close_dropped"] = res.stats.get("end_close_dropped", 0) + 1   # a later choice's
@@ -12041,7 +12112,7 @@ class Handler(BaseHTTPRequestHandler):
                                   served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
                                   learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")),
-                                  defer=True, cid=cid)
+                                  defer=True, cid=cid, turn=(body, client, left_out))
                         if rkey is not None and not ci and not (sup is not None and sup.acted) \
                                 and not mem_taken[0]:
                             rcache.put(rkey, ids, prompt_ids)
@@ -12691,7 +12762,7 @@ class Handler(BaseHTTPRequestHandler):
                           served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
                                   learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")),
-                                  defer=True, cid=cid)
+                                  defer=True, cid=cid, turn=(body, client, left_out))
                 if rkey is not None and not (sup is not None and sup.acted) and \
                         not mem_taken[0]:
                     rcache.put(rkey, ids, prompt_ids)

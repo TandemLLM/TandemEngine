@@ -187,11 +187,11 @@ SAME_ROWS = {("engine/loader.py", "823f9dd4c230ec45d133b52e0a5edc0343098184526d9
              "fa037990b84862bdbae21a389095978c5dd853cf9ea93b488db6ba9b0712bffe",
              # SRV-911: the end read again (`ResidentPrefix.reread_end`, a family's `Capabilities.reread_end`): which
              # rows a family with the flag keeps as its end; every family without it runs the lines it ran, no row
-             ("engine/cache.py", "ee71d798e5c451351133ab3a1225eb9436e0b01f4ce9952f7f9be17c6a78f34f"):
+             ("engine/cache.py", "78442637eb7752b362a5bddcd7712568d6d4542d2af147196038746022e9586e"):
              "b6d30d155f5b79d6e440e9aac934d6ba1d7b74cb01184bbda0f811ca70b40523",
              # SRV-911: the spill carries the end read's `exact` mark with an end and refuses an end without it on such
              # a family; the rows it writes and reads are the same
-             ("engine/spill.py", "e17aee1ad4765b20a6d3ea282aa840da6938bfbf4984be365d0c9b217a395a31"):
+             ("engine/spill.py", "478ddff754756e06c03224865bfb5790882969ceb42d8ed2a35f5d59bd8d3394"):
              "9e3cd7229aa7d241ce50530082656d84a89088cc2575591195dfdc0dd14f7236",
              # SRV-911: QWEN38_END_REREAD, read only for a family with `Capabilities.reread_end` (whether its end read
              # runs); no row of any family moves (the knobs' digest, as `disk_cache._arithmetic_knobs` reads them)

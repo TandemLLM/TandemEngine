@@ -175,11 +175,13 @@ class EndAlign:
 
     def replay(self, res, ids: list[int]) -> tuple[list[int], list, int]:
         """`(ids, hidden spans put back, tokens aligned)`: `res.replay`'s answer when it has one
-        (or when off), else the copy aligned to the rows where only whitespace differs."""
+        (or when off), else the copy aligned to the rows where only whitespace differs. A resident prefix that reads
+        its end again (`end_reread`) is never aligned: its end is a cold read's state for the copy that holds its rows,
+        and a copy that differs from them reads its tokens from the last exact point below."""
         out, spans = res.replay(ids)
         aligned = 0
         self.last_omitted, self.last_partial = [], None
-        if not spans and self.on and res.end is not None:
+        if not spans and self.on and res.end is not None and not getattr(res, "end_reread", False):
             got = self._align(res, ids)
             if got is not None:
                 out, aligned = got
