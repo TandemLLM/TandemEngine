@@ -10,6 +10,7 @@ restart" until the engine has restarted with it.
     rows = view(STATE)          # the panel: value, source, live or restart, usage against it
     refresh(STATE)              # at the start of a request: a new document version applies
     overrides_at_start(a, doc)  # before the load: the document's values over the flags
+    start_line(head, STATE, tail)  # OPS-310: the one start line with every limit the engine runs with
 
 Nothing here allocates or frees memory itself: `refresh` hands the new caps to the objects that
 hold the bytes (engine/cache.py), and they give back what is over a lower cap.
@@ -67,6 +68,64 @@ def flag_value(args: dict, key: str):
     if key == "NARROW_ARM":
         return 1 if v in (None, "on", True, 1) else 0
     return v
+
+
+def running(state: dict) -> dict:
+    """OPS-310: key -> what each limit of the table runs with once the engine has loaded: a live key's value as the
+    residency document applied it (`limits_applied`), else the flag the start passed (after the model's own
+    limits, e.g. a pack's ceiling and peak); PREFIX_CHUNK the model's own grid where it has one. MEM_CEILING_GIB and
+    MEM_PEAK_GIB are the memory policy's own, with what the side slots, a window above LIMITS_WINDOW and the KV
+    pool moved them by (`Budget.ceiling`, `peak`), in GiB; `off` without a policy."""
+    args = state.get("args") or {}
+    applied = state.get("limits_applied") or {}
+    mem = state.get("mem")
+    on = mem is not None and bool(getattr(mem, "on", False))
+    grid = state.get("anchor_grid")
+    out = {}
+    for key, _dest, _unit, live, _what in LIMITS:
+        v = applied.get(key, flag_value(args, key)) if live else flag_value(args, key)
+        if key == "PREFIX_CHUNK" and grid:
+            v = int(grid)
+        if key == "MEM_CEILING_GIB":
+            out["MEM_CEILING_GIB_SET"] = v
+            v = round(mem.ceiling / GIB, 2) if on else "off"
+        elif key == "MEM_PEAK_GIB":
+            out["MEM_PEAK_GIB_SET"] = v
+            v = round(mem.peak / GIB, 2) if on else "off"
+        out[key] = v
+    return out
+
+
+def _text(v) -> str:
+    if v is None:
+        return "-"
+    if isinstance(v, bool):
+        return "on" if v else "off"
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v).replace(" ", "_") or "-"
+
+
+def start_line(head: dict, state: dict, tail: dict) -> str:
+    """OPS-310 (benchmarking rule 5: every limit knob in a result's record, defaults included): one start line,
+    `[limits] KEY=value ...`, with `head` (the lanes and their windows, the KV pool), every key of the limits
+    table as it runs (`running`) and `tail` (the caches, the effort, the drafter, the runner, the queue, the
+    model family's own knobs), in that order. None is `-`, a bool on or off; a value carries no space."""
+    parts = dict(head)
+    parts.update(running(state))
+    parts.update(tail)
+    return "[limits] " + " ".join(f"{k}={_text(v)}" for k, v in parts.items())
+
+
+def family_knobs(described: dict, package: str | None) -> dict:
+    """OPS-310: the knobs a model family's own code reads (engine/settings.py `SETTINGS.describe()`, whose
+    `read_in` names the file), as QWEN38_<name> -> the value in force, for the family whose code is under
+    `engine/<package>/`; none without a package."""
+    if not package:
+        return {}
+    where = f"engine/{package.strip('/')}/"
+    return {f"QWEN38_{k}": d["value"] for k, d in sorted(described.items())
+            if str(d.get("read_in") or "").startswith(where)}
 
 
 def doc_section(doc: dict | None) -> dict:
