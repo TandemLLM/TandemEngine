@@ -266,6 +266,9 @@ def test_on_with_no_task_answers_what_raw_answers_over_the_handler():
     bodies = {}
     for mode in ("raw", "on"):
         serve(FixedDrafter(97, 5, tree_mode=False))
+        # the answer reserve off (--answer-reserve 0): at 24 tokens it lowers --think-budget's 4 to 1 (ENG-468 /
+        # M1.5), and a lowered cap closes as a client budget's does, hidden where a monitor acts (docs/server.md)
+        app.STATE["answer_reserve"] = 0
         app.STATE["tok"] = MonTok()
         app.STATE["think_budget"] = 4
         app.STATE["monitor"] = monitor(mode, {}) if mode == "on" else None
