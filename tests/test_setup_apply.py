@@ -59,6 +59,9 @@ The test matrix:
      the estimate counts 14,784 KV bytes a token instead of 28,672        test_flints_fp8_cache_switch
  16  SPD-150, every model's e4m3 cache switch: off by default, one registered QWEN38_ knob, the estimate's bytes
      a token on and off for each model that has one                    test_every_fp8_cache_switch
+ 17  SRV-915: an apply keeps the run/setup.env keys no registry entry, serve.env, profile or start.sh names
+     (QWEN38_NOTES_HEAD), across a switch and back; never another model's knob, a serve.env limit, a secret, or
+     anything when a registry file did not load               test_an_apply_keeps_the_keys_no_owner_names
 
 Run: python tests/test_setup_apply.py
 """
@@ -808,6 +811,56 @@ class FakeWren:
 
     def status(self):
         return {"name": "Wren", "state": "not_loaded"}
+
+
+def test_an_apply_keeps_the_keys_no_owner_names():
+    """SRV-915: an apply rewrote run/setup.env from the registry's keys and dropped QWEN38_NOTES_HEAD, a key the
+    owner set by hand that no model.yaml declares. The next file keeps such a key, in its own quotes, once, also
+    across a model switch and a second apply, and the plan lists no change for it. Not carried: a key another
+    model's registry entry owns (Flash-Next's QWEN38_FN_KV_FP8 after a switch to Hy4-flash), a key the release's
+    serve.env, a profile or start.sh names (MEM_CEILING_GIB and MEM_PEAK_GIB, a pack's limits set by hand, come
+    back to serve.env's after a switch to Flash-Next), a secret-looking name, and nothing at all when a registry
+    file did not load."""
+    hy4, fn = registry.get("hy4-flash"), registry.get("qwen3.8-flash-next")
+    hy4_sel = estimate.check(hy4, {"model": hy4["id"]})
+    fn_sel = estimate.check(fn, {"model": fn["id"]})
+    fn_fp8 = estimate.check(fn, {"model": fn["id"], "components": dict(fn_sel["components"], kv_fp8=True)})
+    hand = ("QWEN38_NOTES_HEAD='on'\nQWEN38_NOTES_HEAD_ORDER=index\nMEM_CEILING_GIB='85'\nMEM_PEAK_GIB='92'\n"
+            "QSE_ADMIN_TOKEN='s3cret-value'\n")
+    with Box(on_disk=()):
+        # Hy4-flash's file from the guide, the owner's keys added by hand, then a switch to Flash-Next
+        apply.write_overlay(hy4, hy4_sel)
+        with open(apply.overlay_path(), "a") as fh:
+            fh.write(hand)
+        assert apply.carried_values() == {"QWEN38_NOTES_HEAD": ("on", "'"), "QWEN38_NOTES_HEAD_ORDER": ("index", "")}
+        by = {c["key"]: c for c in apply.plan(fn, fn_sel, setup_mode=False, password_set=False)["changes"]}
+        assert "QWEN38_NOTES_HEAD" not in by and "QWEN38_NOTES_HEAD_ORDER" not in by, sorted(by)
+        # the limit Flash-Next's own profile or serve.env sets, not the 85 a hand gave Hy4-flash
+        own = apply.resolve_env(["MEM_CEILING_GIB"], profile=fn_sel["profile"], overlay=os.devnull)["MEM_CEILING_GIB"]
+        assert own != "85" and by["MEM_CEILING_GIB"]["removed"] and by["MEM_CEILING_GIB"]["next"] == own, \
+            (own, by["MEM_CEILING_GIB"])
+        apply.write_overlay(fn, fn_fp8)
+        text = open(apply.overlay_path()).read()
+        assert "\nQWEN38_NOTES_HEAD='on'\n" in text and "\nQWEN38_NOTES_HEAD_ORDER='index'\n" in text, text
+        assert "MEM_CEILING_GIB" not in text and "MEM_PEAK_GIB" not in text and "s3cret" not in text, text
+        got = apply.resolve_env(["QWEN38_NOTES_HEAD", "QWEN38_NOTES_HEAD_ORDER", "QWEN38_FN_KV_FP8"])
+        assert got == {"QWEN38_NOTES_HEAD": "on", "QWEN38_NOTES_HEAD_ORDER": "index", "QWEN38_FN_KV_FP8": "1"}, got
+        # back to Hy4-flash: Flash-Next's own knob stays with Flash-Next, the owner's keys stay, once each
+        apply.write_overlay(hy4, hy4_sel)
+        apply.write_overlay(hy4, hy4_sel)
+        text = open(apply.overlay_path()).read()
+        assert "QWEN38_FN_KV_FP8" not in text, text
+        assert text.count("QWEN38_NOTES_HEAD=") == 1 and text.count("QWEN38_NOTES_HEAD_ORDER=") == 1, text
+        assert apply.resolve_env(["QWEN38_NOTES_HEAD"]) == {"QWEN38_NOTES_HEAD": "on"}
+        # a registry file that did not load: an owner may be missing, so nothing is carried
+        load_all = registry.load_all
+        registry.load_all = lambda *a, **k: (load_all(*a, **k)[0], [{"path": "models/x/model.yaml", "message": "bad"}])
+        try:
+            assert apply.carried_values() == {}
+            assert "QWEN38_NOTES_HEAD" not in apply.render_overlay(hy4, hy4_sel)
+        finally:
+            registry.load_all = load_all
+    return "the owner's keys kept across a switch and back; another model's knob, serve.env's limits, a secret: not"
 
 
 def test_flints_fp8_cache_switch():

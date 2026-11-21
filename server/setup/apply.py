@@ -181,7 +181,66 @@ def render_overlay(m: dict, sel: dict, when: str | None = None) -> str:
     # _value_ok refuses quotes, backslashes, backticks and every other $ in a value
     for key, v in _without_unset_defaults(overlay_values(m, sel), sel["profile"]).items():
         lines.append(f'{key}="{v}"' if "${HOME}" in v else f"{key}='{v}'")
+    kept = carried_values()
+    if kept:
+        lines.append("# Kept from the run/setup.env before (SRV-915): keys no model's registry entry, ops/serve.env, a")
+        lines.append("# weight profile or ops/start.sh names; the next apply keeps them again.")
+        lines += [f"{key}='{v}'" if q == "'" or "${HOME}" not in v else f'{key}="{v}"'
+                  for key, (v, q) in kept.items()]
     return "\n".join(lines) + "\n"
+
+
+def owned_keys() -> set | None:
+    """SRV-915: the keys an apply writes or leaves to their owner: every key a model's registry entry names
+    (`registry.env_keys`, any model's: another model's knob is not carried across a switch), and every key the
+    release's own ops/serve.env, a weight profile or ops/start.sh names (`registry.serve_env_keys`: the memory
+    limits, a profile's MAX_LEN or its runner pipe are the profile layer's, and a model switch picks them again).
+    None when a registry file did not load: an owner may be missing, so nothing is carried."""
+    models, errors = registry.load_all()
+    if errors:
+        return None
+    owned: set = set()
+    for model in models.values():
+        owned |= set(registry.env_keys(model))
+    try:
+        owned |= registry.serve_env_keys(ops=device_mod.ops_dir(), profiles=device_mod.repo_ops())
+    except OSError:
+        return None
+    return owned
+
+
+_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+
+
+def carried_values(path: str | None = None) -> dict:
+    """SRV-915: key -> (value, its quote) of the run/setup.env in place (`path`, else the overlay) that the next one
+    keeps: the keys no owner names (`owned_keys`), set there by hand (QWEN38_NOTES_HEAD, a TandemApp router knob), in
+    their order, the last value of a key; a single-quoted value stays single-quoted, so a `${HOME}` in it stays as
+    it was. Never a secret-looking name (secrets.env holds those), and never a value `_value_ok` refuses after its
+    quotes come off: the overlay stays one plain line a key."""
+    owned = owned_keys()
+    if owned is None:
+        return {}
+    try:
+        with open(path or overlay_path()) as fh:
+            text = fh.read()
+    except OSError:
+        return {}
+    out: dict = {}
+    for line in text.splitlines():
+        m = _LINE.match(line.strip())
+        if m is None:
+            continue
+        key, raw = m.group(1), m.group(2).strip()
+        if key in owned or SECRET_KEY.search(key):
+            continue
+        quote = ""
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+            quote, raw = raw[0], raw[1:-1]
+        if _value_ok(raw):
+            out.pop(key, None)
+            out[key] = (raw, quote)
+    return out
 
 
 def _without_unset_defaults(values: dict, profile: str | None = None) -> dict:

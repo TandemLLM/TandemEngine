@@ -906,15 +906,19 @@ def env_keys(m: dict) -> dict[str, str]:
 _ASSIGN = re.compile(r"^\s*#?\s*([A-Z][A-Z0-9_]*)=", re.M)
 
 
-def serve_env_keys(root: str | None = None) -> set[str]:
+def serve_env_keys(root: str | None = None, ops: str | None = None, profiles: str | None = None) -> set[str]:
     """The keys ops/serve.env and the profiles assign, commented-out template lines included
-    (`#QSE_KV_POOL=on` documents a key the scripts read), plus the keys ops/start.sh reads."""
+    (`#QSE_KV_POOL=on` documents a key the scripts read), plus the keys ops/start.sh reads. `ops`: the
+    folder of serve.env and start.sh, `profiles`: the folder of profiles/ (an install.sh box keeps them
+    apart, server/setup/device.py `repo_ops`); both default to `root`'s ops/."""
     r = root or ROOT
+    ops = ops or os.path.join(r, "ops")
+    profiles = profiles or ops
     keys = set()
-    for p in [os.path.join(r, "ops", "serve.env")] + glob.glob(os.path.join(r, "ops", "profiles", "*.env")):
+    for p in [os.path.join(ops, "serve.env")] + glob.glob(os.path.join(profiles, "profiles", "*.env")):
         with open(p) as fh:
             keys |= set(_ASSIGN.findall(fh.read()))
-    with open(os.path.join(r, "ops", "start.sh")) as fh:
+    with open(os.path.join(ops, "start.sh")) as fh:
         keys |= set(re.findall(r"\$\{?([A-Z][A-Z0-9_]*)", fh.read()))
     return keys
 
