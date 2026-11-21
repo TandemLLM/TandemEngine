@@ -7398,70 +7398,56 @@ def roles_report() -> dict:
     return out
 
 
-def _kv_after_load(a, own: dict | None = None) -> None:
+def _kv_after_load(a) -> None:
     """After slot 0's engine and drafters exist: the memory policy no longer holds slot 0's
     window (its pages are the pool's now, outside the allocator), and the reclaimers in order.
-    `own`: the limits the model's builder set from its load (`_build_with_limits`), none by default.
 
     OPS-308, the one rule (server/memlimits.py `limit_of`): the policy enforces a figure plus `fixed`, the bytes the
-    engine holds for good beyond what a configured figure counts. A configured ceiling and peak (serve.env's, a
-    profile's, the residency document's) count slot 0's window at LIMITS_WINDOW as allocator memory, and the pool
-    now holds it outside the allocator the policy measures: `fixed` goes down by it, and so do they. A limit the
-    model's builder set from what the allocator held after its load was measured with the window already the pool's
-    and holds none of it: it keeps the window (`own_basis`), at the start and whenever the refresh falls back to it."""
+    engine holds for good beyond what the figure counts. Every figure (serve.env's, a weight profile's, the
+    residency document's) counts slot 0's window at LIMITS_WINDOW as allocator memory, and the pool now holds it
+    outside the allocator the policy measures: `fixed`, the ceiling and the peak go down by it."""
     pool = kvpool.POOL
     eng = dict.get(STATE, "engine")
     pages = getattr(getattr(eng, "kv", None), "pages", None)
     if pool is None or pages is None:
-        _window_above_limits(a, eng, own)
+        _window_above_limits(a, eng)
         return
     static = sum(b.nbytes for b in pages.bufs)
     mem = dict.get(STATE, "mem")
     if mem is not None and mem.on:
-        own = own or {}
-        cut = {d: 0 if d in own else static for d in ("mem_ceiling_gib", "mem_peak_gib")}
         mem.fixed -= static
-        mem.ceiling -= cut["mem_ceiling_gib"]
-        mem.peak -= cut["mem_peak_gib"]
-        memlimits.set_own_basis(mem, {d: static for d in cut if d in own})
-        print(f"[kv-pool] memory policy: ceiling -{_gib(cut['mem_ceiling_gib'])} and peak "
-              f"-{_gib(cut['mem_peak_gib'])} GiB (slot 0's window of {_gib(static)} GiB is the pool's now"
-              + ("; the model's own limits were set from its load without it" if own else "")
-              + f"): {_gib(mem.ceiling)} / {_gib(mem.peak)} GiB", flush=True)
+        mem.ceiling -= static
+        mem.peak -= static
+        print(f"[kv-pool] memory policy: ceiling and peak -{_gib(static)} GiB (slot 0's window is "
+              f"the pool's now): {_gib(mem.ceiling)} / {_gib(mem.peak)} GiB", flush=True)
     _add_kv_reclaimers(pool)
     print(f"[kv-pool] on: slot 0 window {eng.kv.max_len:,} rows reserved as "
           f"{_gib(static)} GiB of addresses, page {pages.bufs[0].page >> 20} MiB, hard floor "
           f"{_gib(pool.hard_floor)} GiB, margin {pool.margin_rows} rows", flush=True)
 
 
-def _window_above_limits(a, eng, own: dict | None = None) -> None:
+def _window_above_limits(a, eng) -> None:
     """ENG-363: slot 0's window above the one the limits are set at (memlimits.LIMITS_WINDOW) holds
     its KV from the load on when the pool is off: the policy's ceiling and peak go up by the KV of
     the rows above it, as they do for the side slots, so the caches are not shed and a long prefill
-    not refused for slot 0's own window (Super VL at 1,048,576 tokens: +6 GiB). OPS-308: a limit the model's
-    builder set from its load (`own`) was measured with the whole window in the allocator: it takes none of it."""
+    not refused for slot 0's own window (Super VL at 1,048,576 tokens: +6 GiB)."""
     mem = dict.get(STATE, "mem")
     if mem is None or not mem.on or eng is None:
         return
     extra = int(eng.cost().view_bytes_per_token) * max(0, int(a.max_len) - memlimits.LIMITS_WINDOW)
     if extra <= 0:
         return
-    own = own or {}
-    up = {d: 0 if d in own else extra for d in ("mem_ceiling_gib", "mem_peak_gib")}
     mem.fixed += extra             # kept when a residency document sets the limits again
-    mem.ceiling += up["mem_ceiling_gib"]
-    mem.peak += up["mem_peak_gib"]
-    memlimits.set_own_basis(mem, {d: -extra for d in up if d in own})
-    print(f"[memory] ceiling +{_gib(up['mem_ceiling_gib'])} and peak +{_gib(up['mem_peak_gib'])} GiB for slot 0's "
-          f"window above {memlimits.LIMITS_WINDOW:,} tokens"
-          + (" (the model's own limits were set from its load with it)" if own else "")
-          + f": {_gib(mem.ceiling)} / {_gib(mem.peak)} GiB", flush=True)
+    mem.ceiling += extra
+    mem.peak += extra
+    print(f"[memory] ceiling and peak +{_gib(extra)} GiB for slot 0's window above "
+          f"{memlimits.LIMITS_WINDOW:,} tokens: {_gib(mem.ceiling)} / {_gib(mem.peak)} GiB", flush=True)
 
 
 def _side_slots_policy(added_a: int, added_r: int) -> None:
     """The side slots of `--parallel N` hold what their build added for good (`_build_side_slots`): the larger of
-    the allocated and the reserved bytes it added goes into the memory policy's fixed bytes, its ceiling and peak,
-    for a configured figure and the model's own alike (OPS-308: server/memlimits.py `limit_of`)."""
+    the allocated and the reserved bytes it added goes into the memory policy's fixed bytes, its ceiling and peak
+    (OPS-308: server/memlimits.py `limit_of`)."""
     mem = dict.get(STATE, "mem")
     if mem is None or not mem.on:
         return
@@ -13963,25 +13949,21 @@ def _limits_at_start(a) -> None:
             print(f"[memory] the residency document's limits were not read: {exc}", flush=True)
 
 
-#: the memory limits a family's builder may set for its own pack (Hy4-flash: serving.memory_limits)
-#: SRV-907: and the state store's entry cap (Hy4-flash's builder sets its own when the start names the default)
-BUILDER_LIMITS = ("mem_ceiling_gib", "mem_peak_gib", "store_entry_gb")
+#: SRV-907: the limits a family's builder may set for its own pack: the state store's entry cap (Hy4-flash's builder
+#: sets its own when the start names the default). OPS-308: never the memory ceiling and peak, which are the weight
+#: profile's (ops/profiles/<pack>.env) for every family; Hy4-flash's builder set them from its load until then
+BUILDER_LIMITS = ("store_entry_gb",)
 
 
-def _build_with_limits(build, a, ctx, own: dict | None = None) -> dict:
-    """The model's builder; a memory limit it sets for its own pack becomes the flag the server falls back to.
-    A request's refresh of the residency limits (server/memlimits.py) and the memory panel read the flags as
-    started (STATE["serve_flags"], taken before the load): without this, the first request in chat mode took
-    the cache policy back to serve.env's 70 GiB under a Hy4-flash 3.56 load of 72.7 GiB, and every save was
-    refused. A key the residency document sets still wins over it. `own` (a dict, `_load`'s) gets the limits the
-    builder set, for `_kv_after_load`: start-time only, never the request path's state."""
+def _build_with_limits(build, a, ctx) -> dict:
+    """The model's builder; a limit it sets for its own pack (`BUILDER_LIMITS`) becomes the flag the server falls
+    back to. A request's refresh of the residency limits (server/memlimits.py) and the memory panel read the flags
+    as started (STATE["serve_flags"], taken before the load); a key the residency document sets still wins."""
     before = {d: getattr(a, d, None) for d in BUILDER_LIMITS}
     m = build(a, ctx)
     flags = STATE.get("serve_flags")
     for d, was in before.items():
         now = getattr(a, d, None)
-        if now != was and own is not None:
-            own[d] = now          # `_kv_after_load`: set from the load, with slot 0's window already the pool's
         if now != was and flags is not None:
             flags[d] = now
             print(f"[memory] {d} {was:g} -> {now:g}: the model's own limit for its pack", flush=True)
@@ -14122,8 +14104,7 @@ def _load(a) -> None:
     build = arch.serve_builder()
     if build is None:
         raise SystemExit(f"[server] the {arch.name} family names no builder (engine/models: Arch.serve)")
-    own = {}                                    # the limits the builder set from its load (`_kv_after_load`)
-    m = _build_with_limits(build, a, ctx, own)
+    m = _build_with_limits(build, a, ctx)
     eng, tok, drafter = m["engine"], m["tok"], m["drafter"]
     global IDLE_CAPTURE_FAILED
     IDLE_CAPTURE_FAILED = _idle_capture_failed(eng)         # SPD-271: `graphs_once` prints it once, no traceback
@@ -14178,7 +14159,7 @@ def _load(a) -> None:
     if n_g is not None:
         print(f"[server] verify graphs: {n_g} captured in {time.time() - t_g:.1f}s", flush=True)
     led.mark("graphs")
-    _kv_after_load(a, own)
+    _kv_after_load(a)
     if eng.kv.pages is not None:
         # the warm-up's and the captures' rows are nobody's conversation
         eng.kv.pages.trim(_kv_keep_rows(eng, STATE.get("resident")))

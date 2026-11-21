@@ -254,9 +254,6 @@ def test_the_price_class_follows_the_context():
         if was is not None:
             os.environ["QSE_WEIGHTS"] = was
     assert os.path.isfile(os.path.join(root, "ops", "prices", "hy4-flash", "hy4-3.08.dgx-spark.json"))
-    # the limits a start without its own takes: the 3.08 pack at 262,144 tokens holds 63.9 GiB, 8.66 more at 3.5 bits
-    from engine.models.hy4_flash.serving import memory_limits
-    assert memory_limits(63.9) == (76.0, 83.0) and memory_limits(63.9 + 8.66) == (85.0, 92.0)
     return f"dense below {k} rows: class 0; then the next 4,096 x 2^k, up to 262,144; the frozen cut is priced in all {len(PRICE_CLASSES)}"
 
 
@@ -342,65 +339,6 @@ def test_the_caps_carry_the_conductor_fit():
     assert Hy4FlashServing.caps.conductor == {"notes": False} == FlintServing.caps.conductor
     # ENG-485: side slots whose lanes take turns
     assert Hy4FlashServing.caps.side_slots and not Hy4FlashServing.caps.joint_verify and Hy4FlashServing.caps.caches
-
-
-def test_the_packs_limits_reach_the_cache_policy():
-    """A start on serve.env's 70 and 77 GiB takes the pack's limits (serving.memory_limits over what the load holds),
-    and they stay the cache policy's after a request refreshes the residency limits (server/memlimits.py), which
-    falls back to the flags as started. On the 3.56 pack in chat mode the refresh took the ceiling back to 70 GiB
-    under 72.69 GiB allocated, and every save was refused. A ceiling the residency document sets still wins."""
-    import types
-
-    from engine.models.hy4_flash.serving import SERVER_LIMITS, memory_limits
-    from server import app as A
-    from server import ext as ext_mod
-    from server import memlimits
-    gib = 1 << 30
-    held = 72.69                                         # allocated after the 3.56 pack's load at 262,144 tokens
-    keys = ("serve_flags", "args", "mem", "limits_version", "limits_applied")
-    keep = {k: A.STATE.get(k) for k in keys}
-    doc = ext_mod.document
-
-    def build(a, ctx):                                   # serve()'s rule, on the device's figure
-        if (a.mem_ceiling_gib, a.mem_peak_gib) == SERVER_LIMITS:
-            a.mem_ceiling_gib, a.mem_peak_gib = memory_limits(held)
-        return {}
-
-    def start(load):
-        for k in keys:
-            A.STATE.pop(k, None)
-        a = types.SimpleNamespace(mem_ceiling_gib=SERVER_LIMITS[0], mem_peak_gib=SERVER_LIMITS[1],
-                                  reserve_slack_gib=2.0)
-        A.STATE["serve_flags"] = dict(vars(a))          # _limits_at_start, before the load
-        load(a)
-        A.STATE["args"] = vars(a)
-        A.STATE["mem"] = cache.Budget(int(a.mem_ceiling_gib * gib), int(a.mem_peak_gib * gib),
-                                      int(a.reserve_slack_gib * gib))
-        return a
-
-    try:
-        ext_mod.document = lambda state, name: (7, {"version": 7})       # no engine section: the flags
-        # the fault, on the bare builder call: the refresh puts the start's ceiling back under the load
-        start(lambda a: build(a, None))
-        memlimits.refresh(A.STATE)
-        assert A.STATE["mem"].ceiling == 70 * gib, A.STATE["mem"].ceiling / gib
-        # through the server's load: the pack's limits survive the refresh, above what the load holds
-        a = start(lambda a: A._build_with_limits(build, a, None))
-        assert (a.mem_ceiling_gib, a.mem_peak_gib) == (85.0, 92.0)
-        memlimits.refresh(A.STATE)
-        assert A.STATE["mem"].ceiling == 85 * gib and A.STATE["mem"].peak == 92 * gib, A.STATE["mem"].ceiling / gib
-        assert A.STATE["mem"].ceiling > held * gib
-        # a limit the dashboard set in the residency document still wins
-        ext_mod.document = lambda state, name: (8, {"engine": {"MEM_CEILING_GIB": 90}})
-        memlimits.refresh(A.STATE)
-        assert A.STATE["mem"].ceiling == 90 * gib
-    finally:
-        ext_mod.document = doc
-        for k, v in keep.items():
-            if v is None:
-                A.STATE.pop(k, None)
-            else:
-                A.STATE[k] = v
 
 
 def test_the_store_entry_cap_is_the_familys_and_survives_a_refresh():

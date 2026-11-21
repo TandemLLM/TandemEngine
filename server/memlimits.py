@@ -158,37 +158,19 @@ def overrides_at_start(a, doc: dict | None, *, len_mode: str | None = None) -> l
     return lines
 
 
-#: OPS-308: the memory policy's attribute (engine/cache.py `Budget`, set by server/app.py `_kv_after_load`) naming, for
-#: each limit the model's builder set from its load, the bytes `fixed` holds for a configured figure that this figure
-#: never counted: slot 0's window when the KV pool holds it (it was the pool's before the load was measured), less the
-#: window above LIMITS_WINDOW when the pool is off (the load held all of it)
-OWN_BASIS = "own_basis"
+def limit_of(mem, b: int) -> int:
+    """OPS-308, the one rule: the ceiling or peak the memory policy enforces for a figure of `b` bytes, the figure plus
+    its fixed bytes (`Budget.fixed`: the side slots' share, less slot 0's window when the KV pool holds it, plus a
+    window above LIMITS_WINDOW when the pool is off), at the start and at every refresh alike. Every family's figure
+    is a configured one: serve.env's, a weight profile's (ops/profiles/<pack>.env), the residency document's. Every
+    line that names the ceiling or peak prints the policy's own figures: [kv-pool], [parallel], [limits], the
+    residency refresh's."""
+    return int(b) + int(getattr(mem, "fixed", 0) or 0)
 
 
-def set_own_basis(mem, basis: dict) -> None:
-    """OPS-308: dest (mem_ceiling_gib, mem_peak_gib) -> bytes for the limits the model set from its load (`OWN_BASIS`)."""
-    setattr(mem, OWN_BASIS, {d: int(x) for d, x in basis.items()})
-
-
-def limit_of(mem, dest: str, b: int, own: bool = False) -> int:
-    """OPS-308, the one rule: the ceiling or peak (`dest`) the memory policy enforces for a figure of `b` bytes. Every
-    figure is one of the engine's reserve as the policy measures it (allocated plus the allocator's free blocks; the KV
-    pool's pages are outside it), a model's own figure measured on that reserve too (Hy4-flash: serving.py
-    `held_after_load`). The policy enforces a figure plus its fixed bytes (`Budget.fixed`: the side slots, slot 0's window as the pool or a
-    longer window moves it), the figure's own basis given back for the model's own figure
-    (`own`: the start's figure that the builder set from its load, `OWN_BASIS`). A figure the residency document
-    sets is a configured one: at the next start `overrides_at_start` hands it to the load as a flag, and the start
-    enforces it so; live it is enforced the same. Every line that names the ceiling or peak prints the policy's own
-    figures: [kv-pool], [parallel], [limits], the residency refresh's."""
-    back = int((getattr(mem, OWN_BASIS, None) or {}).get(dest, 0)) if own else 0
-    return int(b) + int(getattr(mem, "fixed", 0) or 0) + back
-
-
-def apply(state: dict, values: dict, from_flags=()) -> list[str]:
-    """Hand the live keys in `values` to the objects that hold the bytes. Returns what changed. `from_flags`: the keys
-    whose value is the start's flag (the document sets none): the model's own figure keeps its basis (`limit_of`). A
-    ceiling or peak is set again whenever the policy's figure for it differs, so a key the document stops setting
-    goes back to the start's figure in the start's basis, not to the document's enforcement of the same number."""
+def apply(state: dict, values: dict) -> list[str]:
+    """Hand the live keys in `values` to the objects that hold the bytes. Returns what changed. A ceiling or peak is
+    set again whenever the policy's figure for it (`limit_of`) differs from the one it runs."""
     mem, store, res = state.get("mem"), state.get("state_store"), state.get("resident")
     applied = state.setdefault("limits_applied", {})
     done = []
@@ -198,7 +180,7 @@ def apply(state: dict, values: dict, from_flags=()) -> list[str]:
             continue
         b = int(float(v) * _scale(unit)) if unit in ("GiB", "MiB") else int(v)
         if key in ("MEM_CEILING_GIB", "MEM_PEAK_GIB") and mem is not None:
-            want = limit_of(mem, dest, b, own=key in from_flags)
+            want = limit_of(mem, b)
             if applied.get(key) == v and (mem.ceiling if key == "MEM_CEILING_GIB" else mem.peak) == want:
                 continue
         elif applied.get(key) == v:
@@ -254,8 +236,7 @@ def refresh(state: dict) -> list[str]:
     over = doc_section(doc)
     flags = state.get("serve_flags") or state.get("args") or {}
     values = {k: over.get(k, flag_value(flags, k)) for k in KEYS if _BY_KEY[k][2]}
-    done = apply(state, {k: x for k, x in values.items() if x is not None},
-                 from_flags=frozenset(k for k in values if k not in over))
+    done = apply(state, {k: x for k, x in values.items() if x is not None})
     if done:
         # OPS-308: and the ceiling and peak the policy enforces from here, the side slots and the KV pool in them
         mem = state.get("mem")
