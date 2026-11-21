@@ -221,8 +221,8 @@ GOLDEN_FP4 = {
 MAY_MOVE = {"flint"}
 #: sha256 of SAME_ROWS' entries at v0.14.0 (sorted [path, now, replaced] triples, JSON); SRV-795 adds Flash-Next's
 #: engine.py on purpose (its reason in engine/methods/manifest.py); SPD-321 adds tools/fn_prefill_kernels.py's optional
-#: clamp on purpose (its reason there)
-SAME_ROWS_SHA256 = "bf3ad379dc8528e39a88bce09681096b68e30716b348d1e3cb4657ab3492d9f3"   # 32 entries
+#: clamp on purpose (its reason there); ENG-472 adds engine/grammar.py's silent markers on purpose (its reason there)
+SAME_ROWS_SHA256 = "a3ae9039376336e71fbdfb4647f1f32d45fc11b08bf79af295f99e82b4509714"   # 33 entries
 
 
 def _manifest(name: str):

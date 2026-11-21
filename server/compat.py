@@ -410,7 +410,8 @@ def constraint_field(body: dict) -> str:
     return "structured_outputs" if body.get("structured_outputs") is not None else "response_format"
 
 
-def tool_constraint(body: dict, fmt=None, allowed: list | None = None) -> tuple[str, dict] | None:
+def tool_constraint(body: dict, fmt=None, allowed: list | None = None,
+                    wrapper: tuple = ()) -> tuple[str, dict] | None:
     """`tool_choice` required or a named function, enforced -- the answer (after the
     reasoning) as tool calls only, in the model's own format: an allowed function (the named one,
     or any tool for required), the schema's parameters with the required ones present, and typed
@@ -419,7 +420,8 @@ def tool_constraint(body: dict, fmt=None, allowed: list | None = None) -> tuple[
     Returns (regex, the parameters written as JSON literals per function), or None for auto and
     none. `fmt`: the model's own form (a `ToolFormat` or its name, server/api/toolformats; the default
     form for None), whose constraint this is (SRV-689). `allowed`: the functions the calls may name
-    in place of the request's `tool_choice` (engine-ext-v1 3.2, SET_CONSTRAINT scope tool_args)."""
+    in place of the request's `tool_choice` (engine-ext-v1 3.2, SET_CONSTRAINT scope tool_args).
+    `wrapper`: the family's call wrapper (`ServeSpec.call_wrapper`, ENG-472), around the calls."""
     from engine import grammar
     if allowed is None:
         mode, name = tool_choice(body)
@@ -430,11 +432,29 @@ def tool_constraint(body: dict, fmt=None, allowed: list | None = None) -> tuple[
         mode = "SET_CONSTRAINT tool_args"
     try:
         from server.api import toolformats
-        return toolformats.resolve(fmt).forced_regex(body["tools"], allowed,
-                                                     many=body.get("parallel_tool_calls") is True,
-                                                     grammar=grammar)
+        pat, typed = toolformats.resolve(fmt).forced_regex(body["tools"], allowed,
+                                                           many=body.get("parallel_tool_calls") is True,
+                                                           grammar=grammar)
     except grammar.GrammarError as exc:
         raise Refusal("tools", f"tool_choice {mode}: {exc}")
+    return in_wrapper(pat, wrapper, grammar), typed
+
+
+def in_wrapper(pattern: str, wrapper: tuple, grammar) -> str:
+    """ENG-472: the calls with the tags the family's model writes around a turn's calls (`ServeSpec.call_wrapper`,
+    an opener and a closer its tokenizer leaves out of the text): each may come, so the language without them is
+    the pattern's own; no wrapper, the pattern as it is."""
+    if not wrapper:
+        return pattern
+    opener, closer = wrapper
+    ws = grammar._S
+    return rf"(?:{ws}{grammar.literal(opener)})?{pattern}(?:{grammar.literal(closer)}{ws})?"
+
+
+def forced_markers(form, wrapper: tuple = ()) -> tuple:
+    """The tags a forced constraint lets the model write as its own ids: its form's (SRV-689) and the family's call
+    wrapper (ENG-472)."""
+    return tuple(form.markers) + tuple(wrapper)
 
 
 class Answer(NamedTuple):
@@ -452,7 +472,7 @@ class Answer(NamedTuple):
 
 
 def answer_constraint(body: dict, chat: bool = True, xml_calls: bool = True,
-                      fmt=None) -> Answer | None:
+                      fmt=None, wrapper: tuple = ()) -> Answer | None:
     """The constraint on the answer (after the reasoning), or None.
 
     `tool_choice` required or named: the calls (`tool_constraint`), a document asked for beside
@@ -464,15 +484,16 @@ def answer_constraint(body: dict, chat: bool = True, xml_calls: bool = True,
     final answer as JSON keeps its tools. `xml_calls` false (a model whose calls are not the XML
     format, its `ToolFormat.joins_documents`): the 400 as before. `fmt`: the model's own form (a
     `ToolFormat` or its name, server/api/toolformats), whose forced calls and markers tool_choice takes.
+    `wrapper`: the family's call wrapper (`ServeSpec.call_wrapper`, ENG-472) around the forced calls.
     """
     from engine import grammar
     from server.api import toolformats
     form = toolformats.resolve(fmt)
     doc = structured_pattern(body)
-    forced = tool_constraint(body, form) if chat else None
+    forced = tool_constraint(body, form, wrapper=wrapper) if chat else None
     if forced is not None:
         return Answer(forced[0], "tool_choice", forced[1] or None, bool(form.markers),
-                      markers=tuple(form.markers))
+                      markers=forced_markers(form, wrapper))
     if doc is None:
         return None
     if not chat or not body.get("tools") or tool_choice(body)[0] == "none":
@@ -527,7 +548,7 @@ class ActConstraint(NamedTuple):
 
 
 def act_constraint(c: dict, body: dict, chat: bool, vocab: int, fmt=None, structured: bool = True,
-                   own: str | None = None, taken=(), compile=None) -> ActConstraint:
+                   own: str | None = None, taken=(), compile=None, wrapper: tuple = ()) -> ActConstraint:
     """SET_CONSTRAINT (`c`: kind, value, scope, strict, the act's shape checked by server/ext.py)
     through the request path's own functions, as if the request had sent `same_as`: a regex, a
     choice list or a JSON schema is `structured_outputs` (`answer_constraint`, the calls beside it
@@ -536,7 +557,8 @@ def act_constraint(c: dict, body: dict, chat: bool, vocab: int, fmt=None, struct
     request's own constraint (response_format, structured_outputs, tool_choice), which wins; a
     logit_bias of the request's own wins over the act's. `taken`: the families ("grammar",
     "bias") an earlier act of this request set. `compile(answer)` builds the grammar (a
-    GrammarError is a refusal). Raises ActRefused."""
+    GrammarError is a refusal). `wrapper`: the family's call wrapper around forced calls (ENG-472).
+    Raises ActRefused."""
     from engine import grammar
     kind, value, scope = c.get("kind"), c.get("value"), c.get("scope")
     family = "bias" if kind == "logit_bias" else "grammar"
@@ -582,9 +604,9 @@ def act_constraint(c: dict, body: dict, chat: bool, vocab: int, fmt=None, struct
                 raise ActRefused(f"scope tool_args takes a list of the offered functions "
                                  f"({', '.join(offered)})")
             names = list(dict.fromkeys(value))
-            forced = tool_constraint(body, form, allowed=names)
+            forced = tool_constraint(body, form, allowed=names, wrapper=wrapper)
             answer = Answer(forced[0], "tool_choice", forced[1] or None, bool(form.markers),
-                            markers=tuple(form.markers))
+                            markers=forced_markers(form, wrapper))
             same = ({"tool_choice": {"type": "function", "function": {"name": names[0]}}}
                     if len(names) == 1 else {"tool_choice": "required"}
                     if set(names) == set(offered) else {})
@@ -618,7 +640,7 @@ def act_constraint(c: dict, body: dict, chat: bool, vocab: int, fmt=None, struct
                                  f"logit_bias")
             same = {"structured_outputs": so}
             answer = answer_constraint(dict(body, **same), chat, xml_calls=form.joins_documents,
-                                       fmt=form)
+                                       fmt=form, wrapper=wrapper)
         gram = compile(answer) if compile is not None else None
     except ActRefused:
         raise

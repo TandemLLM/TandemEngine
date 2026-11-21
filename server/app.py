@@ -8210,7 +8210,7 @@ def _set_constraints(sets: list, body: dict, chat: bool, own, structured: bool, 
         try:
             k = compat.act_constraint(
                 c, body, chat, STATE["engine"].cfg.vocab_size, fmt=_tool_format(),
-                structured=structured, own=own_field,
+                structured=structured, own=own_field, wrapper=_spec().call_wrapper,
                 taken=tuple(f for f, v in got.items() if v is not None),
                 compile=lambda a: grammar_mod.grammar_for(a.pattern, _grammar_vocab(a.markers),
                                                           parts=a.parts))
@@ -10281,7 +10281,8 @@ class Handler(BaseHTTPRequestHandler):
             # allowed functions, their values typed by the schemas; SRV-619: tools under
             # auto beside a document -- the calls or the document, one automaton
             ac = (compat.answer_constraint(body, chat,
-                                           xml_calls=_tool_format().joins_documents, fmt=_tool_format())
+                                           xml_calls=_tool_format().joins_documents, fmt=_tool_format(),
+                                           wrapper=_spec().call_wrapper)
                   if structured else None)
             pattern = ac.pattern if ac is not None else None
             rec.constrained = ac.kind if ac is not None else None

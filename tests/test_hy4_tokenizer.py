@@ -161,6 +161,86 @@ def test_the_real_template_tools_and_a_call_round_trip():
     return f"the tools prompt, an earlier turn's calls in the model's form, and {len(ids)} ids read back as two calls"
 
 
+class _VocabStand(_Stand):
+    """The stand-in as the grammar reads a served tokenizer (engine/grammar.py `Vocab.from_tokenizer`): ids 2000-2255
+    the bytes as GPT-2's pieces, the tags added ids from 1000, 999 the turn end (special)."""
+
+    all_special_ids = [999]
+
+    def __init__(self):
+        super().__init__()
+        from server.logprobs import _DECODER
+        self._enc = {b: c for c, b in _DECODER.items()}
+        self.added_tokens_decoder = {1000 + k: t for k, t in enumerate(self.tags)}
+
+    def __len__(self) -> int:
+        return 2256
+
+    def convert_ids_to_tokens(self, ids):
+        return [self._enc[i - 2000] if i >= 2000 else self.added_tokens_decoder.get(i) for i in ids]
+
+
+FORCED = {"required": {"tool_choice": "required"},
+          "parallel": {"tool_choice": "required", "parallel_tool_calls": True},
+          "named": {"tool_choice": {"type": "function", "function": {"name": "get_time"}}}}
+ONE = f"<tool_calls{S}><tool_call{S}>get_time</tool_call{S}></tool_calls{S}>"
+
+
+def _forced(tok, eos: int) -> str:
+    """ENG-472: under a forced tool_choice in Hy4-flash's own spec (arch.py `call_wrapper`), the grammar lets the
+    model open with its own `<tool_calls>` id, the template's calls walk to an accepting state with the model's ids,
+    and their text reads as the calls; without the wrapper (the constraint before ENG-472) the opener is masked."""
+    from engine import grammar as G
+    from engine.models import REGISTRY
+    from server import compat
+    spec = REGISTRY["hy_v4_flash"].spec
+    fmt = toolformats.get(spec.tool_format)
+    assert spec.call_wrapper == ("<tool_calls>", "</tool_calls>") and set(tok.silent_tags) == set(spec.call_wrapper)
+    opener, closer = (tok.convert_tokens_to_ids(t) for t in spec.call_wrapper)
+    assert (opener, closer) == tuple(tok._tok.convert_tokens_to_ids(w) for w in WRAPPERS) == tuple(tok.silent_tags.values())
+    first = tok.convert_tokens_to_ids("<tool_call>")
+    for name, extra in FORCED.items():
+        body = {"messages": [], "tools": TOOLS, **extra}
+        old = compat.answer_constraint(body, True, xml_calls=fmt.joins_documents, fmt=fmt)
+        new = compat.answer_constraint(body, True, xml_calls=fmt.joins_documents, fmt=fmt, wrapper=spec.call_wrapper)
+        g_old = G.Grammar(old.pattern, G.Vocab.from_tokenizer(tok, len(tok), markers=old.markers))
+        v = G.Vocab.from_tokenizer(tok, len(tok), markers=new.markers)
+        g = G.Grammar(new.pattern, v)
+        assert v.bytes[opener] == b"<tool_calls>" and v.bytes[closer] == b"</tool_calls>", name
+        start = g.mask(g.dfa.start, frozenset({eos}), "cpu")
+        assert bool(start[opener]) and bool(start[first]) and not bool(start[eos]), name
+        assert not bool(g_old.mask(g_old.dfa.start, frozenset({eos}), "cpu")[opener]), "the opener was masked before"
+        text = CALL if name == "parallel" else ONE
+        ids = tok._tok(text).input_ids
+        assert ids[0] == opener and ids[-1] == closer, ids
+        for seq in (ids, ids[1:-1]):                     # with the wrapper as the model writes it, and the calls alone
+            cons = G.Constraint(g, {eos}, "cpu")
+            cons.commit(seq[:-1])
+            if seq[-1] == closer:
+                assert bool(g.mask(cons.state, frozenset({eos}), "cpu")[closer]), (name, "the closer")
+            cons.commit(seq[-1:])
+            assert g.dfa.accept[cons.state], (name, len(seq))
+        if name != "parallel":
+            cons = G.Constraint(g, {eos}, "cpu")
+            cons.commit(tok._tok(CALL).input_ids)
+            assert not g.dfa.accept[cons.state], (name, "two calls where one is asked")
+    _read(tok, tok._tok(CALL).input_ids)
+    _, calls = parse_tool_calls(fmt.rewrite(tok.decode(tok._tok(ONE).input_ids), eos=True), eos=True, types=TYPES)
+    assert _calls(calls) == [("get_time", {})], calls
+    return f"required, parallel and named: the opener {opener} legal first, the closer {closer} after the calls"
+
+
+def test_a_forced_tool_choice_lets_the_model_write_its_own_opener():
+    return _forced(Hy4Tokenizer(_VocabStand()), 999)
+
+
+def test_the_real_tokenizer_under_a_forced_tool_choice():
+    if SKIP:
+        return SKIP
+    tok = _real()
+    return _forced(tok, tok._tok.convert_tokens_to_ids("<｜hy_end:opensource｜>"))
+
+
 #: the template's turn marks (its lines 3-5), by name
 TURN = ("<｜hy_start:opensource｜>", "<｜hy_middle:opensource｜>", "<｜hy_end:opensource｜>")
 

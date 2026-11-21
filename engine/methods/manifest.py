@@ -114,6 +114,10 @@ SAME_ROWS = {("engine/loader.py", "823f9dd4c230ec45d133b52e0a5edc0343098184526d9
              # on the sampled token, never a stored row
              ("engine/grammar.py", "7d08c32d4841f5bbad40e4d55c22936c4b357dc854b3f848538d8efa634cfc8a"):
              "c7fbee9ad0f1526b7c30df798e8c178c3a2185244ab7a2b29e44eed5ffe50749",
+             # ENG-472: a marker the tokenizer leaves out of the text (a family's call wrapper) keeps its id
+             # under a forced tool_choice; a mask on the sampled token, never a stored row
+             ("engine/grammar.py", "90354f3a1efb86d4a3d1bc91233c746c6196d06994fb9d6f1464c1b00e8d96e3"):
+             "c7fbee9ad0f1526b7c30df798e8c178c3a2185244ab7a2b29e44eed5ffe50749",
              ("engine/models/flashnext/ref.py", "497c681a0b2e8d33e45a3bb2d4f565b5983ca2edc9da021619048bdb258267c4"):
              "f814ce162695f81e1ff8d7b80eb8c90619837f99e6cebb35f10bcb39983bf3f4",
              # OPS-225: the files' code unchanged (comments, docstrings, one message); dflash2.py's
