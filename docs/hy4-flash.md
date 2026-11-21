@@ -38,14 +38,14 @@ Up to 8 chats at once (ENG-485). Each lane is a side slot with the whole 262,144
 
 The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
 
-The prompt pass runs on fixed-order kernels by default (`QWEN38_HY4_PREFILL_V2=1`, SPD-327; `0` keeps the pass before). Measured on 2026-11-20, one request at a time on an idle box, the experts on the shared prefill kernel in both arms:
+The prompt pass runs on fixed-order kernels by default (`QWEN38_HY4_PREFILL_V2=1`, SPD-327; `0` keeps the pass before). One request at a time on an idle box, a fresh server, the first request of each kind, no drafter, the experts on the shared prefill kernel in both arms. The pass before was measured on 2026-11-20; the fixed-order pass on 2026-11-21 with every knob at its default (prefill tok/s is the prompt's tokens over the time to the first token):
 
 | pack | prompt | first token, pass before | first token, fixed-order | prefill tok/s, before | prefill tok/s, fixed-order |
 |-|-|-|-|-|-|
-| `hy4-3.56` | chat, 3,565 tokens | 13.71, 13.30 s | 6.55, 4.87 s | 260, 268 | 544, 732 |
-| `hy4-3.56` | docs, 31,852 tokens | 120.57 s | 46.11 s | 264 | 691 |
-| `hy4-3.08` | chat, 3,565 tokens | 13.53, 13.25 s | 5.17, 4.61 s | 264, 269 | 689, 774 |
-| `hy4-3.08` | docs, 31,852 tokens | 120.60 s | 44.82 s | 264 | 711 |
+| `hy4-3.56` | chat, 3,565 tokens | 13.71 s | 5.90 s | 260 | 604 |
+| `hy4-3.56` | docs, 31,852 tokens | 120.57 s | 46.31 s | 264 | 688 |
+| `hy4-3.08` | chat, 3,565 tokens | 13.53 s | 5.12 s | 264 | 696 |
+| `hy4-3.08` | docs, 31,852 tokens | 120.60 s | 45.24 s | 264 | 704 |
 
 Decode did not change: 22.6 to 23.1 tok/s plain on `hy4-3.56`, 23.5 to 24.3 on `hy4-3.08`. The flip moves the prompt pass's bits once, so its answers differ from the pass before's; a drafted answer still equals the plain one on both packs. On chat2048 (`hy4-3.08`, 16 rows) it scores KL 0.10151 and top-1 88.35 % against 0.10093 and 88.49 % before, a gap below the 0.003 to 0.005 between two correct forwards of this model, and the next-token rule passes on both rows it checks. Every cache tier (snapshot, resident prefix, disk tier, spill) equals a cold read with it on, on both packs.
 
