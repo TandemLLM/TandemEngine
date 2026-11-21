@@ -31,6 +31,12 @@ of its own, paged through the KV pool when the server opened one; its lanes take
   * the cache's views are the two whole tensors; the paged ones are not counted as memory; the build asks for the
     pool before the state; the slot's graphs are captured on its set and dropped at once
                                                        test_the_state_goes_through_the_pool_and_the_graph_set
+  * #174's case (T08): a side slot's warm-up leaves draft rows waiting, its pages go back, and the slot's first
+    request reads the drafter's views and snapshots it; nothing the draft head keeps is written onto a page given
+    back. Hy4-flash's DFly head keeps no rows of its own (the shared tree drafter's backlog reaches it as a count);
+    the same sequence over a head that does keep rows writes onto the given-back pages, which the check sees. The end
+    read again drops what it synced into the drafter: a snapshot after it feeds nothing
+                                                       test_a_lanes_draft_backlog_never_lands_on_pages_given_back
 
 Run: python tests/test_hy4_lanes.py
 """
@@ -350,6 +356,84 @@ def test_the_mirror_reads_committed_rows_only():
     assert not bool((a.st.gk_all[:, G:a.st.Gc] == 7.0).any()), "the rebuild read past the committed rows"
     assert torch.equal(a.st.gk_all[:, :G], b.st.gk_all[:, :G]) and torch.equal(la, lb)
     return f"{G} groups rebuilt, none past the length; the same logits"
+
+
+@torch.no_grad()
+def test_a_lanes_draft_backlog_never_lands_on_pages_given_back():
+    from engine import cache
+    from engine.methods.mtp_drafter import MTPTreeDrafter
+    from engine.methods.staircut import PriceModel
+    from engine.models.hy4_flash.dfly import DFlyHead
+    from engine.models.hy4_flash.serving import priced_cut
+    import test_hy4_dfly as D
+
+    class Kept(DFlyHead):
+        """The negative control: a head that keeps a row of its own a position, as Flash-Next's MTP head does (the
+        rows paged with its slot's); `prime` writes them at the head's length."""
+
+        def __init__(self, srv):
+            super().__init__(srv)
+            self.rows = torch.zeros(srv.max_len, 4)
+
+        def views(self) -> list:
+            return [(self.rows, 0)]
+
+        def prime(self, rows, nexts) -> None:
+            self.rows[self.st.length:self.st.length + len(nexts)] = 1.0
+            super().prime(rows, nexts)
+
+    def run(head_cls):
+        """The reporter's sequence on a side slot, every row the head keeps checked against the slot's pages at the
+        moment it is written: (writes onto pages given back, writes after the end read's drop, the slot)."""
+        cfg, eng, s0, head0 = D.setup(torch.bfloat16)
+        s0.heads["dfly"] = head0
+        cut, freeze = priced_cut(PriceModel({"0": {"chain": {"1": 20.0, "4": 30.0}}}, 2.0), False, True)
+        d0 = MTPTreeDrafter(s0, head0, cut, None, freeze=freeze)
+        s1, d1 = s0.side_slot(256, d0)
+        if head_cls is not DFlyHead:
+            d1.head = s1.heads["dfly"] = head_cls(s1)
+        ps = s1.st.pages = _Pages()
+        bad, after = [], []
+        real = d1.head.prime
+
+        def prime(rows, nexts):
+            lo = int(d1.head.st.length)
+            hi = lo + len(nexts)
+            if d1.head.views() and hi > ps.rows:
+                bad.append((lo, hi, ps.rows))             # a kept row written past the slot's pages
+            after.append((lo, hi))
+            return real(rows, nexts)
+        d1.head.prime = prime
+        # the warm-up: a prompt read, then decode steps the drafter syncs; their last rows still wait to be fed
+        ids = D.tokens(40, 7)
+        lg = s1.forward(torch.tensor(ids), start=0)
+        hp = s1.hidden_post_norm[0].clone()                # the prompt's rows, as `reread_end` syncs them
+        d1.reset()
+        d1.sync(ids, hp, 0)
+        for i in range(6):
+            t = int(lg[0, 0].argmax())
+            lg = s1.forward(torch.tensor([t]), start=40 + i)
+            d1.sync([t], s1.hidden_post_norm[0], 40 + i)
+        assert d1.queue or d1.held is not None, "the warm-up left nothing waiting"
+        ps.trim(0)                                         # the slot's build gives its pages back
+        # the slot's first request: a carry reads the drafter's views, a snapshot feeds what waits
+        d1.kv_views()
+        cache.capture(s1, d1)
+        # the end read again on a held slot: rows synced on the prompt pass, then dropped (`reread_end`)
+        ps.ensure(64)
+        del after[:]
+        d1.sync(ids, hp, 0)
+        d1.state_resume(46)
+        cache.capture(s1, d1)
+        return bad, list(after), s1
+
+    bad, after, s1 = run(DFlyHead)
+    assert s1.heads["dfly"].views() == [] and not bad, bad
+    assert not after, f"the end read's synced rows reached the head after its drop: {after}"
+    kept, _, _ = run(Kept)
+    assert kept and all(hi > held for _, hi, held in kept), kept
+    return (f"DFly keeps no rows: the warm-up's backlog fed after trim(0) wrote nothing; a head that keeps rows wrote "
+            f"{kept[0][0]}..{kept[0][1]} onto {kept[0][2]} held rows (the check sees it); the end read's rows: none fed")
 
 
 def test_the_state_goes_through_the_pool_and_the_graph_set():
