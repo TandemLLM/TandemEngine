@@ -756,6 +756,40 @@ def test_a_cap_routed_to_the_monitor_closes_where_the_plain_decode_closes():
     return f"caps {caps} closed hidden at SP1, the pipe on and off: the plain decode's text in the runner and the slot loop"
 
 
+def test_a_backstop_count_closes_where_the_plain_decode_closes():
+    """engine-ext-v1 3.3 (ENG-476): D2's backstop is a count only the monitor knows; its supervisor names it in
+    `close_counts`, the engine reads it (`app._watch_sync`, as the handler does after it builds the budget, and
+    after each SP1 verdict), and a drafted block stops there. The runner and the slot loop, the pipe on and off,
+    write the plain decode's text, D2's close where the plain decode's is."""
+    import test_supervisor_frame as F
+    from server import app
+    lines, saved = [], R.PIPE
+
+    def kw(cap):
+        k = _sup_kw(F.backstop(cap))
+        sync = getattr(app, "_watch_sync", None)           # the handler's step (3.3)
+        if sync is not None:
+            sync(k["sup"], k["think"])
+        return k
+    try:
+        for pipe in (True, False):
+            R.PIPE = pipe
+            for caps in ((9, 14), (11, 7), (12, 17)):
+                def mk(i):
+                    return kw(caps[i])
+                refs = _plain_refs(_prompts(2), 40, mk)
+                loop, run, st = _pair(mk)
+                _same(loop, run, "backstop")
+                for i in range(2):
+                    assert loop[i][0] == refs[i], (pipe, caps, i, "slot loop", refs[i], loop[i][0])
+                    assert run[i][0] == refs[i], (pipe, caps, i, "runner", refs[i], run[i][0])
+                    assert run[i][2]["sup"].hidden_tokens > 0, (pipe, caps, i, "D2 closed")
+                lines.append(f"{caps}")
+    finally:
+        R.PIPE = saved
+    return f"D2 at {', '.join(lines[:3])}, the pipe on and off: the plain decode's text"
+
+
 def test_spd249_a_spent_budget_is_closed_on_the_slots_thread():
     """A client's reasoning budget, with and without a supervisor: the forced close (its phrase streamed) is
     the slot loop's."""

@@ -36,8 +36,13 @@ next anchor), on the tree loop (both orders), the chain loop and the round runne
   9  the served commit, folded into the next verify (QWEN38_COMMIT_IN_VERIFY): the shorter accept's
      cut back is the plain text too                           test_the_folded_commit_cuts_the_same
 
-Not covered: the monitor's own counts that the engine is not handed (D2's backstop, a policy number):
-a drafted block may pass it by up to a block less one token before SP1 asks.
+  10 engine-ext-v1 3.3: a count only the supervisor names (`close_counts`, D2's backstop) closes
+     where plain closes          test_a_count_only_the_supervisor_names_closes_where_plain_closes
+  11 a supervisor without the field (3.2): the run without the read, token for token
+                                                   test_a_supervisor_without_the_field_changes_nothing
+  12 the counts are read again after each SP1 verdict  test_the_counts_are_read_again_after_each_verdict
+  13 bad counts are dropped, the supervisor stays attached         test_bad_counts_are_dropped
+  14 `rewatch` keeps the constructor's counts             test_rewatch_keeps_the_constructors_counts
 
 CPU, the random model of tests/test_window_edge.py. Run: python tests/test_think_cut.py
 """
@@ -105,11 +110,15 @@ class Watcher:
     and closes the block (hidden, CLOSING) the first time the count reaches `close_at`, or on the
     first stall when `on_stall`; else it passes."""
 
-    def __init__(self, close_at=None, on_stall=False):
+    def __init__(self, close_at=None, on_stall=False, counts=None):
         self.close_at, self.on_stall = close_at, on_stall
         self.watches_blocks, self.checked, self.gave_up, self.cuts = True, True, None, []
         self.req = types.SimpleNamespace(tools_offered=False, n=1, request_id="r", max_tokens=0)
         self.memory_notes, self.asked, self.closed = None, [], None
+        if counts is not None:
+            # engine-ext-v1 3.3: the counts it closes at for the count alone (D2's backstop is one);
+            # without `counts` it has no field, as a 3.2 supervisor
+            self.close_counts = tuple(counts)
 
     def at_block(self, ev, room):
         self.asked.append(ev.reasoning_tokens)
@@ -132,8 +141,33 @@ class Watcher:
         return None
 
 
+class Mover(Watcher):
+    """A supervisor that names `first` in `close_counts`, passes there, then names `then` and closes
+    at it: the count it names moves after a verdict."""
+
+    def __init__(self, first, then):
+        super().__init__(close_at=then, counts=(first,))
+        self.first, self.passed = first, False
+
+    def at_block(self, ev, room):
+        if self.passed:
+            return super().at_block(ev, room)
+        self.asked.append(ev.reasoning_tokens)
+        if ev.reasoning_tokens >= self.first:
+            self.passed, self.close_counts = True, (self.close_at,)
+        return None
+
+
 def sup_of(**kw):
     return app.ext_mod.supervising(Watcher(**kw))
+
+
+def _sync(sup, think):
+    """What the handler does after it builds the budget (engine-ext-v1 3.3, server/app.py
+    `_watch_sync`); a tree without it reads no supervisor counts."""
+    sync = getattr(app, "_watch_sync", None)
+    if sync is not None and sup is not None and think is not None:
+        sync(sup, think)
 
 
 def _gen(drafter, think, *, tree=False, launch_first=False, sup=None, sampler=None,
@@ -141,6 +175,7 @@ def _gen(drafter, think, *, tree=False, launch_first=False, sup=None, sampler=No
     """One request on the served loop: (tokens, published context, KV length)."""
     eng = serve(drafter, tree=tree, k=7)
     app.STATE["sampled_tree"] = sampler is not None and tree
+    _sync(sup, think)
     saved = app.LAUNCH_FIRST
     app.LAUNCH_FIRST = launch_first
     try:
@@ -365,6 +400,111 @@ def test_a_dry_run_leaves_the_arms_as_they_were():
                 break
     assert fired > 10, fired
     return f"60 twins of 160 tokens with a dry run before each: the same arms at every token ({fired} fired)"
+
+
+# ------------------------------------------------------------------ 10-14. the supervisor's own counts
+def test_a_count_only_the_supervisor_names_closes_where_plain_closes():
+    """engine-ext-v1 3.3: a count the supervisor closes at for the count alone (D2's backstop) is
+    named in its `close_counts`, not in the budget's `watch`: the drafted block stops there, SP1 is
+    asked at the count and closes, as on the plain step."""
+    free = plain()[0]
+    n = 0
+    for cap in range(3, 15):
+        w_ref = sup_of(close_at=cap, counts=(cap,))
+        ref, rctx, rkv = plain(ThinkBudget(FakeTok(), 0), sup=w_ref)
+        assert w_ref._obj.closed == cap, (cap, w_ref._obj.asked)
+        for path in PATHS:
+            w = sup_of(close_at=cap, counts=(cap,))
+            got = drafted(path, [PROMPT + free, rctx], ThinkBudget(FakeTok(), 0), sup=w)
+            assert w._obj.closed == cap and cap in w._obj.asked, (path[0], cap, w._obj.asked)
+            same(got, (ref, rctx, rkv), path[0], cap)
+            n += 1
+    return f"{n} runs: the supervisor's count alone cut the block, SP1 closed there, the plain text"
+
+
+def test_a_supervisor_without_the_field_changes_nothing():
+    """A 3.2 supervisor (no `close_counts`): the budget's counts are what they were, and the run is
+    token for token the one with no read of the field at all, with the same cuts."""
+    free = plain()[0]
+    real = app._watch_sync
+    for cap in (4, 9):
+        for path in PATHS:
+            runs = []
+            for sync in (real, lambda sup, think: None):
+                app._watch_sync = sync
+                try:
+                    c0, th = _cuts(), ThinkBudget(FakeTok(), 0, watch=(cap + 20,))
+                    got = drafted(path, [PROMPT + free], th, sup=sup_of(close_at=cap))
+                    runs.append((got, th.watch, _cuts()["blocks"] - c0["blocks"]))
+                finally:
+                    app._watch_sync = real
+            assert runs[0] == runs[1], (path[0], cap)
+            assert runs[0][1] == (cap + 20,), runs[0][1]
+    return "no field: the same tokens, counts and cuts as without the read"
+
+
+def test_the_counts_are_read_again_after_each_verdict():
+    """The supervisor names N1, passes there and names N2: the drafted block stops at N1, SP1 passes,
+    the counts are read again after the verdict, and the close lands at N2 as on the plain step."""
+    free = plain()[0]
+    n = 0
+    for first, then in ((3, 7), (4, 11), (6, 9), (5, 14)):
+        m_ref = app.ext_mod.supervising(Mover(first, then))
+        ref, rctx, rkv = plain(ThinkBudget(FakeTok(), 0), sup=m_ref)
+        assert m_ref._obj.closed == then, (first, then, m_ref._obj.asked)
+        for path in PATHS:
+            m = app.ext_mod.supervising(Mover(first, then))
+            got = drafted(path, [PROMPT + free, rctx], ThinkBudget(FakeTok(), 0), sup=m)
+            assert first in m._obj.asked and m._obj.closed == then, (path[0], first, then, m._obj.asked)
+            same(got, (ref, rctx, rkv), path[0], first, then)
+            n += 1
+    return f"{n} runs: a count named after a verdict is in force for the next block"
+
+
+class _Raising(Watcher):
+    @property
+    def close_counts(self):
+        raise RuntimeError("a supervisor whose field raises")
+
+
+def test_bad_counts_are_dropped():
+    """Strings, zero, negatives, floats, booleans, more than CLOSE_COUNTS_MAX, a value that is not a
+    sequence and a field that raises: no count from them, and the supervisor stays attached."""
+    cases = ((("12", 0, -3, 2.5, True, None), ()), ((5, "6", 5, 0), (5,)),
+             (tuple(range(30, 10, -1)), tuple(range(11, 11 + app.CLOSE_COUNTS_MAX))), (7, ()))
+    for counts, want in cases:
+        th = ThinkBudget(FakeTok(), 0).start(PROMPT)
+        w = Watcher(close_at=None)
+        w.close_counts = counts
+        sup = app.ext_mod.supervising(w)
+        app._watch_sync(sup, th)
+        assert th.watch == want and not sup.detached, (counts, th.watch, want)
+    th = ThinkBudget(FakeTok(), 0, watch=(9,)).start(PROMPT)
+    sup = app.ext_mod.supervising(_Raising())
+    app._watch_sync(sup, th)
+    assert th.watch == (9,) and not sup.detached, th.watch
+    free, fctx, fkv = plain()
+    c0 = _cuts()
+    for path in PATHS:
+        w = Watcher()
+        w.close_counts = ("3", 0, -1)
+        same(drafted(path, [PROMPT + free], ThinkBudget(FakeTok(), 0), sup=app.ext_mod.supervising(w)),
+             (free, fctx, fkv), path[0], "bad counts")
+    assert _cuts() == c0, (c0, _cuts())
+    return f"{len(cases) + 1} bad values: no count, the supervisor attached; no cut in a generation"
+
+
+def test_rewatch_keeps_the_constructors_counts():
+    th = ThinkBudget(FakeTok(), 0, watch=(48,))
+    th.rewatch((96,))
+    assert th.watch == (48, 96), th.watch
+    th.rewatch(())
+    assert th.watch == (48,), th.watch
+    th.rewatch((48, 12, 12))
+    assert th.watch == (12, 48), th.watch
+    th.start(PROMPT)
+    assert th.watch == (12, 48), "a start keeps the counts"
+    return "the constructor's counts stay; the supervisor's are replaced at each read"
 
 
 # ------------------------------------------------------------------ 9. the folded commit

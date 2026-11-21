@@ -1,6 +1,6 @@
 # Engine extension interface v1
 
-How code that is not the engine's runs inside a TandemLLM engine process: TandemApp's conductor in chat mode (the router's plan, the session monitor in the decode loop, the state and narrated lines, the journal). The engine owns this interface; its version is `3.2`, independent of the engine API (`../engine-api-v1`) and of either release. It is a Python interface, not HTTP: the conductor acts on tokens inside the decode loop, which a second HTTP request cannot reproduce token for token.
+How code that is not the engine's runs inside a TandemLLM engine process: TandemApp's conductor in chat mode (the router's plan, the session monitor in the decode loop, the state and narrated lines, the journal). The engine owns this interface; its version is `3.3`, independent of the engine API (`../engine-api-v1`) and of either release. It is a Python interface, not HTTP: the conductor acts on tokens inside the decode loop, which a second HTTP request cannot reproduce token for token.
 
 | file | what |
 |-|-|
@@ -9,6 +9,7 @@ How code that is not the engine's runs inside a TandemLLM engine process: Tandem
 | `fake_host.py` | the reference host: discovery, start and one request through the hooks, with the failure rule as code |
 | `fake_ext.py` | the smallest extension: every hook, steered by the host's `args` into each failure case and, since 3.2, into SET_CONSTRAINT |
 | `compat/3.1/` | `ext.json` of 3.1 as it was, which 3.2 still has to hold (since 3.2) |
+| `compat/3.2/` | `ext.json` of 3.2 as it was, which 3.3 still has to hold (since 3.3) |
 
 Both Python files use the standard library only and import neither tree. Each side loads them from this folder by path in its tests.
 
@@ -16,7 +17,7 @@ Both Python files use the standard library only and import neither tree. Each si
 
 - `QSE_EXT=<module>` names the extension; empty or unset is a headless engine, which serves its own routes only.
 - The module has `EXT_API` (`MAJOR.MINOR`, the version it was written against), `NAME`, `VERSION` and `start(host)`, which returns the extension object.
-- The host takes the same MAJOR and a MINOR at or below its own: an extension written against 3.1 does not start on a 3.0 host, one written against 3.0 starts on a 3.1 host. A 1.x or 2.x extension does not start on a 3.x host: one line `[ext] REFUSING: the extension speaks engine-ext-v1 2.0; this engine speaks 3.2`, before the weights load.
+- The host takes the same MAJOR and a MINOR at or below its own: an extension written against 3.1 does not start on a 3.0 host, one written against 3.0 starts on a 3.1 host. A 1.x or 2.x extension does not start on a 3.x host: one line `[ext] REFUSING: the extension speaks engine-ext-v1 2.0; this engine speaks 3.3`, before the weights load.
 - Since 3.0 the module may also have `read_document(ext_dir, name)` (one of its documents before it starts: the engine reads the residency document's memory limits before the weights load, the residency planner's command line its documents) and `before_load(args)` (asked once the module is found, before the weights load: the session monitor's policy is checked there; a raise refuses the start with one line, its own `SystemExit` passes as it is; its answer is a line for the log).
 - The engine imports no TandemApp module; the extension imports no engine module. The extension gets engine objects handed in through `host`.
 
@@ -85,6 +86,10 @@ A hook steers the form of the answer without a per-token callback: such a callba
 - `apply_request` gets the other acts only; a list of SET_CONSTRAINT alone splices nothing.
 - What became of each act, `{kind, scope, strict, applied, why}`, goes to the supervisor's optional `constraint_outcomes(outcomes)`, to the routing row's `extra.set_constraint` (a plan with routing, which the extension's `finish` journals) and to one log line each.
 
+### The supervisor's close counts (since 3.3)
+
+The supervisor's field `close_counts` names the reasoning-token counts, in the unit of the SP1 event's `reasoning_tokens`, at which `at_block` may return `CLOSE_REASONING` for the count alone, as the supervisor knows them now: TandemApp's D2 backstop at `min(cap, max_tokens - reserve)`. The supervisor sets it and the engine only reads it: after it has set `req.max_tokens` and built the request's reasoning budget, and again after every SP1 verdict, so a count that changes is in force for the next block. The plain step asks SP1 after each token; a drafted block is asked after the block, so without the count it came up to a block less one token late. The engine now stops a drafted block at each count, as it does at the budget and at the caps of `SET_THINK_BUDGET`. Positive ints only, at most 8; anything else, or a field that raises, is no count and the supervisor stays attached. A count the supervisor does not close at costs one shorter block. A 3.2 supervisor has no field and answers the headless empty value.
+
 ## The order
 
 Start: import, check `EXT_API`, `start(host)`, read `routes`, `models`, `knobs`. Each request: `plan`, `prompt`, `supervisor`, `at_request`, `extras start`, then per block `at_block` and `extras block`, `at_tool_call` per call, `at_finish`, `extras finish`, `follow_ups`, `finish`, `done`. `CONTINUE_HIDDEN` loops back to the blocks and asks `at_finish` again; `REGENERATE_CALL` decodes the call again and asks `at_tool_call` again; `GIVE_UP` ends the turn. A plan of None asks no further hook. Shutdown: `stop`.
@@ -116,6 +121,7 @@ Until ENG-413's release (decided 2026-11-14) every contract change is a minor st
 
 ## Changes
 
+- v3.3 (ENG-476): the supervisor field `close_counts`, the counts at which SP1 may close for the count alone, read after the budget is built and after every SP1 verdict; `compat/3.2/ext.json`. Additive: a 3.2 extension starts on a 3.3 host and is served as before, its supervisor answering no counts.
 - v3.2 (ENG-458): the act `SET_CONSTRAINT` at SP4 (regex, choice, JSON schema, logit bias; scope `answer` or `tool_args`; `strict`), carried out by the engine's grammar as the request field it is the same as; the act field `constraint`; the supervisor's optional `constraint_outcomes`; the failure rule's `constraint` line; `compat/3.1/ext.json`. Additive: a 3.1 extension starts on a 3.2 host and is served as before, since it answers no SET_CONSTRAINT and its `apply_request` gets the acts it got.
 - v3.1 (ENG-429, ENG-413 WP5b): the call `shadow_question` (the router's question for the shadow reader; the engine keeps the question's form, `server/api/incontext.py`); Laya (`/v1/laya*`) is the extension's route over the engine's decision models (`deciders(registry)`), and a route may name `OPTIONS` for its preflight (a 204 answer has no `Content-Type`); `state_keys` names `session_tokens` and the methods of `escapes`, the engine's own objects (`server/api/session_tokens.py`, `server/api/loopescape.py`). Additive: a 3.0 extension starts on a 3.1 host. What a 3.0 extension does not have there: Laya (the engine serves no Laya of its own any more: 404 `not_on_engine`) and the shadow reader's router question (not asked).
 

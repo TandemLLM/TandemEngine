@@ -182,7 +182,8 @@ def test_the_optional_calls_are_named():
     obj = A.attach(host)
     names = set(E.CALLS)                     # 3.0: the writer is memory_writer, a call
     have = {n for n in names if callable(getattr(obj, n, None))}
-    assert names == have and A.EXT_API == E.EXT_API, (sorted(names - have), A.EXT_API)
+    # TandemApp's extension speaks a minor this host takes (3.2 on 3.3 since ENG-476)
+    assert names == have and E.accepts(A.EXT_API) is None, (sorted(names - have), A.EXT_API)
     watch = {n for n in vars(A.Watch) if not n.startswith("_")}
     sup_methods = set(E.SUPERVISOR)
     assert sup_methods <= watch, sorted(sup_methods - watch)
