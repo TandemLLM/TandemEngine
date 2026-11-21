@@ -38,7 +38,7 @@ Up to 8 chats at once (ENG-485). Each lane is a side slot with the whole 262,144
 
 The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
 
-The prompt pass runs on fixed-order kernels by default (`QWEN38_HY4_PREFILL_V2=1`, SPD-327; `0` keeps the pass before). One request at a time on an idle box, a fresh server, the first request of each kind, no drafter, the experts on the shared prefill kernel in both arms. The pass before was measured on 2026-11-20; the fixed-order pass on 2026-11-21 with every knob at its default (prefill tok/s is the prompt's tokens over the time to the first token):
+The prompt pass runs on fixed-order kernels by default (`QWEN38_HY4_PREFILL_V2=1`, SPD-327; `0` keeps the pass before). With `0` the prompt pass's rows depend on how the prompt is chunked, so prompt-end resumes are not row-invariant: they are held to the greedy-token test only, like end-anchor resumes. One request at a time on an idle box, a fresh server, the first request of each kind, no drafter, the experts on the shared prefill kernel in both arms. The pass before was measured on 2026-11-20; the fixed-order pass on 2026-11-21 with every knob at its default (prefill tok/s is the prompt's tokens over the time to the first token):
 
 | pack | prompt | first token, pass before | first token, fixed-order | prefill tok/s, before | prefill tok/s, fixed-order |
 |-|-|-|-|-|-|
