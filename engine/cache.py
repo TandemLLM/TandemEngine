@@ -2251,9 +2251,10 @@ class ResidentPrefix:
         self.capturing = False
         if drafter is not None and hasattr(drafter, "state_resume"):
             # the drafter at the end, as a resume there puts it (`resume_end`): its rows valid to the last one, the
-            # last row's streams held for the next token, so a session snapshot covers the answer. Rows of the read's
-            # last chunk keep what the turn's rounds wrote there: a draft head is approximate by design (it skips rows
-            # on plain turns and trims its backlog; its drafts are verified, the text never depends on them)
+            # last row's streams held for the next token, so a session snapshot covers the answer. The rows the read
+            # synced are dropped unread (`state_resume` empties the queue): the head's rows over the answer keep what
+            # the turn's rounds wrote. A draft head is approximate by design (it skips rows on plain turns and trims
+            # its backlog; its drafts are verified, the text never depends on them)
             drafter.state_resume(e)
         self._read = {"at": e, "n": n, "start": start, "from": how, "gen": self.rows_gen}
         ms = (time.perf_counter() - t0) * 1e3

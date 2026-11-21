@@ -116,36 +116,39 @@ def _lanes_with_prefixes(cfg, w, prompts, fulls, ns, close=None):
     return [outs[i] for i in range(len(prompts))], got, res, phases
 
 
-def test_a_lanes_end_read_runs_beside_another_lanes_decode():
-    """R1: lane 1 ends first and reads its answer again at its close (the handler's `_turn_close`) while lane 0 still
-    decodes through the runner. The read runs on lane 1's thread and GPU turn and offers the turn between its chunks
-    (`Turn.pause`, as a prefill's chunk hook does; the fair turn hands over to a waiter behind it); both lanes write
-    the tokens they write alone, and lane 1's end is the read's, kept."""
+def _read_beside(reader: int) -> str:
+    """Lane `reader` ends first and reads its answer again at its close (the handler's `_turn_close`) while the other
+    lane still decodes through the runner. The read runs on the reader's thread holding its GPU turn (slot 0's through
+    the engine lock, which takes the turn as slot 0) and offers it between its chunks (`Turn.pause`, as a prefill's
+    chunk hook does; the fair turn hands it to a waiter behind it); both lanes write the tokens they write alone, and
+    the reader's end is the read's, kept."""
     from server import app
     cfg = T.tiny_config()
     w = T.FakeWeights(cfg, seed=5)
+    other = 1 - reader
     prompts = [[(3 + 7 * i + 11 * j) % 96 + 1 for j in range(10 + 3 * i)] for i in range(2)]
-    ns = [80, 12]
+    ns = [12, 12]
+    ns[other] = 80
     refs = [T._greedy(cfg, w, p, n) for p, n in zip(prompts, ns)]
     fulls = [p + r for p, r in zip(prompts, refs)]
     alone = [_lanes_with_prefixes(cfg, w, [p], [f], [n])[0][0] for p, f, n in zip(prompts, fulls, ns)]
     seen = {"pauses": 0}
 
     def close(i):
-        if i != 1:
+        if i != reader:
             return None
         res = app.STATE["resident"]
         pool = dict.get(app.STATE, "pool")
         real, real_pause = res.reread_end, pool.turn.pause
 
         def pause(who):
-            if who == 1 and "lane0" in seen and "how" not in seen:
+            if who == reader and "other" in seen and "how" not in seen:
                 seen["pauses"] += 1
             return real_pause(who)
 
         def spy(*a, **kw):
-            seen["lane0"] = pool.slots[0].phase
-            seen["held"] = pool.turn.held_by(1)
+            seen["other"] = pool.slots[other].phase
+            seen["held"] = pool.turn.held_by(reader)
             got = real(*a, **kw)
             seen["how"] = got
             return got
@@ -153,21 +156,32 @@ def test_a_lanes_end_read_runs_beside_another_lanes_decode():
         try:
             ctx = list(app.STATE["last_ctx"])
             n_p = int(app.STATE["last_prompt_n"])
-            app._remember_turn(ctx[:n_p], ctx[n_p:], "B", defer=True, cid="lane1")
-            return app._turn_close("lane1")
+            app._remember_turn(ctx[:n_p], ctx[n_p:], "B", defer=True, cid=f"lane{reader}")
+            return app._turn_close(f"lane{reader}")
         finally:
             pool.turn.pause = real_pause
     R.RUNNER = None
     together, got, res, phases = _lanes_with_prefixes(cfg, w, prompts, fulls, ns, close=close)
     assert together == alone, (alone, together)
-    assert seen.get("lane0") == "runner", f"lane 0 was not decoding through the runner when the read began: {seen}"
+    assert seen.get("other") == "runner", f"lane {other} was not decoding through the runner when the read began: {seen}"
     assert seen.get("held") is True and seen["pauses"] >= 1, seen
-    assert seen.get("how") == "read" and got.get(1) == "kept", (seen, got)
-    assert res[1].end is not None and res[1].end.get("exact") is True, res[1].end
+    assert seen.get("how") == "read" and got.get(reader) == "kept", (seen, got)
+    assert res[reader].end is not None and res[reader].end.get("exact") is True, res[reader].end
     assert all(p == "" for p in phases), phases
     assert R.RUNNER.stats["errors"] == 0, R.RUNNER.stats
-    return (f"lane 1 read {res[1].stats.get('end_reread_rows')} rows on its own turn ({seen['pauses']} turn offers) "
-            f"while lane 0 decoded through the runner; both lanes their alone tokens")
+    return (f"lane {reader} read {res[reader].stats.get('end_reread_rows')} rows holding its turn ({seen['pauses']} "
+            f"turn offers) while lane {other} decoded through the runner; both lanes their alone tokens")
+
+
+def test_a_lanes_end_read_runs_beside_another_lanes_decode():
+    """R1: a side lane's read (lane 1) beside slot 0's decode through the runner."""
+    return _read_beside(1)
+
+
+def test_slot_0s_end_read_runs_beside_a_side_lanes_decode():
+    """R1 on slot 0, the slot every request of the hold takes: its read under the engine lock, which holds slot 0's
+    turn, beside a side lane's decode through the runner."""
+    return _read_beside(0)
 
 
 class _Tok:

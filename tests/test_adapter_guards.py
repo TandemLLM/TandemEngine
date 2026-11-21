@@ -245,7 +245,7 @@ MAY_MOVE = {"flint"}
 #: engine/spec.py's `rewatch` (the supervisor's own close counts) on purpose (its reason there); SRV-911 adds the end
 #: read again (engine/cache.py, engine/spill.py, QWEN38_END_REREAD in engine/settings.py) on purpose: which rows a family
 #: with `Capabilities.reread_end` keeps, no row of any family (its reasons there)
-SAME_ROWS_SHA256 = "99c5d7dec07425828c7c750f4410c3f0b9b92b6e75be80ec7410baadaa0d92a6"   # 38 entries
+SAME_ROWS_SHA256 = "a6167586e16129078316dc3941169bc0d7536884c7f354b3aff3fda2bf7e5feb"   # 38 entries
 
 
 def _manifest(name: str):
