@@ -18,6 +18,7 @@ Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; 
 - A family says how its chat template takes the thinking effort, in its spec (SRV-899). `EffortSpec` names the template's word for each effort level and, when the family has one, a default level of its own. The default spec is the shared words `low`, `medium` and `xhigh`. tests/test_effort_table.py pins what each family's template is handed, and the budget, for every effort a request can carry, against rows written on main: the six other families' rows are unchanged.
 - A family's own default level caps a request that nobody else decided: no client budget, no `--think-budget`, no conductor plan that decides the effort. The cap gets the answer reserve and closes with the engine's own phrase.
 - On a model that serves one chat at a time, a request waiting behind one that is thinking reads "another request is thinking".
+- Under a conductor profile whose `thinking.client_word` is `wins` (TandemApp's `chat-app`, `chat` and `general`, where a person picks the word), a client's effort word is the turn's level and its cap, as on the engine alone, and an explicit `xhigh` or `max` has no cap below the answer reserve, `--think-budget` included (SRV-899). A switch without a word (`reasoning.enabled: true`) keeps the class's level there; before, the engine held it to 8,192 tokens. `ceiling` and `ignore` are unchanged.
 
 ### Fixes
 

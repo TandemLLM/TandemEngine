@@ -10356,12 +10356,17 @@ class Handler(BaseHTTPRequestHandler):
             """The budget under the plan: where the router decides the effort, a client's effort
             word is a ceiling (the owner, 2026-10-03 12:30): the router's level, never above the
             word's cap (0 is no cap); under a profile whose `thinking.client_word` is `ignore`
-            (opencode, which sends `medium` every turn) the router's level alone. A client's
-            number always wins (server/api/thinking.py)."""
+            (opencode, which sends `medium` every turn) the router's level alone; under `wins`
+            (SRV-899: a person picked the word, TandemApp's chat-app, chat and general) the word's
+            level and its cap, as on the engine alone, and a switch without a word the router's
+            level, as under `ignore` (the router took the word as the turn's level and left a
+            switch to the class). A client's number always wins (server/api/thinking.py)."""
             if client.asked and client.kind != "number" and plan.decides_effort:
                 rb = plan.think_budget(server_budget)
                 if plan.client_word == "ignore":
                     return rb
+                if plan.client_word == "wins":
+                    return int(client.budget or 0) if client.kind == "effort" else rb
                 cw = int(client.budget or 0)
                 out = rb if not cw else cw if not rb else min(rb, cw)
                 if out != rb and plan.row is not None:

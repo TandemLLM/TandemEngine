@@ -19,6 +19,10 @@ The test matrix:
                                                        tests/test_serve_identity.py (the loop)
   8  the close is graceful on every path               test_over_the_handler_*
   9  the router: a number wins, a word yields          test_the_router_*
+ 10  under `client_word: wins` a word is the turn's level and cap, a switch the router's
+     (SRV-899)                                        test_over_the_handler_a_word_wins_*,
+                                                      test_over_the_handler_a_switch_under_wins_*,
+                                                      test_over_the_handler_chat_app_* (TandemApp's chat-app)
 
 Run: python tests/test_client_budgets.py
 """
@@ -623,6 +627,113 @@ def test_over_the_handler_a_word_is_a_ceiling_by_default():
         assert "client_word" not in cond.plans[-1].row["extra"]
     finally:
         _Conductor.client_word = "ceiling"
+
+
+_IN_FORCE = __import__("re").compile(r"client budget (\S+) \((\S+)\), in force (\S+),")
+
+
+def _in_force(log: str) -> str:
+    """The budget the plan left in force for a client's budget, as the `[think]` line says it ("none": no cap)."""
+    got = _IN_FORCE.findall(log)
+    assert len(got) == 1, log[-600:]
+    return got[0][2]
+
+
+def test_over_the_handler_a_word_wins_with_its_own_cap():
+    """SRV-899: under a profile whose `thinking.client_word` is `wins` (a person picked the word: TandemApp's chat-app,
+    chat and general) a client's word is the turn's level and its cap whatever the class's cap, as on the engine
+    alone: low 1,024 and medium 8,192 under a high class, an explicit xhigh no cap under a class with one, and
+    `--think-budget` does not cap it either (it is the router's fallback for a level with no cap). The engine adds
+    no `client_word` row of its own (the router journals the word that won)."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160}
+    _Conductor.client_word = "wins"
+    try:
+        for router, word, tb, want in ((16384, "low", 0, "1024"), (16384, "medium", 0, "8192"),
+                                       (1024, "medium", 0, "8192"), (16384, "xhigh", 0, "none"),
+                                       (None, "xhigh", 7, "none"), (None, "max", 7, "none")):
+            cond = _Conductor(router)
+            _, calls, log = _handler(dict(body, reasoning_effort=word), mode="on", cond=cond, think_budget=tb)
+            assert _in_force(log) == want, (router, word, tb, log[-400:])
+            assert "client_word" not in cond.plans[-1].row["extra"], cond.plans[-1].row["extra"]
+    finally:
+        _Conductor.client_word = "ceiling"
+    return "low, medium and xhigh/max at their own caps under any class; --think-budget leaves xhigh uncapped"
+
+
+def test_over_the_handler_a_switch_under_wins_is_the_routers_level():
+    """SRV-899, the 2026-11-21 residual: under `wins` a switch without a word (`reasoning.enabled: true`, which reads
+    as medium's 8,192) is no ceiling: the class's level stands, as it did under chat-app's `ignore` before. Under
+    `ceiling` (hermes) the same switch is held to 8,192 as before, and under `ignore` the router's level alone."""
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "reasoning": {"enabled": True}}
+    got = {}
+    try:
+        for rule in ("wins", "ignore", "ceiling"):
+            _Conductor.client_word = rule
+            for router in (16384, None):
+                _, _, log = _handler(dict(body), mode="on", cond=_Conductor(router))
+                got[(rule, router)] = _in_force(log)
+    finally:
+        _Conductor.client_word = "ceiling"
+    assert got == {("wins", 16384): "16384", ("wins", None): "none", ("ignore", 16384): "16384",
+                   ("ignore", None): "none", ("ceiling", 16384): "8192", ("ceiling", None): "8192"}, got
+    return "wins and ignore: the class's level; ceiling: 8,192 as before"
+
+
+def _chat_app_box():
+    """TandemApp's real conductor with its shipped chat-app profile on the fake engine, the class question answered
+    code_edit (xhigh, no cap) by the served stage at once; None when that TandemApp has no `wins`."""
+    import copy
+
+    from tandemapp.conductor import schema
+    if "wins" not in schema.CLIENT_WORDS:
+        return None
+    cond, fakes = setup(qwen=by_label("code_edit", 0.9))
+    fakes["qwen"].local = True                      # the server's own port: its queue is known
+    cond.router.own_eta = lambda texts, max_new: 150.0
+    cond.store.put("profiles", "chat-app", copy.deepcopy(schema.SHIPPED_PROFILES["chat-app"]),
+                   note="shipped", author="t")
+    seen, plan = [], cond.plan
+
+    def keep(*a, **k):
+        p = plan(*a, **k)
+        seen.append(p)
+        return p
+    cond.plan = keep
+    return cond, seen
+
+
+def test_over_the_handler_chat_app_a_switch_keeps_the_class_and_a_word_wins():
+    """SRV-899, a pair test with TandemApp's shipped chat-app profile (`client_word: wins` since its 3918420): a Chat
+    turn with a switch and no word gets the class's level (code_edit, xhigh: no cap), not the switch's 8,192; a
+    picked low gets 1,024 on a class that says xhigh; a picked xhigh has no cap with `--think-budget` set. Skipped
+    against a TandemApp whose `thinking.client_word` has no `wins` (7207618)."""
+    box = _chat_app_box()
+    if box is None:
+        print("  [chat-app wins] skipped: this TandemApp has no client_word wins (3918420 adds it)", flush=True)
+        return "skipped: this TandemApp has no client_word wins (3918420 adds it)"
+    cond, seen = box
+    msgs = [{"role": "user", "content": CODE}]
+    out = []
+    for extra, tb, want, row_effort in (({"reasoning": {"enabled": True}}, 0, "none", "xhigh"),
+                                         ({"reasoning_effort": "low"}, 0, "1024", "low"),
+                                         ({"reasoning_effort": "xhigh"}, 7, "none", "xhigh")):
+        serve(None, max_len=8192)
+        app.STATE.update(tok=frame.MonTok(), think_budget=tb, conductor=cond, monitor=frame.monitor("on"))
+        req = Req("/v1/chat/completions", dict(extra, messages=msgs, max_tokens=160))
+        req.headers.update({"X-QSE-Client": "chat-app", "x-session-id": f"ca-{len(out)}"})
+        buf = io.StringIO()
+        with _Spy(), logbuf_capture(buf):
+            req.response()
+        log = buf.getvalue()
+        row = seen[-1].row
+        assert row["profile"] == "chat-app" and row["class_id"] == "code_edit", (row["profile"], row.get("class_id"))
+        assert row["effort"] == row_effort, (extra, row["effort"])
+        assert _in_force(log) == want, (extra, tb, log[-600:])
+        if "reasoning_effort" in extra:
+            assert row["extra"]["client_word"]["wins"] is True, row["extra"].get("client_word")
+        out.append(f"{next(iter(extra))}={_in_force(log)}")
+    print("  [chat-app wins] ran: " + ", ".join(out), flush=True)
+    return "chat-app: " + ", ".join(out)
 
 
 def test_over_the_handler_thinking_off_has_no_budget():
