@@ -1,0 +1,58 @@
+{
+ "aarch64-linux-torch2.13.0-NVIDIA_GB10": {
+  "flashnext": {
+   "rows17_items32_combined": "1afcb6fc2c216389b0d318be3b57c6023c03673947bc33c17815b7cbabbb3d6b",
+   "rows17_items32_yd": "e7d488640c5fb2bf625089ce1b71f287ded42cd2a88114f671ba0d905d31542d",
+   "rows17_items64_combined": "1afcb6fc2c216389b0d318be3b57c6023c03673947bc33c17815b7cbabbb3d6b",
+   "rows17_items64_yd": "e7d488640c5fb2bf625089ce1b71f287ded42cd2a88114f671ba0d905d31542d",
+   "rows1_items32_combined": "28949551ead650238ea6269423212cce60bd6f2d1510ec9be625eccf8e53fc0e",
+   "rows1_items32_yd": "9e77c1c226904c8b5419978ee1bce7c2206637199e82bc18affcd755529f1be0",
+   "rows1_items64_combined": "28949551ead650238ea6269423212cce60bd6f2d1510ec9be625eccf8e53fc0e",
+   "rows1_items64_yd": "9e77c1c226904c8b5419978ee1bce7c2206637199e82bc18affcd755529f1be0",
+   "rows300_items32_combined": "491bf4fd9bc67ae63bcae7378fd1e7e98ce0b7bd8cb0f022c07f8939ea3f5a46",
+   "rows300_items32_yd": "ae6bc51ddd0ff0f79f6df6ca988a643a22ca2ea7f27168bacaa38c281fda6d80",
+   "rows300_items64_combined": "491bf4fd9bc67ae63bcae7378fd1e7e98ce0b7bd8cb0f022c07f8939ea3f5a46",
+   "rows300_items64_yd": "ae6bc51ddd0ff0f79f6df6ca988a643a22ca2ea7f27168bacaa38c281fda6d80",
+   "rows4096_items32_combined": "a04118619ebce3d4edb7e58f2253f53701f91aa499824160d5785b257e343ae7",
+   "rows4096_items32_yd": "22f6964ecd3605ed07d4d0f075eb34dc18521743531275914450e6a83de53186",
+   "rows4096_items64_combined": "a04118619ebce3d4edb7e58f2253f53701f91aa499824160d5785b257e343ae7",
+   "rows4096_items64_yd": "22f6964ecd3605ed07d4d0f075eb34dc18521743531275914450e6a83de53186"
+  },
+  "flint": {
+   "rows17_items32_combined": "a6f6d435cabe8bfc476fb9512bfc905c2b5d25fe5a855a5b77718ebe9c4da48b",
+   "rows17_items32_yd": "02e6e4c837f0dc4e4bb91d832326bd595f41a6d9209137b491e6b063a73a8f97",
+   "rows17_items64_combined": "a6f6d435cabe8bfc476fb9512bfc905c2b5d25fe5a855a5b77718ebe9c4da48b",
+   "rows17_items64_yd": "02e6e4c837f0dc4e4bb91d832326bd595f41a6d9209137b491e6b063a73a8f97",
+   "rows1_items32_combined": "ed083f93a7444412737e48aa4688a5f50bf25aa9715f7eb35890eedcd749c304",
+   "rows1_items32_yd": "5ea712599bdb1e6838998c3036322c72d30bf2fd64af34b0cb4a8ce910c5ea7d",
+   "rows1_items64_combined": "ed083f93a7444412737e48aa4688a5f50bf25aa9715f7eb35890eedcd749c304",
+   "rows1_items64_yd": "5ea712599bdb1e6838998c3036322c72d30bf2fd64af34b0cb4a8ce910c5ea7d",
+   "rows300_items32_combined": "332523af956f01937e4939c4cc4db0c3456d1435d41bca79a866cc48d543906e",
+   "rows300_items32_yd": "f6b15e6483ecfa5feae5b7e2c1983daadf33dc0b1dcd85be511e2ced04417916",
+   "rows300_items64_combined": "332523af956f01937e4939c4cc4db0c3456d1435d41bca79a866cc48d543906e",
+   "rows300_items64_yd": "f6b15e6483ecfa5feae5b7e2c1983daadf33dc0b1dcd85be511e2ced04417916",
+   "rows4096_items32_combined": "522b4fda2c53f10056f0ea66b8aad05085984c4689b34420b63217293977074e",
+   "rows4096_items32_yd": "1af0ad25fcffb167f100470cc2901830f47c9339ba18b3c1ffa81aabc8db5889",
+   "rows4096_items64_combined": "522b4fda2c53f10056f0ea66b8aad05085984c4689b34420b63217293977074e",
+   "rows4096_items64_yd": "1af0ad25fcffb167f100470cc2901830f47c9339ba18b3c1ffa81aabc8db5889"
+  },
+  "lfm25": {
+   "rows17_items32_combined": "bc280458e2f1cd0c73120f9fc11c4dd5fdeaa79428cb049c2db3e9078710aa95",
+   "rows17_items32_yd": "055272c3c9f5b78e97c64d478dd110a40986dd87dc74f8d38b9b96e229a21435",
+   "rows17_items64_combined": "bc280458e2f1cd0c73120f9fc11c4dd5fdeaa79428cb049c2db3e9078710aa95",
+   "rows17_items64_yd": "055272c3c9f5b78e97c64d478dd110a40986dd87dc74f8d38b9b96e229a21435",
+   "rows1_items32_combined": "c519c7bb88171cb6025ef8d3071eaf80ac85bb098b9741c174320f8bd5437eee",
+   "rows1_items32_yd": "adcb276103a202f308e083dad8b6dbc966aeacd265e1dbb5f990263da8410ae9",
+   "rows1_items64_combined": "c519c7bb88171cb6025ef8d3071eaf80ac85bb098b9741c174320f8bd5437eee",
+   "rows1_items64_yd": "adcb276103a202f308e083dad8b6dbc966aeacd265e1dbb5f990263da8410ae9",
+   "rows300_items32_combined": "4402d2b45b39513b5c1481e94686d3cda54ae9b8325cd312a39d7039dbecbd51",
+   "rows300_items32_yd": "4b6cd2a2c67d068f71eaae7bb3cd919e90e463f5bd4fb26a1ed7c1bc3dc79a1f",
+   "rows300_items64_combined": "4402d2b45b39513b5c1481e94686d3cda54ae9b8325cd312a39d7039dbecbd51",
+   "rows300_items64_yd": "4b6cd2a2c67d068f71eaae7bb3cd919e90e463f5bd4fb26a1ed7c1bc3dc79a1f",
+   "rows4096_items32_combined": "db6f2338c4f353d46e4e2d6f65dd5783289ff33e908e025a41a91457bc1412eb",
+   "rows4096_items32_yd": "c949faba877b6c6f503f5157e70b64fef9a7f107600f8da44e819ec05538c587",
+   "rows4096_items64_combined": "db6f2338c4f353d46e4e2d6f65dd5783289ff33e908e025a41a91457bc1412eb",
+   "rows4096_items64_yd": "c949faba877b6c6f503f5157e70b64fef9a7f107600f8da44e819ec05538c587"
+  }
+ }
+}
