@@ -2938,6 +2938,29 @@ def _think_cut_said(rows: int) -> None:
 #: a proposal's length under the reasoning's next cap (engine/spec.py `draft_room`)
 _draft_room = draft_room
 
+#: the most `close_counts` taken from a supervisor (engine-ext-v1 3.3)
+CLOSE_COUNTS_MAX = 8
+
+
+def _watch_sync(sup, think) -> None:
+    """engine-ext-v1 3.3: the supervisor's `close_counts` (the reasoning counts at which its SP1 may
+    close for the count alone, D2's backstop among them) into the request's ThinkBudget, beside the
+    counts it was built with (`rewatch`), so a drafted block stops there as the plain step does.
+    Read after the budget is built (the supervisor knows the request's max_tokens by then) and after
+    each SP1 verdict, so a count that moves is in force for the next block. Positive ints only, the
+    CLOSE_COUNTS_MAX smallest; anything else, or a field that raises, is no count, and the
+    supervisor stays attached. A 3.2 supervisor answers the headless value, no count."""
+    rewatch = getattr(think, "rewatch", None)
+    if sup is None or rewatch is None or getattr(sup, "detached", False):
+        return
+    try:
+        got = sup.close_counts
+        counts = sorted({c for c in (got or ()) if isinstance(c, int) and not isinstance(c, bool)
+                         and c > 0})[:CLOSE_COUNTS_MAX]
+    except Exception:                                              # noqa: BLE001
+        counts = []
+    rewatch(counts)
+
 
 #: #98: `cache_prompt: false`. The caches compare a cold prompt under this first key, which no token
 #: id has, so no cache resumes it and no anchor it leaves matches a later prompt; and file it under
@@ -3983,8 +4006,10 @@ def _sp1(sup, think, n_out: int, room: int, pos: int = 0):
     else None. A client's own budget that is spent closes first, with its streamed phrase."""
     if think is None or not think.inside or think.hit or not sup.watches_blocks:
         return None
-    return sup.at_block(ext_mod.Event(reasoning_tokens=think.n, inside=True, stall=think.reason,
-                                      share=think.share, output_tokens=n_out, pos=pos), room)
+    act = sup.at_block(ext_mod.Event(reasoning_tokens=think.n, inside=True, stall=think.reason,
+                                     share=think.share, output_tokens=n_out, pos=pos), room)
+    _watch_sync(sup, think)                 # 3.3: the counts as the verdict left them, for the next block
+    return act
 
 
 def _sp2(sup, think, ctx, start: int, n_out: int, room: int, extra=(), end=None):
@@ -11586,6 +11611,7 @@ class Handler(BaseHTTPRequestHandler):
             # the counts SP1 closes the block at, for a drafted block to stop at as at the budget
             think_watch = (routed, *sp4_caps) if sup is not None else ()
             think = ThinkBudget(tok, budget, phrase=_think_close(), arms=arms, watch=think_watch)
+            _watch_sync(sup, think)                    # 3.3: the supervisor's own close counts
             rec.live_refs = (think, None)              # read by the live sampler
             prompt_ids = prompt.tolist()
             # SR1: the shadow reader is fed this turn's served prompt (host work only; it reads
@@ -11809,6 +11835,7 @@ class Handler(BaseHTTPRequestHandler):
                                  if STATE.get("pattern_stop") else None)
                         think = ThinkBudget(tok, budget, phrase=_think_close(), arms=arms,
                                             watch=think_watch)
+                        _watch_sync(sup, think)
                         rec.live_refs = (think, None)
                         lpr = lp_mod.Recorder(lp_top) if lp_top is not None else None
                         source = open_source(sampler.for_choice(ci), think, pstop, lpr, None)

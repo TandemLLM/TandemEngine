@@ -34,7 +34,10 @@ addresses' registry and the loop escape's counts are the engine's objects in the
 (engine-ext-v1 3.2): SP4 may answer SET_CONSTRAINT, a constraint the engine's own grammar carries
 out as if the request had sent it (server/compat.py `act_constraint`); its shape is checked here
 (`constraint_of`), its value by the engine, and the supervisor may hear what became of it
-(`constraint_outcomes`).
+(`constraint_outcomes`). ENG-476 (engine-ext-v1 3.3): the supervisor's field `close_counts` names
+the reasoning counts at which SP1 may close for the count alone (D2's backstop); the engine reads it
+after it builds the request's ThinkBudget and after each SP1 verdict, so a drafted block stops
+there as the plain step does (server/app.py `_watch_sync`). A 3.2 extension answers none.
 
 The failure rule (ext.json `failure`): closed at start, open per request. `discover` and `start`
 raise Refused, a SystemExit whose text is the one line `[ext] REFUSING: <why>`: a module that does
@@ -55,7 +58,7 @@ import re
 import threading
 
 #: the engine-ext-v1 version this host speaks (contracts/engine-ext-v1/ext.json `version`)
-EXT_API = "3.2"
+EXT_API = "3.3"
 #: the module attributes discovery reads (ext.json discovery.module)
 MODULE_ATTRS = ("EXT_API", "NAME", "VERSION", "start")
 #: since 3.0, optional module functions asked before the start (ext.json discovery.module_optional):
@@ -806,6 +809,8 @@ SUP_FIELDS = {
     "lift_ids": lambda: None, "on_event": lambda: None, "held_events": lambda: None,
     "resume_ms": list, "forwarding": lambda: None, "forwarded_at": lambda: None,
     "can_ask": lambda: False,
+    # since 3.3: the reasoning counts at which at_block may close for the count alone (D2's backstop)
+    "close_counts": tuple,
 }
 
 

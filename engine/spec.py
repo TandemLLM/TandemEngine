@@ -525,9 +525,11 @@ class ThinkBudget:
         self.budget = int(budget or 0)
         self.arms_cfg = arms or None
         # The block's token counts at which a supervisor's SP1 may close it (the cap routed to the
-        # monitor, SP4's SET_THINK_BUDGET): a drafted block stops there as at the budget (`cut`,
+        # monitor, SP4's SET_THINK_BUDGET; since engine-ext-v1 3.3 the supervisor's own
+        # `close_counts`, through `rewatch`): a drafted block stops there as at the budget (`cut`,
         # `room`), so SP1 is asked at the token the plain step asks it at. `hit` never reads them.
-        self.watch = tuple(sorted({int(c) for c in watch if c and int(c) > 0}))
+        self._watch0 = self._counts(watch)
+        self.watch = self._watch0
         self.open_id = _special_id(tokenizer, "<think>")
         self.end_id = _special_id(tokenizer, "</think>")
         # The model does not always emit the SPECIAL token: on prompts that look like raw text
@@ -548,6 +550,17 @@ class ThinkBudget:
         self.t_closed: float | None = None
         self.t_forced: float | None = None
         self._arms: StallArms | None = None
+
+    @staticmethod
+    def _counts(values) -> tuple[int, ...]:
+        """Counts as `watch` holds them: positive ints, each once, in order."""
+        return tuple(sorted({int(c) for c in values if c and int(c) > 0}))
+
+    def rewatch(self, counts) -> None:
+        """`watch` as the constructor's counts and `counts` (the supervisor's `close_counts` as it
+        names them now, server/app.py `_watch_sync`): a count it stops naming is dropped, the
+        constructor's stay."""
+        self.watch = self._counts(self._watch0 + tuple(counts))
 
     def start(self, prompt_ids: list[int]) -> "ThinkBudget":
         """Arm for one request. The prompt's own tail says whether the block is already open."""

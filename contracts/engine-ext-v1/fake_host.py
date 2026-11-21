@@ -15,6 +15,9 @@ Since 2.0: CALLS, SUP_OPTIONAL and SUP_FIELDS hold the headless value of each op
 optional supervisor method and each supervisor field (ext.json extension.calls,
 supervisor.optional_methods, supervisor.fields).
 
+Since 3.3: the supervisor field `close_counts` (SUP_FIELDS, headless empty), the reasoning counts at
+which at_block may close for the count alone; the engine stops a drafted block at each.
+
 Since 3.2: SET_CONSTRAINT at SP4 (ext.json supervisor.act.constraint). `constraint_of` is the
 shape (a wrong one detaches the supervisor), `check_constraint` the refusals the engine makes
 before its grammar compiles anything (kinds, scopes, limits, precedence, the vocabulary); the
@@ -114,6 +117,8 @@ SUP_FIELDS = {
     "memory_notes": lambda: None, "lift_ids": lambda: None, "on_event": lambda: None,
     "held_events": lambda: None, "resume_ms": list, "forwarding": lambda: None,
     "forwarded_at": lambda: None, "can_ask": lambda: False,
+    # since 3.3: the counts at which at_block may close for the count alone
+    "close_counts": tuple,
 }
 
 

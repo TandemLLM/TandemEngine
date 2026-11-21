@@ -333,13 +333,13 @@ def test_start_is_closed():
         assert a.replace("fake_ext", "M").replace("variant_ext", "M") == \
             b.replace("engine_ext_ref_fake_ext", "M").replace("variant_ext", "M"), (a, b)
         lines.append(a)
-    assert "QSE_EXT is empty" in lines[0] and lines[3] == "[ext] REFUSING: the extension speaks engine-ext-v1 1.3; this engine speaks 3.2", lines
-    assert lines[-2:] == [f"[ext] REFUSING: the extension speaks engine-ext-v1 {v}; this engine speaks 3.2"
+    assert "QSE_EXT is empty" in lines[0] and lines[3] == "[ext] REFUSING: the extension speaks engine-ext-v1 1.3; this engine speaks 3.3", lines
+    assert lines[-2:] == [f"[ext] REFUSING: the extension speaks engine-ext-v1 {v}; this engine speaks 3.3"
                           for v in ("2.0", "2.1")], lines[-2:]
     assert E.discover("", "engine") is None and E.NULL.listing() == [] and E.NULL.route("GET", "/x") is None
     # an older minor starts; the extension's own paths are fine
     assert E.start(mod, _host({"route": "/v1/conductor/"})).listing() == \
-        [{"name": "fake-ext", "version": "0", "ext_api": "3.2"}]
+        [{"name": "fake-ext", "version": "0", "ext_api": "3.3"}]
     # QSE_EXT_ARGS: a JSON object over the command line
     assert E.ext_args({"a": 1, "fail": None}, {"QSE_EXT_ARGS": '{"fail": "plan"}'}) == {"a": 1, "fail": "plan"}
     for bad in ("[1]", "{nope"):
@@ -353,6 +353,40 @@ def test_start_is_closed():
 
 
 # ---------------------------------------------------------------------------- 4
+
+def test_3_3_holds_3_2_and_a_3_2_extension_starts():
+    """engine-ext-v1 3.3 (ENG-476): the supervisor field `close_counts` is in ext.json (since 3.3),
+    the host's SUP_FIELDS and the reference host's, headless empty; ext.json holds every part of
+    compat/3.2 (3.2 as it was); a 3.2 extension, as live TandemApp's is, starts on this host and its
+    supervisor answers no counts; fake_ext speaks 3.3 and names the counts it is given."""
+    from test_set_constraint import _holds
+    H, X = _load("fake_host"), _load("fake_ext")
+    old, new = json.load(open(os.path.join(DIR, "compat", "3.2", "ext.json"))), _spec()
+    assert old["version"] == "3.2" and new["version"] == "3.3" == E.EXT_API == H.EXT_API == X.EXT_API
+    lost = _holds(old, new, "", {"/version", "/about"})
+    assert not lost, f"3.3 must hold every part of 3.2: {lost}"
+    f = new["supervisor"]["fields"]["close_counts"]
+    assert f["since"] == "3.3" and f["headless"] == "()" and "close_counts" not in old["supervisor"]["fields"]
+    assert set(new["supervisor"]["fields"]) - set(old["supervisor"]["fields"]) == {"close_counts"}
+    assert E.SUP_FIELDS["close_counts"]() == H.SUP_FIELDS["close_counts"]() == ()
+    assert "since_3_3" in new and json.load(open(os.path.join(DIR, "knobs.json")))["version"] == "3.3"
+    # a 3.2 extension starts (accepts: the same major, a minor at or below the host's) and is listed so
+    assert E.accepts("3.2") is None and H.accepts("3.2") is None and E.accepts("3.4") and H.accepts("3.4")
+    mod = _fake_ext()
+    old_ext = types.ModuleType("ext_3_2")
+    for k in ("NAME", "VERSION", "start"):
+        setattr(old_ext, k, getattr(mod, k))
+    old_ext.EXT_API = "3.2"
+    assert E.start(old_ext, _host({"route": "/v1/conductor/"})).listing() == \
+        [{"name": "fake-ext", "version": "0", "ext_api": "3.2"}]
+    # a supervisor that keeps no close_counts (3.2) answers the headless value and stays attached
+    plain = E.Supervision(types.SimpleNamespace())
+    assert plain.close_counts == () and not plain.detached
+    ext = X.start(H.FakeHost(args={"close_counts": [4096, 8]}))
+    assert X._Supervisor(ext).close_counts == (4096, 8)
+    assert X._Supervisor(X.start(H.FakeHost())).close_counts == ()
+    return "3.3 holds 3.2; close_counts on both hosts, headless (); a 3.2 extension starts"
+
 
 def _counted(hook: str) -> float:
     from server.api import metrics
@@ -472,10 +506,10 @@ def test_the_engine_refuses_to_start():
     cdir = tempfile.mkdtemp(prefix="ext-cond-")
     before = [({}, cdir, "chat mode needs an extension (QSE_EXT is empty)"),
               ({"QSE_EXT": "no_such_extension_module_x"}, None, "QSE_EXT=no_such_extension_module_x does not import"),
-              ({"QSE_EXT": "ext_major1"}, None, "the extension speaks engine-ext-v1 1.3; this engine speaks 3.2"),
+              ({"QSE_EXT": "ext_major1"}, None, "the extension speaks engine-ext-v1 1.3; this engine speaks 3.3"),
               # 3.0 (ENG-413 WP5): a 2.x extension is refused before the weights load, in chat mode too
-              ({"QSE_EXT": "ext_major2"}, None, "the extension speaks engine-ext-v1 2.0; this engine speaks 3.2"),
-              ({"QSE_EXT": "ext_major2"}, cdir, "the extension speaks engine-ext-v1 2.0; this engine speaks 3.2"),
+              ({"QSE_EXT": "ext_major2"}, None, "the extension speaks engine-ext-v1 2.0; this engine speaks 3.3"),
+              ({"QSE_EXT": "ext_major2"}, cdir, "the extension speaks engine-ext-v1 2.0; this engine speaks 3.3"),
               ({"QSE_EXT": "fake_ext", "QSE_EXT_ARGS": "[1]"}, None, "QSE_EXT_ARGS is not a JSON object")]
     after = [({"QSE_EXT": "ext_nohook"}, None, "ext_nohook lacks the hooks"),
              ({"QSE_EXT": "fake_ext", "QSE_EXT_ARGS": '{"fail": "start"}'}, None, "fake_ext.start failed"),
@@ -585,7 +619,7 @@ def test_an_extension_on_a_fake_engine():
     try:
         port, seen = _up(p)
         st, _, h = _get(port, "/health")
-        assert st == 200 and h["extensions"] == [{"name": "fake-ext", "version": "0", "ext_api": "3.2"}], h
+        assert st == 200 and h["extensions"] == [{"name": "fake-ext", "version": "0", "ext_api": "3.3"}], h
         assert "fake" not in h["loaded"], h["loaded"]
         assert _metric(port, "qse_ext_errors_total").get("health", 0) >= 1
         st, _, m = _get(port, "/v1/models")
@@ -601,7 +635,7 @@ def test_an_extension_on_a_fake_engine():
         assert _chat(port)[0] == 200
     finally:
         out = _stop(p, seen)
-    assert "[ext] on: fake-ext 0 (engine-ext-v1 3.2)" in out and "[ext] health failed" in out, out[-2000:]
+    assert "[ext] on: fake-ext 0 (engine-ext-v1 3.3)" in out and "[ext] health failed" in out, out[-2000:]
     # a route that raises: 500 extension_error, counted; a route's own answer; stop at the drain, open
     p = _engine({"QSE_EXT": "ext_boom", "QSE_EXT_ARGS": '{"fail": "stop"}'})
     seen: list = []
@@ -635,7 +669,8 @@ def test_chat_mode_through_the_adapter():
         (x,) = h["extensions"]
         with open(os.path.join(pairapp.APP, "VERSION")) as f:
             release = f.read().strip()
-        assert x == {"name": "tandemapp", "version": release, "ext_api": E.EXT_API}, x
+        # the version TandemApp's extension speaks, which this host takes (a 3.2 one on a 3.3 host, ENG-476)
+        assert x["name"] == "tandemapp" and x["version"] == release and E.accepts(x["ext_api"]) is None, x
         st, _, m = _get(port, "/v1/models")
         assert [y["id"] for y in m["data"]] == ["TandemLLM"], m
         assert _get(port, f"/v1/models/{RAW}")[2]["id"] == "TandemLLM"

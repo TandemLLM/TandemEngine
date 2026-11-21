@@ -1,8 +1,9 @@
 """The smallest engine-ext-v1 extension (ENG-429, QA ENG-430): every hook, no behaviour of its own.
 
-Written against 3.2 (first 1.0); its prompt takes `info` (a default) and its supervisor has
+Written against 3.3 (first 1.0); its prompt takes `info` (a default) and its supervisor has
 `check_answer`, so it fits the interface's signatures; since 3.2 it may answer SET_CONSTRAINT at
-SP4 and hears what became of it (`constraint_outcomes`).
+SP4 and hears what became of it (`constraint_outcomes`); since 3.3 its supervisor names the counts
+`host.args` `close_counts` gives (`close_counts`, empty without).
 
 A host's tests load it (QSE_EXT=fake_ext with this folder on the path, or the module object) and
 drive requests through it. `host.args` steers it, so one module covers the failure cases:
@@ -14,6 +15,7 @@ drive requests through it. `host.args` steers it, so one module covers the failu
           supervisor answers at at_request (after the `act` of at_request, if any)
     constraint_field: since 3.2, the request body's field that holds those constraints for one
           request (in place of `constraint`; tools/set_constraint_check.py sends them so)
+    close_counts: since 3.3, the reasoning counts its supervisor names in `close_counts`
     route: a prefix it claims (an engine path is refused at start)
     raw:  plan returns None (the request is served as a headless engine would)
     refuse: plan raises the host's Refusal
@@ -23,7 +25,7 @@ Standard library only; imports neither tree.
 
 from __future__ import annotations
 
-EXT_API = "3.2"
+EXT_API = "3.3"
 NAME = "fake-ext"
 VERSION = "0"
 
@@ -33,6 +35,8 @@ class _Supervisor:
         self.ext = ext
         self.acted: set = set()
         self.constraints = constraints if constraints is not None else ext.args.get("constraint")
+        # since 3.3: the counts at which at_block may close for the count alone
+        self.close_counts = tuple(ext.args.get("close_counts") or ())
 
     def _step(self, name: str):
         self.ext.calls.append(f"supervisor.{name}")

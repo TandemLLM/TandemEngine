@@ -1,7 +1,7 @@
 {
   "name": "engine-ext-v1",
-  "version": "3.2",
-  "about": "The in-process extension interface of a TandemLLM engine (ENG-429); version 2.0 since ENG-413 WP4 (changed_from_1), 3.0 since WP5 (changed_from_2, since_3_0), 3.2 adds SET_CONSTRAINT (since_3_2). Python, not HTTP. The engine owns it; TandemApp's conductor is its first extension. README.md says it in prose; fake_host.py is the reference host and fake_ext.py the smallest extension. A minor step adds a hook, an argument with a default, a host attribute, an event field or an act kind; a major step removes or renames one or changes a meaning.",
+  "version": "3.3",
+  "about": "The in-process extension interface of a TandemLLM engine (ENG-429); version 2.0 since ENG-413 WP4 (changed_from_1), 3.0 since WP5 (changed_from_2, since_3_0), 3.2 adds SET_CONSTRAINT (since_3_2), 3.3 the supervisor field close_counts (since_3_3). Python, not HTTP. The engine owns it; TandemApp's conductor is its first extension. README.md says it in prose; fake_host.py is the reference host and fake_ext.py the smallest extension. A minor step adds a hook, an argument with a default, a host attribute, an event field or an act kind; a major step removes or renames one or changes a meaning.",
   "discovery": {
     "env": "QSE_EXT",
     "default": "",
@@ -191,7 +191,8 @@
       "can_ask": {"type": "bool", "headless": "false", "about": "written by the engine: the loop can ask a question in place now"},
       "lift_ids": {"type": "list[int] or None", "headless": "None", "about": "written by the engine before at_finish: the calls' ids the output ended with inside its reasoning"},
       "held_events": {"type": "list or None", "headless": "None", "about": "written by the engine: SP2's events held while a block's tokens still go out"},
-      "resume_ms": {"type": "list[float]", "headless": "[]", "about": "appended by the engine: SP2's end token to the continued answer's first token"}
+      "resume_ms": {"type": "list[float]", "headless": "[]", "about": "appended by the engine: SP2's end token to the continued answer's first token"},
+      "close_counts": {"type": "sequence[int]", "headless": "()", "since": "3.3", "about": "read: the reasoning-token counts (the unit of the SP1 event's reasoning_tokens) at which at_block may return CLOSE_REASONING for the count alone, as the supervisor knows them now (D2's backstop: min(cap, max_tokens - reserve)). Set by the supervisor, read by the engine after it has set req.max_tokens and built the request's reasoning budget, and again after every SP1 verdict, so a count that changes is in force for the next block. The engine stops a drafted block at each count as the plain step does; positive ints only, at most 8, anything else is no count. A count the supervisor does not close at costs one shorter block"}
     },
     "safe_points": {
       "SP1": {"at": "block", "acts": ["CLOSE_REASONING", "GIVE_UP"]},
@@ -298,6 +299,11 @@
     "act": "SET_CONSTRAINT at SP4 (supervisor.act.constraint): regex, choice, JSON schema or logit bias, carried out by the engine's own grammar as the request field it is the same as",
     "supervisor": "the optional method constraint_outcomes(outcomes)",
     "additive": "a 3.1 extension starts on a 3.2 host and is served as before: it answers no SET_CONSTRAINT, and its supervisor's apply_request gets the acts it got (compat/3.1/ext.json holds 3.1 as it was)"
+  },
+  "since_3_3": {
+    "why": "ENG-476: the plain step asks SP1 after each token, a drafted block after the block, so a close SP1 decides at a count the engine is not handed (D2's backstop) came up to a block less one token late",
+    "supervisor": "the field close_counts (supervisor.fields): the counts at which at_block may close for the count alone",
+    "additive": "a 3.2 extension starts on a 3.3 host and is served as before: its supervisor has no close_counts, the engine reads the headless empty value (compat/3.2/ext.json holds 3.2 as it was)"
   },
   "kept_interim": [
     {"what": "state['conductor'] and state['monitor'].policy handed to the --backends proxy", "where": "server/app.py start_proxy", "why": "the --backends proxy in the engine's process is TandemApp's own code (proxy.service, imported by the engine) and runs TandemApp's conductor as its harness; it leaves the engine with ENG-413 WP14 (routes and paths marked to leave go then, the owner's decision of 2026-11-13), so it does not become part of the interface", "until": "ENG-413 WP14"}

@@ -390,7 +390,8 @@ class _Spy:
         app.generate_stream = self.real
 
 
-def _handler(b: dict, mode=None, cond=None, reserve=None, headers=None, think_budget=0, spec=None):
+def _handler(b: dict, mode=None, cond=None, reserve=None, headers=None, think_budget=0, spec=None,
+             monitor=None):
     serve(None)
     app.STATE.update(tok=frame.MonTok(), think_budget=think_budget)
     if spec is not None:
@@ -400,7 +401,7 @@ def _handler(b: dict, mode=None, cond=None, reserve=None, headers=None, think_bu
     if cond is not None:
         app.STATE["conductor"] = cond
     if mode is not None:
-        app.STATE["monitor"] = frame.monitor(mode)
+        app.STATE["monitor"] = monitor if monitor is not None else frame.monitor(mode)
     req = Req("/v1/chat/completions", b)
     req.headers.update(headers or {})
     out = io.StringIO()
@@ -588,6 +589,26 @@ def test_over_the_handler_a_client_number_closes_hidden_with_the_monitor():
         # the hidden phrase is not the client's: the cap's 4 reasoning tokens (SP1 reads them
         # after the block that reached them, one more here), then `</think>`
         assert 4 <= ids.index(frame.CLOSE) <= 5, ids[:8]
+
+
+def test_over_the_handler_the_supervisors_own_count_is_watched():
+    """engine-ext-v1 3.3 (ENG-476): over the handler the request's budget watches the supervisor's own close
+    counts (`close_counts`: D2's backstop, min(9, 160 - 1) here) beside the routed cap; a supervisor
+    without the field (3.2) leaves the routed cap alone."""
+    from tandemapp.conductor.monitor import executor
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160,
+            "max_reasoning_tokens": 4, "reasoning_format": "reasoning_content"}
+    raw, calls, _ = _handler(body, mode="on", cond=_Conductor(None), monitor=frame.monitor("on", frame.backstop(9)))
+    assert calls[0]["sup"].think_budget == 4 and calls[0]["watch"] == (4, 9), calls[0]["watch"]
+    saved = executor.Supervisor.__dict__["close_counts"]
+    delattr(executor.Supervisor, "close_counts")             # a supervisor of 3.2
+    try:
+        raw, calls, _ = _handler(body, mode="on", cond=_Conductor(None),
+                                 monitor=frame.monitor("on", frame.backstop(9)))
+        assert calls[0]["watch"] == (4,), calls[0]["watch"]
+    finally:
+        executor.Supervisor.close_counts = saved
+    return "the routed 4 and D2's 9; without the field the routed 4 alone"
 
 
 def test_over_the_handler_the_reserve_closes_hidden_and_is_journaled():

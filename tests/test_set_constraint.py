@@ -121,8 +121,9 @@ def _holds(old, new, path: str, changed: set) -> list:
 
 
 def test_3_2_holds_3_1():
-    old, new = _json("compat", "3.1", "ext.json"), _json("ext.json")
-    assert old["version"] == "3.1" and new["version"] == "3.2" == E.EXT_API, (old["version"], new["version"])
+    # 3.2 as it was (compat/3.2, since 3.3); the live ext.json holds it in turn (test_engine_ext_host)
+    old, new = _json("compat", "3.1", "ext.json"), _json("compat", "3.2", "ext.json")
+    assert old["version"] == "3.1" and new["version"] == "3.2", (old["version"], new["version"])
     lost = _holds(old, new, "", {"/version", "/about"})
     assert not lost, f"3.2 must hold every part of 3.1: {lost}"
     assert new["supervisor"]["safe_points"]["SP4"]["acts"] == \
@@ -134,10 +135,10 @@ def test_3_2_holds_3_1():
     assert set(c["same_as"]) == {"regex", "choice", "json_schema", "logit_bias", "tool_args"}
     assert list(c["fields"]) == ["kind", "value", "scope", "strict"]
     assert c["limits"]["bias_ids"] == 300 and c["limits"]["automaton_states"] == 20000
-    assert _json("knobs.json")["version"] == "3.2"
+    assert _json("knobs.json")["version"] == E.EXT_API
     H = _load("fake_host")
     assert H.accepts("3.1") is None and E.accepts("3.1", E.EXT_API) is None, "a 3.1 extension starts"
-    assert H.accepts("3.3") and E.accepts("3.3", E.EXT_API), "a newer minor does not"
+    assert H.accepts("3.4") and E.accepts("3.4", E.EXT_API), "a newer minor does not"
     assert E.CONSTRAINT_KINDS == H.CONSTRAINT_KINDS and E.CONSTRAINT_SCOPES == H.CONSTRAINT_SCOPES
     assert c["fields"]["kind"] == " | ".join(E.CONSTRAINT_KINDS)
     return f"3.1's {len(json.dumps(old))} bytes held by 3.2; SP4, the act, the optional method added"
