@@ -177,22 +177,22 @@ def _after_the_pool(ceiling: float, peak: float, own: bool) -> tuple:
     """(ceiling, peak, fixed) in GiB of the memory policy after `_kv_after_load`, on a stand-in engine whose slot 0
     window is the KV pool's (WINDOW of addresses). The start's limits are `ceiling`/`peak`: a configured figure
     (serve.env, a weight profile), or with `own` the model's builder's own from its load (`_build_with_limits`, as
-    Hy4-flash's serving.memory_limits sets them)."""
+    Hy4-flash's serving.memory_limits sets them), handed on to `_kv_after_load` as `_load` hands them."""
     import test_forward_tree  # noqa: F401  (the CPU environment before the server imports)
     from engine import cache, kvpool
     from server import app
     a = types.SimpleNamespace(mem_ceiling_gib=70.0, mem_peak_gib=77.0, store_entry_gb=4.0)
-    saved = {k: app.STATE.get(k) for k in ("mem", "engine", "serve_flags", "limits_from_load")}
+    saved = {k: app.STATE.get(k) for k in ("mem", "engine", "serve_flags")}
     pool0, reclaim0 = kvpool.POOL, app._add_kv_reclaimers
+    limits = {}
     try:
-        app.STATE.pop("limits_from_load", None)
         app.STATE["serve_flags"] = {"mem_ceiling_gib": 70.0, "mem_peak_gib": 77.0, "store_entry_gb": 4.0}
         if own:
             def build(a, ctx):
                 a.mem_ceiling_gib, a.mem_peak_gib = ceiling, peak
                 return {}
             with contextlib.redirect_stdout(io.StringIO()):
-                app._build_with_limits(build, a, None)
+                app._build_with_limits(build, a, None, limits)
         else:
             a.mem_ceiling_gib, a.mem_peak_gib = ceiling, peak
         mem = cache.Budget(int(a.mem_ceiling_gib * GIB), int(a.mem_peak_gib * GIB), 2 * GIB,
@@ -203,7 +203,8 @@ def _after_the_pool(ceiling: float, peak: float, own: bool) -> tuple:
         kvpool.POOL = types.SimpleNamespace(hard_floor=10 * GIB, margin_rows=256)
         app._add_kv_reclaimers = lambda pool: None
         with contextlib.redirect_stdout(io.StringIO()):
-            app._kv_after_load(a)
+            app._kv_after_load(a, limits)
+        assert "limits_from_load" not in app.STATE      # start-time only: no request-path state key
         return round(mem.ceiling / GIB, 4), round(mem.peak / GIB, 4), round(mem.fixed / GIB, 4)
     finally:
         kvpool.POOL, app._add_kv_reclaimers = pool0, reclaim0

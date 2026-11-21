@@ -140,7 +140,10 @@ def _ask(spec, extra: dict, default="xhigh", think_budget=0, limit=32768):
         req = table._Req(body)
         with contextlib.redirect_stdout(out):
             req.do_POST()
-        _ask.closer = len(tok(app.ThinkBudget.PHRASE, add_special_tokens=False).input_ids)
+        # the close the reserve counts, read as the server reads it (`_think_close()`, under `spec`): the family's
+        # own (`ReasoningSpec.close`, Hy4-flash's `</think>`), else the shared phrase; no monitor holds the cap here
+        _ask.close = app._think_close()
+        _ask.closer = len(tok(_ask.close, add_special_tokens=False).input_ids)
         kw = tok.calls[0]["kwargs"] if tok.calls else {}
     return kw, (seen[0]["budget"] if seen else None), out.getvalue()
 
@@ -148,7 +151,7 @@ def _ask(spec, extra: dict, default="xhigh", think_budget=0, limit=32768):
 def _one(spec, extra: dict, default="xhigh", think_budget=0, limit=32768):
     """`_ask`'s template word only."""
     kw, budget, log = _ask(spec, extra, default=default, think_budget=think_budget, limit=limit)
-    _one.closer = _ask.closer
+    _one.close, _one.closer = _ask.close, _ask.closer
     return kw.get("reasoning_effort"), budget, log
 
 
@@ -163,6 +166,8 @@ def test_a_family_default_renders_its_word_and_caps_what_nobody_decided():
     word, budget, log = _one(spec, {})
     assert word == "w-medium" and budget == 8192, (word, budget)
     assert "server default medium: cap 8192" in log and "server default: answer reserve" in log, log
+    # a spec with no close of its own: the reserve counts the shared phrase
+    assert _one.close == app.ThinkBudget.PHRASE, _one.close
     closer = _one.closer
     word, budget, log = _one(spec, {}, limit=4000)
     assert budget == th.with_reserve(8192, 4000, th.AUTO, closer)[0] < 8192, budget
@@ -199,6 +204,7 @@ def test_hy4_a_clients_xhigh_or_max_reaches_max():
                   {"chat_template_kwargs": {"reasoning_effort": "max"}}):
         kw, budget, log = _ask(HY4, extra)
         assert kw.get("reasoning_effort") == "max", (extra, kw)
+        assert _ask.close == HY4.reasoning.close == "</think>", _ask.close   # the family's own close, counted
         assert budget == th.with_reserve(0, 32768, th.AUTO, _ask.closer)[0], (extra, budget)
         assert "server default" not in log and "client budget 0" in log, log
     kw, budget, _ = _ask(HY4, {"reasoning_effort": "high"})
@@ -224,6 +230,7 @@ def test_hy4_default_cap_streamed():
         for limit in (32768, 2048):
             kw, budget, log = _ask(HY4, {"stream": stream}, limit=limit)
             assert kw.get("reasoning_effort") == "high", (stream, kw)
+            assert _ask.close == HY4.reasoning.close == "</think>", _ask.close
             assert budget == th.with_reserve(8192, limit, th.AUTO, _ask.closer)[0], (stream, limit, budget)
             assert "server default medium: cap 8192" in log and "server default: answer reserve" in log, log
     return "streamed and not, 32,768 and 2,048: the medium cap with the reserve"
