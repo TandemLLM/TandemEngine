@@ -178,6 +178,45 @@ def test_arm_env_takes_the_variant_and_the_planted_head_settings():
     assert arm_env(g, flash, "base", "wide")["QWEN38_FN_PREFILL_CHUNK"] == "16384"
 
 
+#: OPS-314: every pack's arm environments and plans as they were before a pack could set its own memory limits or a
+#: cap on requests at once (recorded on 7f2a41f5): a pack that names neither keeps them byte for byte
+ARMS_PIN = "0545f6d1f68090dd09655edfd8bcff72db447e302f22881720fc6a3bc46df715"
+
+
+def _profiles():
+    from tools.gate.hw.ada import Ada
+    from tools.gate.hw.gb10 import GB10
+    return [GB10(Fingerprint(name="NVIDIA GB10", memory_gib=119.7, cc="12.1", unified=True)),
+            Ada(Fingerprint(name="NVIDIA RTX 4090", memory_gib=24.0, cc="8.9")), Generic(Fingerprint(memory_gib=48)),
+            Fake()]
+
+
+def _arms_digest(packs: dict) -> str:
+    import hashlib
+    import json
+    out = []
+    for prof in _profiles():
+        for pid in sorted(packs):
+            pack = dict(packs[pid], id=pid)
+            for level in ("quick", "quick+long", "full"):
+                p = plan(level, ["engine/spec.py"], prof, pack)
+                out.append([prof.id, pid, level, p.profile.describe(),
+                            [(s, v, su, arm_env(p.profile, pack, s, v, {"X": "1"})) for s, v, su in arms_of(p)]])
+    return hashlib.sha256(json.dumps(out, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def test_a_pack_without_limits_or_a_cap_keeps_its_arms():
+    old = {k: v for k, v in load_packs().items() if not ({"limits", "at_once", "base"} & set(v))}
+    assert set(PINNED_PACKS) <= set(old), sorted(old)
+    got = _arms_digest({k: v for k, v in old.items() if k in PINNED_PACKS})
+    assert got == ARMS_PIN, got
+    return f"{len(PINNED_PACKS)} packs x {len(_profiles())} profiles x 3 levels: the same arms and environments"
+
+
+#: the packs of 7f2a41f5's packs.yaml
+PINNED_PACKS = ("fake", "flashnext-3.05", "lfm25-exl3-4.0", "lfm25-exl3-2.5", "nemotron-bolt-exl3-4.0", "flint-exl3-4.0")
+
+
 def test_packs_name_real_profiles():
     for pid, p in load_packs().items():
         assert p["launcher"] in ("ops", "fake"), pid
