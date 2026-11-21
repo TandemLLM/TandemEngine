@@ -105,6 +105,8 @@ from engine.models import REGISTRY  # noqa: E402
 # ENG-476 (hy4-cap's merge, 2026-11-21): engine/spec.py's drafted-block cut at the reasoning cap moved both halves
 # (3b46a4e5 / 54b7fdc5); it counts tokens and computes no row, so its bytes are a SAME_ROWS entry
 # (engine/methods/manifest.py) and both halves stay R83's
+# ENG-569 (hy4-capd2's merge, 2026-11-21): engine/spec.py's `rewatch` moved both halves again (6abd35cf / b650d2d2);
+# integer bookkeeping on the close counts, so its bytes are a SAME_ROWS entry too and both halves stay R83's
 GOLDEN_V2 = ("7c6b4c314c5f6cf7f086c9208b0ac4f74198984a8093d1d41a82a71e9ca0d6f5",
              "feed262983cad1c8f5ff87bcd6250cd5393a8114e8ef2ed5fe9bd94ab11fee72")
 GOLDEN_FP4 = {
@@ -236,8 +238,9 @@ MAY_MOVE = {"flint"}
 #: sha256 of SAME_ROWS' entries at v0.14.0 (sorted [path, now, replaced] triples, JSON); SRV-795 adds Flash-Next's
 #: engine.py on purpose (its reason in engine/methods/manifest.py); SPD-321 adds tools/fn_prefill_kernels.py's optional
 #: clamp on purpose (its reason there); ENG-472 adds engine/grammar.py's silent markers on purpose (its reason there);
-#: ENG-476 adds engine/spec.py's drafted-block cut at the reasoning cap on purpose (its reason there)
-SAME_ROWS_SHA256 = "087f08daa9fd4836b8b26eb324eb99fc539d448fa7105f824169db967e9f9337"   # 34 entries
+#: ENG-476 adds engine/spec.py's drafted-block cut at the reasoning cap on purpose (its reason there); ENG-569 adds
+#: engine/spec.py's `rewatch` (the supervisor's own close counts) on purpose (its reason there)
+SAME_ROWS_SHA256 = "2c3b6a22d0e5aeaf9606b014b0e56cecee5f78a2ab9a53ae113268ab5980725b"   # 35 entries
 
 
 def _manifest(name: str):
