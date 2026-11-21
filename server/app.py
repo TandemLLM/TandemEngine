@@ -4398,7 +4398,9 @@ def _next_rows(turn, committed: list[int], n_p: int) -> tuple[int | None, str]:
     """Where the next turn's prompt parts from this turn's rows, as the template renders the conversation: the
     request's messages, this answer as the client gets it back (its text split as the response splits it, its calls
     parsed, its reasoning as `reasoning_content`), then a next message (the calls' results, else a user's), rendered by
-    `build_prompt` with this request's thinking, effort and tools. The rows are compared from the prompt's end on (the
+    `build_prompt` with this request's thinking, effort and tools; the answer is split in the request's reasoning
+    format (`tags` puts the reasoning in the content, where the client sends it back as content). The rows are compared
+    from the prompt's end on (the
     answer's region; the served prompt may hold spans the client never sent), as the end anchor's own test compares a
     copy (`_shared_head`, the "re-read ahead ... parts from the end anchor's rows" line). `(position, why)`; None: the
     next prompt holds the whole answer (a completion's text, a continued answer, no request to render).
@@ -4411,7 +4413,8 @@ def _next_rows(turn, committed: list[int], n_p: int) -> tuple[int | None, str]:
     the end kept is served only to a copy that holds its rows."""
     if turn is None:
         return None, "no request"
-    body, client, left_out = turn
+    body, client, left_out, *more = turn
+    fmt = str(more[0]) if more and more[0] in ("tags", "reasoning_content", "both") else "reasoning_content"
     if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
         return None, "a completion"
     msgs = list(body["messages"])
@@ -4428,9 +4431,9 @@ def _next_rows(turn, committed: list[int], n_p: int) -> tuple[int | None, str]:
         ended = bool(gen) and gen[-1] in eos_ids(body)
         answer, calls = parse_tool_calls(rewrite_native(answer, _tool_format(), eos=ended), eos=ended)
     off_mode = bool(getattr(client, "off", False)) and not in_think
-    moved = off_full(head + answer, "reasoning_content") if off_mode else None
+    moved = off_full(head + answer, fmt) if off_mode else None
     content, reasoning = moved if moved is not None else split_full(
-        head + answer, "reasoning_content", in_think=in_think,
+        head + answer, fmt, in_think=in_think,
         self_open=_spec().reasoning.opens_itself or off_mode)
     prev = [m for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"]
     echo = not prev or any(m.get("reasoning") or m.get("reasoning_content") for m in prev)
@@ -4471,6 +4474,7 @@ def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: lis
     except Exception:                                              # noqa: BLE001
         logbuf.print_exc()
         upto, parts = None, "not rendered"
+    t_dec = time.perf_counter()
     if getattr(res, "_stash", None) is not None and _guest_promotes(res, committed, conv_id):
         old_valid, old_owner = int(res.valid), res.owner
         if res.promote_guest(eng, drafter, committed, n_p, conv_id) and STATE.get("verbose"):
@@ -4488,7 +4492,6 @@ def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: lis
         if held:
             dict.get(STATE, "mem").prefill_done()      # its workspace leaves the policy's prefills in flight
     read = how == "read"
-    t_read = time.perf_counter()
     if read and store is not None and STATE.get("session_cache"):
         # the session snapshot is the read's state (a cold read's: `StateStore.put(exact=True)`)
         est = cache._snapshot_estimate(eng, eng.kv.length, drafter)
@@ -4510,10 +4513,11 @@ def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: lis
     last = (res.stats.get("end_reread_last") or {}) if read else {}
     answer = max(0, top - n_p)
     kept = answer if upto is None else max(0, min(answer, int(upto) - n_p))
-    print(f"[cache] {cid or '-'} end re-read: {how}, {int(last.get('rows') or 0)} rows in {(t_read - t0) * 1e3:.1f} ms"
-          + (f" from the {last.get('from')} at {last.get('at')}" if read else "")
-          + f"; the next prompt holds {kept} of the answer's {answer} rows ({parts}); end {why}; "
-          f"close {(time.perf_counter() - t0) * 1e3:.1f} ms", flush=True)
+    # the read's own ms (`reread_end`'s loop) and, apart, the time `_next_rows` took to render the next prompt
+    print(f"[cache] {cid or '-'} end re-read: {how}, {int(last.get('rows') or 0)} rows in "
+          f"{float(last.get('ms') or 0.0):.1f} ms" + (f" from the {last.get('from')} at {last.get('at')}" if read else "")
+          + f"; the next prompt holds {kept} of the answer's {answer} rows ({parts}; decided in "
+          f"{(t_dec - t0) * 1e3:.1f} ms); end {why}; close {(time.perf_counter() - t0) * 1e3:.1f} ms", flush=True)
     if slots_mod.current() is not None:
         _side_note_end(res, why, conv_id)
     return why
@@ -12123,7 +12127,7 @@ class Handler(BaseHTTPRequestHandler):
                                   served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
                                   learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")),
-                                  defer=True, cid=cid, turn=(body, client, left_out))
+                                  defer=True, cid=cid, turn=(body, client, left_out, fmt))
                         if rkey is not None and not ci and not (sup is not None and sup.acted) \
                                 and not mem_taken[0]:
                             rcache.put(rkey, ids, prompt_ids)
@@ -12773,7 +12777,7 @@ class Handler(BaseHTTPRequestHandler):
                           served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
                                   learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")),
-                                  defer=True, cid=cid, turn=(body, client, left_out))
+                                  defer=True, cid=cid, turn=(body, client, left_out, fmt))
                 if rkey is not None and not (sup is not None and sup.acted) and \
                         not mem_taken[0]:
                     rcache.put(rkey, ids, prompt_ids)

@@ -63,7 +63,8 @@ device.
                                                      test_a_read_to_where_the_next_prompt_parts_keeps_the_end_there
   E24  the end alignment, the park's and the disk's aligned offers are not asked on an end read's end
                                                      test_an_end_reads_end_is_never_aligned
-  E25  with HY4_TOKENIZER, the pack's own template: thinking on, off, a call with and without reasoning sent back
+  E25  with HY4_TOKENIZER, the pack's own template: thinking on, off, a call with and without reasoning sent back, a
+       call under `--reasoning-format tags`
                                                      test_the_real_template_decides_the_rows
   E26  a stream's keep-alive client: `Connection: close`, its follow-up on a new connection, served after the read
                                                      test_a_streams_keep_alive_client_reconnects_for_its_follow_up
@@ -1259,8 +1260,9 @@ def test_a_tool_chain_reads_what_the_template_keeps():
 
 
 def test_the_close_says_its_cost_on_one_line():
-    """E22: every turn's close is one log line: what it did, the rows read again and the milliseconds, how many of the
-    answer's rows the next prompt holds and why, the end and the whole close's time."""
+    """E22: every turn's close is one log line: what it did, the rows read again and the read's own milliseconds, how
+    many of the answer's rows the next prompt holds, why, and how long deciding that took, the end and the whole
+    close's time."""
     import re
     lines = []
     for body, said in (({"messages": [{"role": "user", "content": "HI"}]}, "SOME REASONING</think>HELLO."),
@@ -1270,12 +1272,14 @@ def test_the_close_says_its_cost_on_one_line():
         with _chat(res) as ch:
             ctx, n, line = ch.turn(body, said)
         lines.append(line)
-    pat = (r"^\[cache\] \S+ end re-read: (\w+), (\d+) rows in [0-9.]+ ms( from the \w+ at \d+)?; the next prompt holds "
-           r"(\d+) of the answer's (\d+) rows \([^)]*\); end \w+; close [0-9.]+ ms$")
+    pat = (r"^\[cache\] \S+ end re-read: (\w+), (\d+) rows in ([0-9.]+) ms( from the \w+ at \d+)?; the next prompt holds "
+           r"(\d+) of the answer's (\d+) rows \([^)]*; decided in ([0-9.]+) ms\); end \w+; close ([0-9.]+) ms$")
     got = [re.match(pat, ln) for ln in lines]
     assert all(ln.count("\n") == 0 for ln in lines) and all(got), lines
-    assert got[0].group(1) == "skip" and got[0].group(2) == "0" and got[0].group(4) == "0", lines[0]
-    assert got[1].group(1) == "read" and int(got[1].group(2)) > 0 and got[1].group(4) == got[1].group(5), lines[1]
+    assert got[0].group(1) == "skip" and got[0].group(2) == "0" and got[0].group(5) == "0", lines[0]
+    assert got[1].group(1) == "read" and int(got[1].group(2)) > 0 and got[1].group(5) == got[1].group(6), lines[1]
+    for m in got:     # the read's own ms and the decision's, each within the whole close
+        assert float(m.group(3)) <= float(m.group(8)) and float(m.group(7)) <= float(m.group(8)), m.group(0)
     return " | ".join(lines)
 
 
@@ -1442,12 +1446,16 @@ def test_the_real_template_decides_the_rows():
                  ("call, reasoning back", {"messages": [user, {"role": "assistant", "content": "", "tool_calls": [call],
                                                                "reasoning_content": "I should ask the tool."},
                                                        {"role": "tool", "tool_call_id": "c1", "content": "12:00"}],
-                                           "tools": TOOLS}, f"Again.</think{S}>" + call_text, None)]
+                                           "tools": TOOLS}, f"Again.</think{S}>" + call_text, None),
+                 # `--reasoning-format tags` (the holds' servers): the reasoning comes back inside the content, where
+                 # the template writes it after an empty block, so the next prompt parts at the prompt end
+                 ("call, tags", {"messages": [user], "tools": TOOLS}, f"I should ask the tool.</think{S}>" + call_text, 0)]
         for name, body, said, want in cases:
             client = app.thinking_mod.read(body, strict=False)
             prompt = app.build_prompt(body, client, count="ids")
             gen = list(tok._tok(said, add_special_tokens=False).input_ids) + [end]
-            got, why = app._next_rows((body, client, 0), prompt + gen, len(prompt))
+            fmt = "tags" if name.endswith("tags") else "reasoning_content"
+            got, why = app._next_rows((body, client, 0, fmt), prompt + gen, len(prompt))
             held = got - len(prompt)
             assert held == (len(gen) if want is None else want), (name, held, len(gen), why)
             out.append(f"{name}: {held} of {len(gen)}")
