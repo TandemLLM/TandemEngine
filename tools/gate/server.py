@@ -285,10 +285,23 @@ class OpsLauncher:
         self.profile, self.pack, self.site = profile, pack, site
         self.deadline = start_deadline_s
 
+    @staticmethod
+    def install_serve_env(local_env: str | None) -> str | None:
+        """The serve.env install.sh generated beside an install's run/local.env (run/ops/serve.env: the release's
+        template with that machine's keys, PY among them, and the line that reads this local.env before the template's
+        mode block, install.sh `render_env`), or None for a local.env that is no install's (a checkout's)."""
+        if not local_env:
+            return None
+        gen = Path(os.path.expanduser(local_env)).resolve().parent / "ops" / "serve.env"
+        return str(gen) if gen.is_file() else None
+
     def prepare(self, tree: Path) -> None:
         """What a box adds beside a checkout (as a box's server tree): its serve.env with REPO set to
-        the tree, the profile, run/ and logs/, run/local.env, and the site's links and copies."""
-        src = self.site.get("serve_env")
+        the tree, the profile, run/ and logs/, run/local.env, and the site's links and copies. The serve.env is the
+        site's `serve_env`, else, for a `local_env` in an install's run/, the serve.env install.sh generated beside it,
+        which reads that local.env as the install's own start does (the repository's template reads none), else the
+        tree's own."""
+        src = self.site.get("serve_env") or self.install_serve_env(self.site.get("local_env"))
         serve = tree / "ops" / "serve.env"
         text = Path(src).read_text() if src else serve.read_text()
         text, n = re.subn(r"(?m)^REPO=.*$", f"REPO={tree}", text)
