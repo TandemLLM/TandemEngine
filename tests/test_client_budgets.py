@@ -723,7 +723,7 @@ def test_over_the_handler_chat_app_a_switch_keeps_the_class_and_a_word_wins():
         req.headers.update({"X-QSE-Client": "chat-app", "x-session-id": f"ca-{len(out)}"})
         buf = io.StringIO()
         with _Spy(), logbuf_capture(buf):
-            req.response()
+            head, _ = req.response()
         log = buf.getvalue()
         row = seen[-1].row
         assert row["profile"] == "chat-app" and row["class_id"] == "code_edit", (row["profile"], row.get("class_id"))
@@ -731,6 +731,8 @@ def test_over_the_handler_chat_app_a_switch_keeps_the_class_and_a_word_wins():
         assert _in_force(log) == want, (extra, tb, log[-600:])
         if "reasoning_effort" in extra:
             assert row["extra"]["client_word"]["wins"] is True, row["extra"].get("client_word")
+        # last: the turn was served (the close at the cap runs the model's forward, which needs triton)
+        assert head.startswith("HTTP/1.1 200"), (extra, head[:60], log[-800:])
         out.append(f"{next(iter(extra))}={_in_force(log)}")
     print("  [chat-app wins] ran: " + ", ".join(out), flush=True)
     return "chat-app: " + ", ".join(out)
@@ -849,13 +851,15 @@ def test_the_request_keys_line_shows_the_shapes():
 # ------------------------------------------------------------------ 10. the effort table under a plan
 
 #: SRV-899: the plans the effort table runs under (tests/test_effort_table.py): one that does not decide the effort,
-#: and one that does for each class level, under the profile's two `client_word` rules
+#: and one that does for each class level, under each of the profile's `client_word` rules. The `wins` plans and the
+#: `reasoning.enabled` switch were added on hy4-m1-fixes, so their rows are recorded on that branch, not on main;
+#: every row recorded on main is unchanged (the box job compares them, and these new rows on the code before)
 PLANS = [("decides=no", None, False, "ceiling")] + [
     (f"{lv}/{rule}", cap, True, rule)
     for lv, cap in (("low", 1024), ("medium", 8192), ("high", 16384), ("xhigh", None))
-    for rule in ("ceiling", "ignore")]
+    for rule in ("ceiling", "ignore", "wins")]
 PLAN_REQUESTS = ("nothing", "enable_thinking=false", "reasoning_effort=low", "reasoning_effort=high",
-                 "reasoning_effort=xhigh", "reasoning_effort=max", "max_reasoning_tokens=512")
+                 "reasoning_effort=xhigh", "reasoning_effort=max", "max_reasoning_tokens=512", "reasoning.enabled")
 PLAN_DEFAULTS = (None, "xhigh", "off")
 PLAN_LIMIT = 160
 
