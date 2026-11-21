@@ -127,13 +127,16 @@ class Launches:
         def check(w, seed=0):
             want = R.prompt_order(w)
             if self.checks == "fail":
-                return {"skinny_equal": True, "slab_equal": False, "one_row_equal": True, "rows": [], "order": str(want)}
+                return {"short_equal": True, "slab_equal": False, "one_row_equal": True, "rows": [], "order": str(want)}
             n = max(R.ROWS + 1, R.CROSS + 1)
-            mid = self.order(lambda: R.skinny(self.dev(R.ROWS + 1, w.K), w))
-            big = self.order(lambda: R.slab(self.dev(n, w.K), w))
-            one = self.order(lambda: R.skinny(self.dev(1, w.K), w))
-            return {"skinny_equal": mid == want, "slab_equal": big == want, "one_row_equal": one == want,
-                    "rows": [R.ROWS + 1, n], "order": str(want)}
+            short = R.slab if R.half(w) else R.skinny
+            got = {"short_equal": self.order(lambda: short(self.dev(R.ROWS + 1, w.K), w)) == want,
+                   "slab_equal": self.order(lambda: R.slab(self.dev(n, w.K), w)) == want,
+                   "one_row_equal": self.order(lambda: short(self.dev(1, w.K), w)) == want,
+                   "rows": [R.ROWS + 1, n], "order": str(want)}
+            if not R.half(w):
+                got["cross_equal"] = self.order(lambda: R.skinny(self.dev(R.CROSS, w.K), w)) == want
+            return got
 
         self._set(G, "profile", lambda device=None: gb10)
         self._set(X, "_module", lambda: _FakeX(rec))

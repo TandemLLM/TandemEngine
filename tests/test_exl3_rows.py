@@ -11,8 +11,9 @@
   3  equality is the chain: empty slices and singleton groups fold; a flat chain is not a ranked one; the library
      product equals no order of ours                               test_equal_orders_are_equal_chains
   4  an order's s1 launch reads back as the order                  test_an_s1_launch_reads_back_as_its_order
-  5  `linear`: the skinny GEMM at S1 w8 to CROSS rows, then the slab's s1 at L = KT / 8, one order; a check that is
-     unequal raises and is kept in FAILED; half-integer rates refused; off the kernels exl3_matmul
+  5  `linear`: the skinny GEMM at S1 w8 to CROSS rows (in EXL3_CHUNK_UNTIL-row calls past that), then the slab's s1
+     at L = KT / 8, one order; a half-integer rate on the slab at every row count; a check that is unequal, or a rate
+     the kernels do not decode, raises (FAILED keeps the shape); off the kernels exl3_matmul
                                                                    test_the_dispatch
   6  one check a shape and device                                   test_one_check_a_shape
 
@@ -207,17 +208,23 @@ def _block(N: int, K: int, kb: int) -> X.EXL3Block:
 
 def test_the_dispatch():
     with Launches() as L:
-        for N, K, kb in ((3072, 16384, 5), (8192, 3072, 5), (1536, 3072, 5), KV_A):
+        for N, K, kb in ((3072, 16384, 5), (8192, 3072, 5), (1536, 3072, 5), KV_A, (2048, 1024, 35)):
             w = _block(N, K, kb)
             want = R.Order.s1(K // 16, K // 16 // 8)
             assert R.prompt_order(w) == want
-            for M, kinds in ((1, ["skinny"]), (2, ["skinny"]), (32, ["skinny"]), (33, None), (R.CROSS, None),
-                             (R.CROSS + 1, ["slab_s1"]), (4096, ["slab_s1"])):
+            rows = ((1, ["skinny"]), (2, ["skinny"]), (32, ["skinny"]), (33, None), (128, None), (129, None),
+                    (R.CROSS, None), (R.CROSS + 1, ["slab_s1"]), (4096, ["slab_s1"]))
+            if kb >= 10:        # a half-integer rate: the slab at every row count
+                rows = tuple((M, ["slab_s1"]) for M, _ in rows)
+            for M, kinds in rows:
                 got = L.kinds(lambda: R.linear(L.dev(M, w.K), w))
-                assert (kinds is None and got and set(got) == {"skinny"}) or got == kinds, (M, got)
+                assert (kinds is None and got and set(got) == {"skinny"}) or got == kinds, ((N, K, kb), M, got)
                 assert L.order(lambda: R.linear(L.dev(M, w.K), w)) == want, ((N, K, kb), M)
+            # past EXL3_CHUNK_UNTIL the skinny GEMM runs in calls of that many rows
+            if kb < 10:
+                assert len(L.kinds(lambda: R.linear(L.dev(R.CROSS, w.K), w))) >= R.CROSS // X.CHUNK_UNTIL
             # the skinny GEMM's own split is not this order on S2 shapes: the order is passed, not read
-            if X.pick(N, K, kb)["S"] != 1:
+            if kb < 10 and X.pick(N, K, kb)["S"] != 1:
                 assert L.order(lambda: X.exl3_matmul(L.dev(40, K), w)) != want
     with Launches(checks="fail") as L:
         w = _block(3072, 8192, 5)
@@ -228,17 +235,20 @@ def test_the_dispatch():
         else:
             raise AssertionError("an unequal check must fail the call")
         assert len(R.FAILED) == 1 and not next(iter(R.FAILED.values()))["slab_equal"]
+        odd = _block(2048, 1024, 5)
+        odd.kb = 9                      # no rate the kernels decode
         try:
-            R.linear(L.dev(200, 11776), _block(2048, 11776, 35))
-        except ValueError as e:
-            assert "integer rates" in str(e)
+            R.linear(L.dev(200, odd.K), odd)
+        except R.RowOrderError as e:
+            assert "rate" in str(e)
         else:
-            raise AssertionError("a half-integer rate has no prompt order here")
+            raise AssertionError("an unknown rate has no prompt order: RowOrderError")
     # off the kernels (this CPU): exl3_matmul, the torch reference
     x = (torch.randn(3, 256) * 0.5).to(torch.bfloat16)
     b = X.random_block(256, 256, 4, device="cpu", seed=1)
     assert torch.equal(R.linear(x, b), X.exl3_matmul(x, b))
-    return "skinny S1 w8 to CROSS, s1 above, one order; an unequal check raises; the CPU path unchanged"
+    return f"skinny S1 w8 to CROSS {R.CROSS} (calls of {X.CHUNK_UNTIL} past it), s1 above, a 3.5-bit rate s1 at every " \
+           f"row count, one order; an unequal check or an unknown rate raises; the CPU path unchanged"
 
 
 def test_one_check_a_shape():

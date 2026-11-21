@@ -14,7 +14,8 @@ for each arm, each line naming the kernel class each M took:
   engine     the V2 chunk pass's product as the engine has it (`Hy4FlashEngine.<PROMPT_LIN>` once R83-hy4 adds it,
              `lin` before: today the row kernel to 32 rows, the skinny GEMM at `pick` to 128, the library above).
              Failing today, recorded; it is the test's verdict
-  exl3_rows  tools/exl3_rows.linear: the skinny GEMM at S1 w8 to CROSS, the slab's s1 at L = KT / 8 above
+  exl3_rows  tools/exl3_rows.linear: the skinny GEMM at S1 w8 to CROSS, the slab's s1 at L = KT / 8 above (a
+             half-integer rate the slab at every row count)
 
 and the copy: `exl3_rows.product` against `exl3_slab_gemm._slab_rot_s1` on the same rotated rows and slab, at 129 and
 4,096 rows. One JSON line a (pack, shape, arm); the last line is the verdict.
@@ -94,10 +95,14 @@ def arms(eng) -> dict:
     return {"engine": (prompt or eng.lin, PROMPT_LIN if prompt else "lin"), "exl3_rows": (R.linear, "exl3_rows.linear")}
 
 
-def classes(arm: str, name: str, M: int) -> str:
+def classes(arm: str, name: str, M: int, w) -> str:
     """The kernel class a call of M rows takes on the arm (as the code reads on this tree)."""
     if arm == "exl3_rows" or name == PROMPT_LIN:
-        return "skinny S1 w8" if M <= R.CROSS else "slab s1"
+        if R.half(w):
+            return "slab s1 (a half-integer rate)"
+        return "skinny S1 w8" if M <= X.CHUNK_UNTIL else ("skinny S1 w8 in 128-row calls" if M <= R.CROSS else "slab s1")
+    if R.half(w):
+        return "dense" if M <= R.ROWS else "slab library"
     return "dense" if M <= R.ROWS else ("skinny pick" if M <= X.CHUNK_UNTIL else "slab library")
 
 
@@ -207,7 +212,7 @@ def _shape(pk, shapes, label, w, A, g, verdict, sink) -> None:
         verdict[arm] = verdict[arm] and not bad
         _say({"g1": "rows", "pack": os.path.basename(pk), "shape": label, "arm": arm, "fn": name,
               "equal": not bad, "unequal_M": bad, "first_differing": r["first_differing"],
-              "classes": {str(M): classes(arm, name, M) for M in ROWS},
+              "classes": {str(M): classes(arm, name, M, w) for M in ROWS},
               "count": len(shapes.get((w.N, w.K, w.kb), []))}, sink)
     c = copy_check(w, x)
     verdict["copy"] = verdict["copy"] and all(c.values())

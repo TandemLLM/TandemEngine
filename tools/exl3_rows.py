@@ -10,7 +10,7 @@ of KT / 8 tiles each, each slice a chain of k16 products from zero in K order, t
 first one's value. Two kernels compute it, and both read the input rotated by `exl3_linear.rotate_in`:
 
     1 .. CROSS rows   the skinny GEMM with the order passed in, `exl3_matmul(x, w, S=1, wk=8)` (its 32-row chunks
-                      in one launch from 33 rows on, as today)
+                      in one launch from 33 rows on, as today; past EXL3_CHUNK_UNTIL rows in calls of that many)
     more rows         the slab decoded as `exl3_linear` decodes it, then `_slab_rot_s1` at L = KT / 8: the same
                       chain, with the output rotation in its epilogue (`tools/exl3_slab_gemm.py`, the pair the 27B's
                       `skinny_matmul` proves on its shapes)
@@ -20,17 +20,21 @@ the linear op; a family whose decode step reads the same projections on another 
 kernel for its row pass. `_slab_rot_s1` and its Walsh-Hadamard are copied here, not imported, so an edit of the 27B's
 module does not move a family that adopts this one (the GPU guard holds the copy to the original's bits).
 
-At bind (`bind`, at a shape's first call past ROWS rows, or by the family at load) each shape is checked once: 33 rows
-and CROSS + 1 rows against the same rows in one-row calls. Unequal raises `RowOrderError`, and `FAILED` holds the
-shape for the health report: there is no silent fallback.
+A half-integer rate (1.5, 2.5, 3.5 bits; Hy4 3.56's indexer query projections) cannot run on the skinny GEMM: it
+takes the slab at every row count, which is the same order.
+
+At bind (`bind`, at a shape's first call past ROWS rows or a half-integer shape's first call, or by the family at
+load) each shape is checked once: 33 rows, CROSS rows and CROSS + 1 rows against the same rows in one-row calls.
+Unequal raises `RowOrderError`, and `FAILED` holds the shape for the health report; so does a rate the kernels do not
+decode: there is no silent fallback.
 
 The order is a value (`Order`): its key is the chain of slices, equal for two launches exactly when they add the same
 partials in the same order, whatever kernel runs them. The CPU test reads the order of each launch the dispatch makes
 (tests/exl3_launches.py) and holds every row count to one.
 
 Off GB10's inline extensions (the CPU, another arch) `linear` is `exl3_linear.exl3_matmul`: that path is unchanged.
-Half-integer rates do not run on the skinny GEMM, so they are refused here. No family imports this module until it
-adopts it; the adopting family's fingerprint then covers it through the manifest's import walk.
+A family's fingerprint covers this module once it imports it (the manifest's import walk); `tools/exl3_slab_gemm.py`
+is not imported, so an edit of it moves no family that uses this one.
 """
 
 from __future__ import annotations
@@ -58,9 +62,10 @@ except ImportError:                                            # pragma: no cove
 ROWS = 32
 #: the prompt order: S ranks, WK K slices a rank (the skinny GEMM's binding takes wk 4 or 8)
 S_PROMPT, WK_PROMPT = 1, 8
-#: rows above which a call takes the slab (for speed only: both kernels give the order's bits). At most
-#: EXL3_CHUNK_UNTIL, the rows the skinny GEMM takes in one call; measured in the rowinv design's Gate 0 c
-CROSS = 128
+#: rows above which a call takes the slab (for speed only: both kernels give the order's bits): the rowinv design's
+#: Gate 0 c, on Hy4's trunk, the first measured row count at which the slab beat the skinny GEMM at S1 w8 (512 rows:
+#: the skinny GEMM; 1,024: the slab). Above EXL3_CHUNK_UNTIL the skinny GEMM runs in calls of that many rows
+CROSS = 1024
 
 
 class RowOrderError(RuntimeError):
@@ -311,26 +316,46 @@ def _bkey(w, dev) -> tuple:
     return (w.tile_n, w.K, w.kb, bool(w.out_fp32), str(dev))
 
 
-def _refuse(w) -> None:
-    if w.kb >= 10:
-        raise ValueError(f"{w.N}x{w.K} at {X.rate(w.kb):g} bits: the skinny GEMM decodes integer rates only, "
-                         f"so this projection has no prompt order here")
+def half(w) -> bool:
+    """A half-integer rate (1.5, 2.5, 3.5 bits): the skinny GEMM cannot decode it, so its prompt order runs on the
+    slab at every row count (the same order: one chain of eight slices of KT / 8 tiles)."""
+    return w.kb >= 10
+
+
+def _known(w) -> None:
+    """A projection the prompt order is defined for: an EXL3 rate the kernels decode, K in eight whole slices.
+    Anything else is not one order's bits here: `RowOrderError`, never a quiet path."""
+    if w.kb not in X.KS + X.HALF_KS:
+        raise RowOrderError(f"{w.N}x{w.K}: {w.kb} bits is no EXL3 rate the kernels decode")
     if w.K % (16 * WK_PROMPT):
-        raise ValueError(f"{w.N}x{w.K}: K is not {WK_PROMPT} whole slices of 16-row tiles")
+        raise RowOrderError(f"{w.N}x{w.K}: K is not {WK_PROMPT} whole slices of 16-row tiles")
+
+
+def _ref(x: torch.Tensor, w) -> torch.Tensor:
+    """Each row its one-row call's bits: the skinny GEMM at S1 w8 in 32-row calls (its rows are their one-row calls'
+    up to 32 rows), or for a half-integer rate the slab's s1 in 32-row calls (each element its own chain)."""
+    if half(w):
+        return torch.cat([slab(x[i:i + ROWS], w) for i in range(0, x.shape[0], ROWS)])
+    return torch.cat([X.exl3_matmul(x[i:i + ROWS], w, S=S_PROMPT, wk=WK_PROMPT) for i in range(0, x.shape[0], ROWS)])
 
 
 def check(w, seed: int = 0) -> dict:
-    """The bind-time check of one shape: 33 rows on the skinny GEMM and CROSS + 1 rows on the slab, against the
-    same rows in one-row calls (in 32-row calls of the skinny GEMM, whose rows are their one-row calls' bits)."""
+    """The bind-time check of one shape, against the same rows in one-row calls (`_ref`, and one row alone): 33 rows
+    and CROSS rows on the skinny GEMM (above EXL3_CHUNK_UNTIL in calls of that many), and CROSS + 1 rows on the slab;
+    a half-integer rate the slab at 33 and CROSS + 1 rows."""
     dev = w.t.device
     n = max(ROWS + 1, CROSS + 1)
     g = torch.Generator(device="cpu").manual_seed(seed)
     x = (torch.randn(n, w.K, generator=g) * 0.5).to(torch.bfloat16).to(dev)
-    ref = torch.cat([X.exl3_matmul(x[i:i + ROWS], w, S=S_PROMPT, wk=WK_PROMPT) for i in range(0, n, ROWS)])
-    one = X.exl3_matmul(x[n - 1:], w, S=S_PROMPT, wk=WK_PROMPT)
-    return {"skinny_equal": bool(torch.equal(skinny(x[:ROWS + 1], w), ref[:ROWS + 1])),
-            "slab_equal": bool(torch.equal(slab(x, w), ref)), "one_row_equal": bool(torch.equal(one, ref[-1:])),
-            "rows": [ROWS + 1, n], "order": str(prompt_order(w))}
+    ref = _ref(x, w)
+    one = slab(x[n - 1:], w) if half(w) else X.exl3_matmul(x[n - 1:], w, S=S_PROMPT, wk=WK_PROMPT)
+    short = slab if half(w) else skinny
+    out = {"short_equal": bool(torch.equal(short(x[:ROWS + 1], w), ref[:ROWS + 1])),
+           "slab_equal": bool(torch.equal(slab(x, w), ref)), "one_row_equal": bool(torch.equal(one, ref[-1:])),
+           "rows": [ROWS + 1, n], "order": str(prompt_order(w)), "half_integer": half(w)}
+    if not half(w):
+        out["cross_equal"] = bool(torch.equal(skinny(x[:CROSS], w), ref[:CROSS]))
+    return out
 
 
 def bind(w) -> dict:
@@ -338,11 +363,9 @@ def bind(w) -> dict:
     key = _bkey(w, w.t.device)
     got = _BOUND.get(key)
     if got is None:
-        _refuse(w)
-        if CROSS > X.CHUNK_UNTIL:
-            raise RowOrderError(f"CROSS {CROSS} is above EXL3_CHUNK_UNTIL {X.CHUNK_UNTIL}")
+        _known(w)
         got = check(w)
-        if not (got["skinny_equal"] and got["slab_equal"] and got["one_row_equal"]):
+        if not all(v for k, v in got.items() if k.endswith("_equal")):
             FAILED[key] = got
             raise RowOrderError(f"{w.tile_n}x{w.K} at {X.rate(w.kb):g} bits: the prompt order's kernels are not one "
                                 f"order's bits ({got}); the prompt pass cannot run on it")
@@ -352,13 +375,14 @@ def bind(w) -> dict:
 
 def linear(x: torch.Tensor, w, out: torch.Tensor | None = None) -> torch.Tensor:
     """x [M, K] bf16 @ EXL3Block^T -> [M, N] (bf16; fp32 for an `out_fp32` block) in the prompt order: every row
-    the bits of its own one-row call, at every M."""
+    the bits of its own one-row call, at every M. Up to CROSS rows the skinny GEMM, more the slab; a half-integer
+    rate the slab at every row count."""
     if not _on_kernels(x):
         return X.exl3_matmul(x, w, out=out)
-    _refuse(w)
+    _known(w)
     M = x.shape[0]
-    if M > ROWS:
+    if M > ROWS or half(w):
         bind(w)
-    if M <= CROSS:
+    if M <= CROSS and not half(w):
         return skinny(x, w, out=out)
     return slab(x, w, out=out)

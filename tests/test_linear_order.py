@@ -8,7 +8,8 @@ reads the order of each launch from its arguments (dense: S and warps; the skinn
 its chain of L tiles; the library GEMM: not ours).
 
   1  the prompt order (tools/exl3_rows.linear) is one order at every row count, on every shape of the four split
-     tables, Hy4's kv_a_proj_with_mqa and a shape on the device's rule  test_the_prompt_dispatch_has_one_order
+     tables (the half-integer ones on the slab at every row count), Hy4's kv_a_proj_with_mqa and its 3.5-bit indexer
+     query projection, and a shape on the device's rule  test_the_prompt_dispatch_has_one_order
   2  two-sided, today: every family's `lin` in TODAY switches its order by rows, first at the row count recorded
      (33 and 129, 34 on NemotronH). A family whose `lin` takes one order for its prompt rows deletes its line
                                                                  test_today_every_familys_lin_switches_order_by_rows
@@ -142,8 +143,8 @@ def _survey(lin, shapes) -> dict:
 
 def test_the_prompt_dispatch_has_one_order():
     shapes = [s for name in ("hy4-dense-splits.json", "fn-dense-splits.json", "lfm25-dense-splits.json",
-                             "flint-dense-splits.json") for s in _table(name) if s[0] <= MAX_N and s[2] < 10]
-    shapes = list(dict.fromkeys(shapes + [(640, 3072, 5), RULE_SHAPE]))
+                             "flint-dense-splits.json") for s in _table(name) if s[0] <= MAX_N]
+    shapes = list(dict.fromkeys(shapes + [(640, 3072, 5), (2048, 1024, 35), RULE_SHAPE]))
     with Launches() as L:
         for i, (N, K, kb) in enumerate(shapes):
             w = _block(N, K, kb)
