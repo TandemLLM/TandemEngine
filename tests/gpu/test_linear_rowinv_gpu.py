@@ -183,27 +183,36 @@ def main() -> int:
         pack, shapes = trunk(pk)
         g = torch.Generator(device="cpu").manual_seed(5)
         for label, w in blocks(pack, shapes):
-            x = (torch.randn(N_X, w.K, generator=g) * 0.5).to(torch.bfloat16).cuda()
-            for arm, (fn, name) in A.items():
-                try:
-                    r = rows_check(fn, w, x)
-                except R.RowOrderError as e:            # the bind check refused the shape: unequal, and said why
-                    r = {"rows": {M: (False, False) for M in ROWS if M > R.ROWS}, "first_differing": {"bind": str(e)}}
-                bad = sorted(M for M, v in r["rows"].items() if not all(v))
-                verdict[arm] = verdict[arm] and not bad
-                _say({"g1": "rows", "pack": os.path.basename(pk), "shape": label, "arm": arm, "fn": name,
-                      "equal": not bad, "unequal_M": bad, "first_differing": r["first_differing"],
-                      "classes": {str(M): classes(arm, name, M) for M in ROWS},
-                      "count": len(shapes.get((w.N, w.K, w.kb), []))}, sink)
-            c = copy_check(w, x)
-            verdict["copy"] = verdict["copy"] and all(c.values())
-            _say({"g1": "copy", "pack": os.path.basename(pk), "shape": label, "equal": c}, sink)
-            del x
+            try:
+                _shape(pk, shapes, label, w, A, g, verdict, sink)
+            except Exception as e:  # noqa: BLE001  (a shape that cannot run fails the verdict and is said)
+                verdict["exl3_rows"] = False
+                _say({"g1": "error", "pack": os.path.basename(pk), "shape": label, "error": f"{type(e).__name__}: {str(e)[:400]}"}, sink)
         torch.cuda.empty_cache()
     ok = all(verdict.values())
     _say({"g1": "verdict", "passed": ok, **verdict,
           "note": "the engine arm fails until R83-hy4; exl3_rows and copy must hold"}, sink)
     return 0 if ok else 1
+
+
+def _shape(pk, shapes, label, w, A, g, verdict, sink) -> None:
+    """One block: each arm's rows against its one-row calls, then the copy of s1 against the original."""
+    x = (torch.randn(N_X, w.K, generator=g) * 0.5).to(torch.bfloat16).cuda()
+    for arm, (fn, name) in A.items():
+        try:
+            r = rows_check(fn, w, x)
+        except R.RowOrderError as e:            # the bind check refused the shape: unequal, and said why
+            r = {"rows": {M: (False, False) for M in ROWS if M > R.ROWS}, "first_differing": {"bind": str(e)}}
+        bad = sorted(M for M, v in r["rows"].items() if not all(v))
+        verdict[arm] = verdict[arm] and not bad
+        _say({"g1": "rows", "pack": os.path.basename(pk), "shape": label, "arm": arm, "fn": name,
+              "equal": not bad, "unequal_M": bad, "first_differing": r["first_differing"],
+              "classes": {str(M): classes(arm, name, M) for M in ROWS},
+              "count": len(shapes.get((w.N, w.K, w.kb), []))}, sink)
+    c = copy_check(w, x)
+    verdict["copy"] = verdict["copy"] and all(c.values())
+    _say({"g1": "copy", "pack": os.path.basename(pk), "shape": label, "equal": c}, sink)
+    del x
 
 
 def test_g1_rows_equal_their_one_row_calls():
