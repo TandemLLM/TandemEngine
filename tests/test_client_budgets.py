@@ -949,14 +949,15 @@ PLAN_DEFAULTS = (None, "xhigh", "off")
 PLAN_LIMIT = 160
 
 
-def _table_handler(spec, body: dict, cond, default, max_len: int = 256, vocab: bool = False):
+def _table_handler(spec, body: dict, cond, default, max_len: int = 256, vocab: bool = False, monitor: str | None = "on"):
     """One request under `cond`'s plan (None: no conductor) with `spec` in force and `default` as the server's effort
-    (off: thinking off for a request that says nothing): the template calls, the loop's calls, the log, the status
-    line."""
+    (off: thinking off for a request that says nothing), the session monitor in `monitor`'s mode (None: none): the
+    template calls, the loop's calls, the log, the status line."""
     import test_effort_table as table
     serve(None, max_len=max_len)
     tok = table.Recorder(frame.MonTok())
-    app.STATE.update(tok=tok, think_budget=0, spec=spec, conductor=cond, monitor=frame.monitor("on"),
+    app.STATE.update(tok=tok, think_budget=0, spec=spec, conductor=cond,
+                     monitor=frame.monitor(monitor) if monitor else None,
                      reasoning_effort=None if default == "off" else default,
                      thinking_default="off" if default == "off" else "on")
     if vocab:
@@ -1058,7 +1059,8 @@ def test_hy4_the_default_cap_under_a_plan_that_does_not_decide_at_2048():
 
 def test_hy4_the_default_cap_with_a_json_answer():
     """SRV-899: a JSON answer (`response_format`) with no effort, on Hy4-flash's spec and no conductor: the family's
-    default cap stands and the JSON answer's own reserve applies to it, once (not the default's second reserve)."""
+    default cap stands and the JSON answer's own reserve applies to it, once (not the default's second reserve): half
+    the limit since the ruling of 2026-11-21 (SRV-169's block)."""
     body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 160, "stream": False,
             "response_format": {"type": "json_object"}}
     _, loop, log, head = _table_handler(_hy4(), dict(body), None, None, vocab=True)
@@ -1067,9 +1069,43 @@ def test_hy4_the_default_cap_with_a_json_answer():
     assert "server default: answer reserve" not in log, log
     # the reserve lowered the cap, so with the monitor on it closes hidden (the monitor holds the cap) as a JSON
     # answer's reserve does on every model
-    cap = thinking.with_reserve(8192, 160, thinking.AUTO, P)[0]
+    cap = thinking.with_reserve(8192, 160, 80, P)[0]
+    assert "json answer: reserve 80 of 160" in log, log
     got = loop[0]["budget"] or getattr(loop[0]["sup"], "think_budget", None)
     assert got == cap, (loop[0]["budget"], getattr(loop[0]["sup"], "think_budget", None), cap)
+
+
+def test_a_json_answer_keeps_half_its_limit_for_the_json_when_the_model_thinks_past_its_cap():
+    """SRV-169, ruling of 2026-11-21 (fncheck's json_format_2 on Hy4-flash: 150 tokens, json_object, thinking on; about
+    100 tokens of reasoning, then the JSON cut at the limit): a JSON answer keeps min(2,048, half the limit) for the JSON
+    after the close, where a client's budget and the others keep a quarter: a cut JSON is worthless, a reasoning cut
+    short still answers. The corner's shape on every family's spec, engine alone, no monitor, the random model
+    thinking past every cap: the reserve is 75 of 150 and the JSON has those 75 tokens after the close."""
+    from engine.models import REGISTRY
+    body = {"messages": [{"role": "user", "content": "A JSON array of three fruits with their colours."}],
+            "max_tokens": 150, "stream": False, "response_format": {"type": "json_object"}}
+    seen = {}
+    for name in sorted(REGISTRY):
+        spec = REGISTRY[name].spec
+        _, loop, log, head = _table_handler(spec, dict(body), None, None, max_len=4096, vocab=True, monitor=None)
+        got = __import__("re").findall(r"json answer: reserve (\d+) of (\d+) -> cap (\S+)", log)
+        assert got and got[0][:2] == ("75", "150"), (name, got, log[-500:])
+        closer = len(frame.MonTok().encode(spec.reasoning.close or ThinkBudget.PHRASE))
+        cap = loop[0]["budget"]
+        assert cap == thinking.with_reserve(int(_effort_caps_of(spec)), 150, 75, closer)[0], (name, cap, closer)
+        assert 150 - cap - closer >= 75 or cap == 1, (name, cap, closer)       # the JSON's room after the close
+        seen[name] = (cap, closer)
+        # last: the turn was served, the model closed where the cap says (the close runs a forward: triton)
+        assert head.startswith("HTTP/1.1 200"), (name, head[:60])
+        ids = loop[0]["ids"]
+        assert frame.CLOSE in ids and ids.index(frame.CLOSE) <= cap + 1, (name, ids[:12])
+    return ", ".join(f"{k} cap {c} close {n}" for k, (c, n) in seen.items())
+
+
+def _effort_caps_of(spec) -> int:
+    """The cap a request with no effort gets on the engine alone: the family's own default level's, else none."""
+    d = spec.reasoning.effort.default
+    return int(thinking.caps().get(d) or 0) if d else 0
 
 
 def test_the_table_under_a_plan():

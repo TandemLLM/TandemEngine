@@ -11422,10 +11422,15 @@ class Handler(BaseHTTPRequestHandler):
                 # SRV-169: a JSON answer gets the answer reserve as a client's budget does, so
                 # the thinking cannot spend the whole output limit and cut the JSON (UT1: a
                 # 270-token think block, then `{"name": "Margot Ellery", "age": 41, "t` at
-                # max_tokens 300)
+                # max_tokens 300). Ruling of 2026-11-21 (fncheck's json_format_2 on Hy4-flash: 150 tokens, the
+                # quarter's 37 too few for its JSON): with `--answer-reserve auto` the JSON keeps min(2,048, half the
+                # limit) where the others keep a quarter: a cut JSON is worthless, a reasoning cut short still
+                # answers. A number the operator set stands, and 0 keeps none
                 closer = len(tok(close_text, add_special_tokens=False).input_ids)
-                cap, reserve = thinking_mod.with_reserve(
-                    budget, max_new, STATE.get("answer_reserve", thinking_mod.AUTO), closer)
+                setting = STATE.get("answer_reserve", thinking_mod.AUTO)
+                if setting is None or setting < 0:
+                    setting = min(thinking_mod.RESERVE_MAX, max_new // 2)
+                cap, reserve = thinking_mod.with_reserve(budget, max_new, setting, closer)
                 lowered = cap != budget
                 print(f"[think] {cid} json answer: reserve {reserve} of {max_new} -> cap "
                       f"{cap or 'none'}", flush=True)
