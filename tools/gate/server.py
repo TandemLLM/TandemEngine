@@ -5,7 +5,7 @@ that leaves nothing behind. Never touches a server it did not start.
 Two launchers (tools/gate/packs.yaml `launcher`):
 
   ops    the tree's own ops/start.sh with HOLD_RESTART=1, its ops/serve.env REPO set to the tree and
-         run/setup.env written for the arm: the port, the conductor raw, no ledger, no suffix store,
+         run/setup.env written for the arm: the port, engine mode with the conductor raw, no ledger, no suffix store,
          no response cache, no disk tier, no spill, no small models, its own conductor and backends
          copies, the hardware profile's environment and the variant's. ops/stop.sh stops it.
   fake   server/app.py --fake-engine (no model, no GPU), for the gate's own tests.
@@ -317,6 +317,10 @@ class OpsLauncher:
         """The arm's run/setup.env: the box's own (site `setup_env`), then the arm's overrides."""
         base = Path(self.site["setup_env"]).read_text() if self.site.get("setup_env") else ""
         own = {"PORT": str(arm.port), **ARM_OVERRIDES,
+               # engine mode: the gate measures the engine (client.py, X-Tandem raw). Without it serve.env (OPS-260)
+               # reads the arm's conductor folder below as chat mode, which loads TandemApp's extension and refuses
+               # to start on an engine Python without TandemApp; a site's conductor copy asks for chat mode
+               "QSE_MODE": "chat" if self.site.get("conductor_from") else "engine",
                "QSE_CONDUCTOR_CONFIG": str(arm.home / "conductor"),
                "QSE_BACKENDS": "off",          # ENG-413 WP14b: the engine relays to no backend
                "QWEN38_PROBE_DIR": str(arm.home / "probe"),
