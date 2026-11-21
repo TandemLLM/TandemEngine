@@ -1102,6 +1102,31 @@ def test_a_json_answer_keeps_half_its_limit_for_the_json_when_the_model_thinks_p
     return ", ".join(f"{k} cap {c} close {n}" for k, (c, n) in seen.items())
 
 
+def test_a_json_answer_with_a_client_budget_keeps_the_quarter():
+    """SRV-169, ruling of 2026-11-21: the JSON's half is the server's choice when nobody named a budget. A client that
+    names one has made its choice, and its budget is respected as an explicit effort is: the client block's reserve,
+    a quarter (37 of 150), never the JSON's half. The corner's shape with `thinking_budget` 1,000 on every family's
+    spec, engine alone, no monitor."""
+    from engine.models import REGISTRY
+    body = {"messages": [{"role": "user", "content": "A JSON array of three fruits with their colours."}],
+            "max_tokens": 150, "stream": False, "response_format": {"type": "json_object"},
+            "thinking_budget": 1000}
+    seen = {}
+    for name in sorted(REGISTRY):
+        spec = REGISTRY[name].spec
+        _, loop, log, head = _table_handler(spec, dict(body), None, None, max_len=4096, vocab=True, monitor=None)
+        assert "json answer:" not in log, (name, log[-500:])
+        got = __import__("re").findall(r"client budget 1000 \(thinking_budget\), in force \S+, answer reserve (\d+) of "
+                                       r"(\d+) -> cap (\S+)", log)
+        assert got and got[0][:2] == ("37", "150"), (name, got, log[-500:])
+        closer = len(frame.MonTok().encode(spec.reasoning.close or ThinkBudget.PHRASE))
+        cap = loop[0]["budget"]
+        assert cap == thinking.with_reserve(1000, 150, thinking.AUTO, closer)[0], (name, cap, closer)
+        assert str(cap) == got[0][2], (name, cap, got)
+        seen[name] = (cap, closer)
+    return ", ".join(f"{k} cap {c} close {n}" for k, (c, n) in seen.items())
+
+
 def _effort_caps_of(spec) -> int:
     """The cap a request with no effort gets on the engine alone: the family's own default level's, else none."""
     d = spec.reasoning.effort.default
