@@ -10,6 +10,7 @@
   "tandemapp": "7207618"
  },
  "moved": {
+  "plan_rows": "ENG-468 / M1.5: 180 plan rows (a request with nothing asked, thinking on, under a plan that decides the effort, and under one that does not on the families without a default level) gain the answer reserve's line and cap; written on the DGX Spark at fd4360b5, TandemApp 7207618. SRV-169's JSON half moves none",
   "rows": "ENG-468 / M1.5: the answer reserve for a request with thinking on and nothing asked, on hy4-m1-serve: 48 rows (the six families without a default level of their own, a request that carries nothing, server defaults unset, low, medium and xhigh, both limits) gain the reserve's [think] line and its cap; written on the Mac (CPU, the same rows as the Spark for every row before)"
  },
  "plan_rows": {
@@ -1883,11 +1884,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -1900,11 +1904,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -1917,11 +1924,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=high/wins": {
    "budget": 0,
@@ -1934,11 +1944,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -1951,11 +1964,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -1968,11 +1984,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=low/wins": {
    "budget": 0,
@@ -1985,11 +2004,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -2002,11 +2024,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -2019,11 +2044,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -2036,11 +2064,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -2053,11 +2084,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -2070,11 +2104,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=-|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -2087,11 +2124,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=off|limit=160|plan=decides=no": {
    "budget": 0,
@@ -2326,11 +2366,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -2344,11 +2387,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -2362,11 +2408,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=high/wins": {
    "budget": 0,
@@ -2380,11 +2429,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -2398,11 +2450,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -2416,11 +2471,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=low/wins": {
    "budget": 0,
@@ -2434,11 +2492,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -2452,11 +2513,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -2470,11 +2534,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -2488,11 +2555,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -2506,11 +2576,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -2524,11 +2597,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|nothing|default=xhigh|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -2542,11 +2618,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "flint|reasoning.enabled|default=-|limit=160|plan=decides=no": {
    "budget": 0,
@@ -10620,11 +10699,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -10638,11 +10720,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=high/wins": {
    "budget": 0,
@@ -10656,11 +10741,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -10674,11 +10762,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -10692,11 +10783,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=low/wins": {
    "budget": 0,
@@ -10710,11 +10804,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -10728,11 +10825,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -10746,11 +10846,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -10764,11 +10867,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -10782,11 +10888,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -10800,11 +10909,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=-|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -10818,11 +10930,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=off|limit=160|plan=decides=no": {
    "budget": 0,
@@ -11092,11 +11207,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -11110,11 +11228,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=high/wins": {
    "budget": 0,
@@ -11128,11 +11249,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -11146,11 +11270,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -11164,11 +11291,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=low/wins": {
    "budget": 0,
@@ -11182,11 +11312,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -11200,11 +11333,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -11218,11 +11354,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -11236,11 +11375,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -11254,11 +11396,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -11272,11 +11417,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -11290,11 +11438,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "hy_v4_flash|reasoning.enabled|default=-|limit=160|plan=decides=no": {
    "budget": 0,
@@ -19319,11 +19470,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -19336,11 +19490,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -19353,11 +19510,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=high/wins": {
    "budget": 0,
@@ -19370,11 +19530,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -19387,11 +19550,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -19404,11 +19570,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=low/wins": {
    "budget": 0,
@@ -19421,11 +19590,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -19438,11 +19610,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -19455,11 +19630,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -19472,11 +19650,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -19489,11 +19670,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -19506,11 +19690,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=-|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -19523,11 +19710,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=off|limit=160|plan=decides=no": {
    "budget": 0,
@@ -19762,11 +19952,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -19780,11 +19973,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -19798,11 +19994,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=high/wins": {
    "budget": 0,
@@ -19816,11 +20015,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -19834,11 +20036,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -19852,11 +20057,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=low/wins": {
    "budget": 0,
@@ -19870,11 +20078,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -19888,11 +20099,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -19906,11 +20120,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -19924,11 +20141,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -19942,11 +20162,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -19960,11 +20183,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|nothing|default=xhigh|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -19978,11 +20204,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "lfm2_moe|reasoning.enabled|default=-|limit=160|plan=decides=no": {
    "budget": 0,
@@ -27981,11 +28210,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -27998,11 +28230,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -28015,11 +28250,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=high/wins": {
    "budget": 0,
@@ -28032,11 +28270,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -28049,11 +28290,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -28066,11 +28310,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=low/wins": {
    "budget": 0,
@@ -28083,11 +28330,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -28100,11 +28350,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -28117,11 +28370,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -28134,11 +28390,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -28151,11 +28410,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -28168,11 +28430,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=-|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -28185,11 +28450,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=off|limit=160|plan=decides=no": {
    "budget": 0,
@@ -28424,11 +28692,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -28442,11 +28713,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -28460,11 +28734,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=high/wins": {
    "budget": 0,
@@ -28478,11 +28755,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -28496,11 +28776,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -28514,11 +28797,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=low/wins": {
    "budget": 0,
@@ -28532,11 +28818,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -28550,11 +28839,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -28568,11 +28860,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -28586,11 +28881,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -28604,11 +28902,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -28622,11 +28923,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|nothing|default=xhigh|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -28640,11 +28944,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "nemotron_h|reasoning.enabled|default=-|limit=160|plan=decides=no": {
    "budget": 0,
@@ -36643,11 +36950,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -36660,11 +36970,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -36677,11 +36990,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=high/wins": {
    "budget": 0,
@@ -36694,11 +37010,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -36711,11 +37030,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -36728,11 +37050,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=low/wins": {
    "budget": 0,
@@ -36745,11 +37070,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -36762,11 +37090,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -36779,11 +37110,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -36796,11 +37130,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -36813,11 +37150,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -36830,11 +37170,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=-|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -36847,11 +37190,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=off|limit=160|plan=decides=no": {
    "budget": 0,
@@ -37086,11 +37432,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -37104,11 +37453,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -37122,11 +37474,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=high/wins": {
    "budget": 0,
@@ -37140,11 +37495,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -37158,11 +37516,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -37176,11 +37537,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=low/wins": {
    "budget": 0,
@@ -37194,11 +37558,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -37212,11 +37579,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -37230,11 +37600,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -37248,11 +37621,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -37266,11 +37642,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -37284,11 +37663,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|nothing|default=xhigh|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -37302,11 +37684,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5_moe|reasoning.enabled|default=-|limit=160|plan=decides=no": {
    "budget": 0,
@@ -45305,11 +45690,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -45322,11 +45710,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -45339,11 +45730,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=high/wins": {
    "budget": 0,
@@ -45356,11 +45750,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -45373,11 +45770,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -45390,11 +45790,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=low/wins": {
    "budget": 0,
@@ -45407,11 +45810,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -45424,11 +45830,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -45441,11 +45850,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -45458,11 +45870,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -45475,11 +45890,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -45492,11 +45910,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=-|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -45509,11 +45930,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=off|limit=160|plan=decides=no": {
    "budget": 0,
@@ -45748,11 +46172,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -45766,11 +46193,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -45784,11 +46214,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=high/wins": {
    "budget": 0,
@@ -45802,11 +46235,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -45820,11 +46256,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -45838,11 +46277,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=low/wins": {
    "budget": 0,
@@ -45856,11 +46298,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -45874,11 +46319,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -45892,11 +46340,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -45910,11 +46361,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -45928,11 +46382,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -45946,11 +46403,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|nothing|default=xhigh|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -45964,11 +46424,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen3_5|reasoning.enabled|default=-|limit=160|plan=decides=no": {
    "budget": 0,
@@ -53967,11 +54430,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -53984,11 +54450,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -54001,11 +54470,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=high/wins": {
    "budget": 0,
@@ -54018,11 +54490,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -54035,11 +54510,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -54052,11 +54530,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=low/wins": {
    "budget": 0,
@@ -54069,11 +54550,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -54086,11 +54570,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -54103,11 +54590,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -54120,11 +54610,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -54137,11 +54630,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -54154,11 +54650,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=-|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -54171,11 +54670,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=off|limit=160|plan=decides=no": {
    "budget": 0,
@@ -54410,11 +54912,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=high/ceiling": {
    "budget": 0,
@@ -54428,11 +54933,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=high/ignore": {
    "budget": 0,
@@ -54446,11 +54954,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=high/wins": {
    "budget": 0,
@@ -54464,11 +54975,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 16384,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 16384 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=low/ceiling": {
    "budget": 0,
@@ -54482,11 +54996,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=low/ignore": {
    "budget": 0,
@@ -54500,11 +55017,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=low/wins": {
    "budget": 0,
@@ -54518,11 +55038,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 1024,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 1024 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=medium/ceiling": {
    "budget": 0,
@@ -54536,11 +55059,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=medium/ignore": {
    "budget": 0,
@@ -54554,11 +55080,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=medium/wins": {
    "budget": 0,
@@ -54572,11 +55101,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": 8192,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force 8192 -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=xhigh/ceiling": {
    "budget": 0,
@@ -54590,11 +55122,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=xhigh/ignore": {
    "budget": 0,
@@ -54608,11 +55143,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|nothing|default=xhigh|limit=160|plan=xhigh/wins": {
    "budget": 0,
@@ -54626,11 +55164,14 @@
    },
    "max_new": 160,
    "monitor": true,
-   "monitor_cap": null,
+   "monitor_cap": 9,
    "prompt_len": 47,
    "prompt_sha": "eb5be85f2de974dc",
    "status": "200",
-   "think": []
+   "think": [
+    "[think] <cid> answer reserve 40 of 160, in force none -> cap 9",
+    "[think] close_reasoning (budget(9)) at 9 reasoning tokens, 108 hidden"
+   ]
   },
   "qwen4_exp|reasoning.enabled|default=-|limit=160|plan=decides=no": {
    "budget": 0,
