@@ -7401,25 +7401,29 @@ def roles_report() -> dict:
 def _kv_after_load(a, own: dict | None = None) -> None:
     """After slot 0's engine and drafters exist: the memory policy no longer holds slot 0's
     window (its pages are the pool's now, outside the allocator), and the reclaimers in order.
-    `own`: the limits the model's builder set from its load (`_build_with_limits`), none by default."""
+    `own`: the limits the model's builder set from its load (`_build_with_limits`), none by default.
+
+    OPS-308, the one rule (server/memlimits.py `limit_of`): the policy enforces a figure plus `fixed`, the bytes the
+    engine holds for good beyond what a configured figure counts. A configured ceiling and peak (serve.env's, a
+    profile's, the residency document's) count slot 0's window at LIMITS_WINDOW as allocator memory, and the pool
+    now holds it outside the allocator the policy measures: `fixed` goes down by it, and so do they. A limit the
+    model's builder set from what the allocator held after its load was measured with the window already the pool's
+    and holds none of it: it keeps the window (`own_basis`), at the start and whenever the refresh falls back to it."""
     pool = kvpool.POOL
     eng = dict.get(STATE, "engine")
     pages = getattr(getattr(eng, "kv", None), "pages", None)
     if pool is None or pages is None:
-        _window_above_limits(a, eng)
+        _window_above_limits(a, eng, own)
         return
     static = sum(b.nbytes for b in pages.bufs)
     mem = dict.get(STATE, "mem")
     if mem is not None and mem.on:
-        # a configured ceiling and peak count slot 0's window as allocator memory, and the pool now holds it outside
-        # the allocator the policy measures: they go down by it. A limit the model's builder set from what the
-        # allocator held after its load (`_build_with_limits`) was measured with the window already the pool's and
-        # holds none of it. The fixed bytes always do: a figure the residency document sets later is a configured one
         own = own or {}
         cut = {d: 0 if d in own else static for d in ("mem_ceiling_gib", "mem_peak_gib")}
         mem.fixed -= static
         mem.ceiling -= cut["mem_ceiling_gib"]
         mem.peak -= cut["mem_peak_gib"]
+        memlimits.set_own_basis(mem, {d: static for d in cut if d in own})
         print(f"[kv-pool] memory policy: ceiling -{_gib(cut['mem_ceiling_gib'])} and peak "
               f"-{_gib(cut['mem_peak_gib'])} GiB (slot 0's window of {_gib(static)} GiB is the pool's now"
               + ("; the model's own limits were set from its load without it" if own else "")
@@ -7430,22 +7434,43 @@ def _kv_after_load(a, own: dict | None = None) -> None:
           f"{_gib(pool.hard_floor)} GiB, margin {pool.margin_rows} rows", flush=True)
 
 
-def _window_above_limits(a, eng) -> None:
+def _window_above_limits(a, eng, own: dict | None = None) -> None:
     """ENG-363: slot 0's window above the one the limits are set at (memlimits.LIMITS_WINDOW) holds
     its KV from the load on when the pool is off: the policy's ceiling and peak go up by the KV of
     the rows above it, as they do for the side slots, so the caches are not shed and a long prefill
-    not refused for slot 0's own window (Super VL at 1,048,576 tokens: +6 GiB)."""
+    not refused for slot 0's own window (Super VL at 1,048,576 tokens: +6 GiB). OPS-308: a limit the model's
+    builder set from its load (`own`) was measured with the whole window in the allocator: it takes none of it."""
     mem = dict.get(STATE, "mem")
     if mem is None or not mem.on or eng is None:
         return
     extra = int(eng.cost().view_bytes_per_token) * max(0, int(a.max_len) - memlimits.LIMITS_WINDOW)
     if extra <= 0:
         return
+    own = own or {}
+    up = {d: 0 if d in own else extra for d in ("mem_ceiling_gib", "mem_peak_gib")}
     mem.fixed += extra             # kept when a residency document sets the limits again
-    mem.ceiling += extra
-    mem.peak += extra
-    print(f"[memory] ceiling and peak +{_gib(extra)} GiB for slot 0's window above "
-          f"{memlimits.LIMITS_WINDOW:,} tokens: {_gib(mem.ceiling)} / {_gib(mem.peak)} GiB", flush=True)
+    mem.ceiling += up["mem_ceiling_gib"]
+    mem.peak += up["mem_peak_gib"]
+    memlimits.set_own_basis(mem, {d: -extra for d in up if d in own})
+    print(f"[memory] ceiling +{_gib(up['mem_ceiling_gib'])} and peak +{_gib(up['mem_peak_gib'])} GiB for slot 0's "
+          f"window above {memlimits.LIMITS_WINDOW:,} tokens"
+          + (" (the model's own limits were set from its load with it)" if own else "")
+          + f": {_gib(mem.ceiling)} / {_gib(mem.peak)} GiB", flush=True)
+
+
+def _side_slots_policy(added_a: int, added_r: int) -> None:
+    """The side slots of `--parallel N` hold what their build added for good (`_build_side_slots`): the larger of
+    the allocated and the reserved bytes it added goes into the memory policy's fixed bytes, its ceiling and peak,
+    for a configured figure and the model's own alike (OPS-308: server/memlimits.py `limit_of`)."""
+    mem = dict.get(STATE, "mem")
+    if mem is None or not mem.on:
+        return
+    side = max(int(added_a), int(added_r))
+    mem.fixed += side          # kept when a residency document sets the limits again
+    mem.ceiling += side
+    mem.peak += side
+    print(f"[parallel] memory policy: ceiling and peak +{_gib(side)} GiB for "
+          f"the side slots ({_gib(mem.ceiling)} / {_gib(mem.peak)} GiB)", flush=True)
 
 
 def kv_pool_report() -> dict | None:
@@ -14797,15 +14822,7 @@ def _build_side_slots(a, cfg, w, tok, hooks: dict | None = None) -> None:
               f"sequence, as without --parallel", flush=True)
         return
     a1, r1 = cache.cuda_stats("allocated_bytes.all.current", "reserved_bytes.all.current")
-    added_a, added_r = a1 - a0, r1 - r0
-    mem = dict.get(STATE, "mem")
-    if mem is not None and mem.on:
-        side = max(added_a, added_r)
-        mem.fixed += side          # kept when a residency document sets the limits again
-        mem.ceiling += side
-        mem.peak += side
-        print(f"[parallel] memory policy: ceiling and peak +{_gib(max(added_a, added_r))} GiB for "
-              f"the side slots ({_gib(mem.ceiling)} / {_gib(mem.peak)} GiB)", flush=True)
+    _side_slots_policy(a1 - a0, r1 - r0)
     settle = torch.cuda.synchronize if a.parallel_settle == "on" else None
     turn = slots_mod.Turn(a.turn_quantum_ms / 1e3, settle=settle)
     # SPD-159/155: the joint pass's row cap and cut are the model family's (`joint_policy`: what its

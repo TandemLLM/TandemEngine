@@ -18,8 +18,13 @@ The test matrix:
   4  the response store: off by default in every model's registry entry, in ops/serve.env, in ops/start.sh and
      in docs/caches.md, and opt-in by RESPONSE_CACHE=on alone; Hy4-flash's profiles leave it to serve.env
                                                                test_the_response_store_is_off_by_default_everywhere
+  5  OPS-308, one accounting rule: on both Hy4-flash packs' shapes (own limits, 8 lanes) and the 27B's and
+     Flash-Next's (configured), the [kv-pool], [parallel], [limits] and residency lines and the policy name one
+     ceiling and peak, a request's refresh moves neither, a dashboard figure is enforced live as the next start
+     enforces it, and the Hy4-flash loads' idle gate sheds nothing
+                                                               test_one_accounting_rule_from_the_start_through_every_refresh
 
-1, 2 and 4 need no torch; 3 starts server/app.py --fake-engine (CPU torch).
+1, 2 and 4 need no torch; 3 starts server/app.py --fake-engine (CPU torch); 5 runs the server's start steps on CPU.
 Run: python tests/test_start_limits.py
 """
 
@@ -256,6 +261,138 @@ def test_a_models_own_limit_from_its_load_keeps_the_window_it_never_held():
     assert _after_the_pool(72.0, 79.0, own=True) == (72.0, 79.0, -w)
     assert _after_the_pool(81.0, 88.0, own=False) == (round(81 - w, 4), round(88 - w, 4), -w)
     return "own 81/88 and 72/79 keep the window; the same figures configured lose it"
+
+
+#: OPS-308: the shapes the one accounting rule is locked on: the start's ceiling and peak (GiB), whether the model's
+#: builder set them from its load (`own`) or they are configured, slot 0's window the KV pool holds (GiB), the side
+#: slots' share (GiB), and the allocator after the load (allocated, reserved GiB) where a log has it. Hy4-flash: hold
+#: 1b on aa596e81, 8 lanes ("ceiling and peak +3.22 GiB for the side slots", "after the load: 62.66 GiB allocated,
+#: 72.50 GiB reserved" on hy4-3.08, 71.29 and 72.50 on hy4-3.56). The 27B: serve.env's 70/77; Flash-Next 3.05: its
+#: profile's 66/77 with slot 0's 7.58 GiB of KV; their window and side figures are stand-ins
+SHAPES = {"hy4-3.08": dict(start=(72.0, 79.0), own=True, window=4.12, side=3.22, load=(62.66, 72.50)),
+          "hy4-3.56": dict(start=(81.0, 88.0), own=True, window=4.12, side=3.22, load=(71.29, 72.50)),
+          "27b": dict(start=(70.0, 77.0), own=False, window=5.0, side=1.5, load=None),
+          "flashnext-3.05": dict(start=(66.0, 77.0), own=False, window=7.58, side=3.0, load=None)}
+NUM = r"([0-9]+(?:\.[0-9]+)?)"
+
+
+def _served(shape: dict, docs: tuple = (None,), at_start: dict | None = None) -> dict:
+    """One server of `shape` through its start and requests, as server/app.py runs them: the residency document's
+    figures before the load (`at_start`, `_limits_at_start`: `overrides_at_start` onto the flags), the model's
+    builder (`_build_with_limits`, which sets the shape's own figures only on serve.env's 70/77, as Hy4-flash's
+    `serve` does), the memory policy, the pool step (`_kv_after_load`), the side slots (`_side_slots_policy`), the
+    start's `[limits]` line, then one request's residency refresh a document of `docs` (each a document's `engine`
+    section, None for none) and its gate on the load's allocator, the caches a few MB each. Returns every printed
+    ceiling and peak, the policy's own after each refresh, and what the gates shed."""
+    import test_forward_tree  # noqa: F401  (the CPU environment before the server imports)
+    from engine import cache, kvpool
+    from server import app
+    from server import ext as ext_mod
+    saved = {k: app.STATE.get(k) for k in ("mem", "engine", "serve_flags")}
+    pool0, reclaim0, doc0 = kvpool.POOL, app._add_kv_reclaimers, ext_mod.document
+    own_start = shape["own"]
+    flags = (70.0, 77.0) if own_start else shape["start"]
+    a = types.SimpleNamespace(mem_ceiling_gib=flags[0], mem_peak_gib=flags[1], store_entry_gb=1.0,
+                              reserve_slack_gib=2.0)
+    alloc, res = [int(x * GIB) for x in (shape["load"] or (0.0, 0.0))]
+    box = {"alloc": alloc, "res": res}
+    shed, limits, out = [], {}, {}
+    try:
+        app.STATE["serve_flags"] = dict(vars(a))                  # `_limits_at_start`: the flags as given
+        if at_start:
+            memlimits.overrides_at_start(a, {"engine": dict(at_start)})
+
+        def build(a_, ctx):                                       # Hy4-flash's `serve`: only on the server's defaults
+            if own_start and (a_.mem_ceiling_gib, a_.mem_peak_gib) == (70.0, 77.0):
+                a_.mem_ceiling_gib, a_.mem_peak_gib = shape["start"]
+            return {}
+        with contextlib.redirect_stdout(io.StringIO()):
+            app._build_with_limits(build, a, None, limits)
+        mem = cache.Budget(int(a.mem_ceiling_gib * GIB), int(a.mem_peak_gib * GIB), int(a.reserve_slack_gib * GIB),
+                           probe=lambda: (box["alloc"], box["res"]), empty=lambda: None)
+        for lv in ("store", "anchors", "end", "stash"):
+            def fn(safe, _lv=lv):
+                shed.append(_lv)
+                box["alloc"] -= 17 << 20       # a cache's bytes leave what is allocated; the reserve keeps them
+                return 17 << 20
+            mem.register(lv, fn)
+        bufs = [types.SimpleNamespace(nbytes=int(shape["window"] * GIB), page=2 << 20)]
+        app.STATE.update(mem=mem, engine=types.SimpleNamespace(kv=types.SimpleNamespace(
+            pages=types.SimpleNamespace(bufs=bufs), max_len=262144)))
+        kvpool.POOL = types.SimpleNamespace(hard_floor=10 * GIB, margin_rows=256)
+        app._add_kv_reclaimers = lambda pool: None
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            app._kv_after_load(a, limits)
+            app._side_slots_policy(int(shape["side"] * GIB) - (1 << 20), int(shape["side"] * GIB))
+        text = log.getvalue()
+        out["kv_pool"] = tuple(map(float, re.search(r"\[kv-pool\] memory policy: .*\): " + NUM + " / " + NUM
+                                                    + " GiB", text).groups()))
+        out["parallel"] = tuple(map(float, re.search(r"\[parallel\] memory policy: ceiling and peak \+" + NUM
+                                                     + r" GiB for the side slots \(" + NUM + " / " + NUM + r" GiB\)",
+                                                     text).groups()[1:]))
+        state = {"mem": mem, "serve_flags": app.STATE["serve_flags"], "args": dict(vars(a))}
+        got = _pairs(memlimits.start_line({}, state, {}))
+        out["limits"] = (float(got["MEM_CEILING_GIB"]), float(got["MEM_PEAK_GIB"]))
+        out["start"] = (mem.ceiling, mem.peak)
+        out["refresh"], out["residency"] = [], []
+        for v, doc in enumerate(docs, start=6):
+            ext_mod.document = lambda st, name, _v=v, _d=doc: ((_v, {"engine": dict(_d or {})})
+                                                                if name == "residency" else None)
+            log = io.StringIO()
+            with contextlib.redirect_stdout(log):
+                memlimits.refresh(state)
+            m = re.search(r"the memory policy enforces " + NUM + " / " + NUM + " GiB", log.getvalue())
+            out["residency"].append(tuple(map(float, m.groups())) if m else None)
+            out["refresh"].append((mem.ceiling, mem.peak))
+            if shape["load"]:
+                mem.gate(38)
+        out["shed"], out["over_ceiling"] = shed, mem.stats["over_ceiling"]
+        return out
+    finally:
+        kvpool.POOL, app._add_kv_reclaimers, ext_mod.document = pool0, reclaim0, doc0
+        for k, val in saved.items():
+            if val is None:
+                app.STATE.pop(k, None)
+            else:
+                app.STATE[k] = val
+
+
+def test_one_accounting_rule_from_the_start_through_every_refresh():
+    """OPS-308: one rule for the memory limits (server/memlimits.py `limit_of`). The policy enforces a figure plus
+    its fixed bytes; a configured figure (serve.env's, a profile's, the residency document's) loses slot 0's window
+    to the KV pool, the model's own figure from its load never held it and keeps it; every line that names the
+    ceiling and peak prints the policy's own. Locked on both Hy4-flash packs (own limits, 8 lanes), the 27B and
+    Flash-Next 3.05 (configured):
+
+      * the [kv-pool] line plus the side slots' share, the [parallel] line, the [limits] line, the residency
+        refresh's line and the policy after the refresh name one ceiling and one peak;
+      * the first request's refresh (a document that sets no limit: every key falls back to its start flag) leaves
+        the policy as it started; on aa596e81 it applied the model's own 72/79 as configured figures and hy4-3.08
+        enforced 71.10 GiB from then on, 1.42 under its idle reserve, and every gate shed the caches;
+      * a document's figure is enforced live as the next start enforces it (`overrides_at_start` makes it a
+        configured flag), and a document that stops setting it gives back the start's figure in the start's terms;
+      * on the Hy4-flash packs' loads, the gate after the refresh sheds nothing."""
+    gib2 = lambda b: round(b / GIB, 2)                        # noqa: E731
+    for name, sh in SHAPES.items():
+        w, s = sh["window"], sh["side"]
+        c, p = sh["start"]
+        want = (round(c + s, 2), round(p + s, 2)) if sh["own"] else (round(c - w + s, 2), round(p - w + s, 2))
+        got = _served(sh, docs=(None,))
+        enforced = tuple(gib2(x) for x in got["refresh"][0])
+        assert got["refresh"][0] == got["start"], (name, "the refresh moved the policy", got)
+        assert tuple(round(x + s, 2) for x in got["kv_pool"]) == got["parallel"] == got["limits"] == want, (name, got)
+        assert got["residency"][0] == enforced == want, (name, got)
+        if sh["load"]:
+            assert got["shed"] == [] and got["over_ceiling"] == 0, (name, "the idle gate shed", got)
+        # live against a restart with the same document, both keys set (each a configured figure)
+        doc = {"MEM_CEILING_GIB": c - 1.5, "MEM_PEAK_GIB": p - 1.5}   # never 70/77: those are the defaults
+        live = _served(sh, docs=(None, doc, None))
+        again = _served(sh, docs=(doc,), at_start=doc)
+        assert live["refresh"][1] == again["start"] == again["refresh"][0], (name, live, again)
+        assert gib2(live["refresh"][1][0]) == round(c - 1.5 - w + s, 2), (name, live)
+        assert live["refresh"][2] == live["start"], (name, "the document's figure stayed after it was dropped", live)
+    return f"{len(SHAPES)} shapes: every printed ceiling and peak is the policy's, through the refresh and a restart"
 
 if __name__ == "__main__":
     from scriptmode import run
