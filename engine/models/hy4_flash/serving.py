@@ -537,12 +537,44 @@ def store_entry(a) -> bool:
 
 
 def memory_limits(held_gib: float) -> tuple[float, float]:
-    """(ceiling, peak) in GiB for an engine that holds `held_gib` on the device after its load (weights and the
-    window's state): 12 GiB over it for the allocator's reserve and the caches (measured on the 3.08 pack at
-    262,144 tokens: 64.0 allocated, 73.8 reserved, a 70 GiB ceiling shed a cache), and 7 more during a prefill
-    (the server's workspace at 262,144 tokens)."""
+    """(ceiling, peak) in GiB for an engine that keeps `held_gib` of the allocator's reserve after its load (weights
+    and the window's state, the allocator's free blocks handed back first: `held_after_load`): 12 GiB over it for the
+    caches and the reserve a request leaves, and 7 more during a prefill (the server's workspace at 262,144 tokens).
+    OPS-308: the reserve, not what is allocated, as the memory policy enforces its ceiling on the reserve
+    (engine/cache.py `Budget`) and the box gives the engine the reserve; on the allocated bytes hy4-3.08's 12 GiB left
+    2.7 GiB over its idle reserve and hy4-3.56's 11.7."""
     ceiling = float(math.ceil(held_gib + 12.0))
     return ceiling, ceiling + 7.0
+
+
+def held_after_load(stats=None, empty=None) -> tuple[float, float]:
+    """OPS-308: (reserved, allocated) GiB the engine keeps on the device after its load, the allocator's free blocks
+    handed back first (`empty`, torch.cuda.empty_cache): what `memory_limits` sets the pack's own limits over. The two
+    part on hy4-3.08 by about 9.4 GiB that no `empty` gave back (hold 1b on aa596e81: 62.66 allocated, 72.50 reserved,
+    9.37 free in the default pool after the load), where hy4-3.56 reserves the same 72.50 with 0.74 free. The packs'
+    weight sizes put a routed expert's trellis at 2,359,296 weights, 864 KiB at 3 bits and 1,008 KiB at 3.5, both
+    under the CUDA caching allocator's 1 MiB small-block size: two to a 2 MiB segment would leave 320 and 32 KiB of
+    each free beside them (a reading of the figures, not yet a walk of the segments on the device)."""
+    if stats is None:
+        from engine.cache import cuda_stats as stats    # torch's flattening readers leave cyclic garbage
+    if empty is None:
+        empty = torch.cuda.empty_cache
+    empty()
+    res, alloc = stats("reserved_bytes.all.current", "allocated_bytes.all.current")
+    return res / (1 << 30), alloc / (1 << 30)
+
+
+def own_limits(a, log=print, held=held_after_load) -> bool:
+    """The server's default limits are another model's (70 and 77 GiB): a start that names none takes this pack's
+    (`memory_limits` over the reserve the load keeps, `held`). Whether it did."""
+    if (getattr(a, "mem_ceiling_gib", None), getattr(a, "mem_peak_gib", None)) != SERVER_LIMITS:
+        return False
+    res, alloc = held()
+    a.mem_ceiling_gib, a.mem_peak_gib = memory_limits(res)
+    log(f"[server] Hy4-flash: memory ceiling {a.mem_ceiling_gib:g} GiB, peak {a.mem_peak_gib:g} GiB "
+        f"(12 and 19 over the {res:.2f} GiB the pack and a {a.max_len:,}-token window keep reserved, "
+        f"{alloc:.2f} of it allocated)")
+    return True
 
 
 def serve(a, ctx) -> dict:
@@ -561,15 +593,8 @@ def serve(a, ctx) -> dict:
     except ValueError as e:
         ctx.log(f"[server] Hy4-flash: {e}; the tokenizer is served as it is (no tool calls, no reasoning split)")
     srv, info = build(a.model, a.max_len, tok, mark=ctx.mark, log=ctx.log, kv_pool=open_pool(a, ctx))
-    # the server's default limits are another model's (70 and 77 GiB): a start that names none takes this pack's,
-    # from what the weights and the window's state hold on the device
-    if (info["device"] == "cuda" and getattr(a, "mem_ceiling_gib", None) == SERVER_LIMITS[0]
-            and getattr(a, "mem_peak_gib", None) == SERVER_LIMITS[1]):
-        from engine.cache import cuda_stats      # torch's flattening readers leave cyclic garbage
-        held = cuda_stats("allocated_bytes.all.current")[0] / (1 << 30)
-        a.mem_ceiling_gib, a.mem_peak_gib = memory_limits(held)
-        ctx.log(f"[server] Hy4-flash: memory ceiling {a.mem_ceiling_gib:g} GiB, peak {a.mem_peak_gib:g} GiB "
-                f"(the pack and a {a.max_len:,}-token window hold {held:.1f} GiB)")
+    if info["device"] == "cuda":
+        own_limits(a, ctx.log)
     if store_entry(a):
         ctx.log(f"[server] Hy4-flash: state store entries up to {a.store_entry_gb:g} GiB (about 11,000 tokens)")
     drafter = None

@@ -263,14 +263,16 @@ def test_a_models_own_limit_from_its_load_keeps_the_window_it_never_held():
     return "own 81/88 and 72/79 keep the window; the same figures configured lose it"
 
 
-#: OPS-308: the shapes the one accounting rule is locked on: the start's ceiling and peak (GiB), whether the model's
-#: builder set them from its load (`own`) or they are configured, slot 0's window the KV pool holds (GiB), the side
-#: slots' share (GiB), and the allocator after the load (allocated, reserved GiB) where a log has it. Hy4-flash: hold
-#: 1b on aa596e81, 8 lanes ("ceiling and peak +3.22 GiB for the side slots", "after the load: 62.66 GiB allocated,
-#: 72.50 GiB reserved" on hy4-3.08, 71.29 and 72.50 on hy4-3.56). The 27B: serve.env's 70/77; Flash-Next 3.05: its
+#: OPS-308: the shapes the one accounting rule is locked on: the start's configured ceiling and peak (GiB), or with
+#: `kept` the model's own from its load: the allocator then held (allocated, reserved GiB) at the builder's measure;
+#: slot 0's window the KV pool holds (GiB), the side slots' share (GiB), and the allocator after the load (allocated,
+#: reserved GiB) where a log has it. Hy4-flash: hold 1b on aa596e81, 8 lanes ("ceiling and peak +3.22 GiB for the side
+#: slots", "after the load: 62.66 GiB allocated, 72.50 GiB reserved" on hy4-3.08, 71.29 and 72.50 on hy4-3.56); the
+#: allocated bytes at the builder's measure are the logged 59.7 and 68.4 GiB, the reserve then is in no log (72.50 less
+#: the side slots' 3.22 and about 0.2 of warm-ups: a stand-in). The 27B: serve.env's 70/77; Flash-Next 3.05: its
 #: profile's 66/77 with slot 0's 7.58 GiB of KV; their window and side figures are stand-ins
-SHAPES = {"hy4-3.08": dict(start=(72.0, 79.0), own=True, window=4.12, side=3.22, load=(62.66, 72.50)),
-          "hy4-3.56": dict(start=(81.0, 88.0), own=True, window=4.12, side=3.22, load=(71.29, 72.50)),
+SHAPES = {"hy4-3.08": dict(kept=(59.71, 69.10), own=True, window=4.12, side=3.22, load=(62.66, 72.50)),
+          "hy4-3.56": dict(kept=(68.40, 69.10), own=True, window=4.12, side=3.22, load=(71.29, 72.50)),
           "27b": dict(start=(70.0, 77.0), own=False, window=5.0, side=1.5, load=None),
           "flashnext-3.05": dict(start=(66.0, 77.0), own=False, window=7.58, side=3.0, load=None)}
 NUM = r"([0-9]+(?:\.[0-9]+)?)"
@@ -293,21 +295,32 @@ def _served(shape: dict, docs: tuple = (None,), at_start: dict | None = None) ->
     own_start = shape["own"]
     flags = (70.0, 77.0) if own_start else shape["start"]
     a = types.SimpleNamespace(mem_ceiling_gib=flags[0], mem_peak_gib=flags[1], store_entry_gb=1.0,
-                              reserve_slack_gib=2.0)
-    alloc, res = [int(x * GIB) for x in (shape["load"] or (0.0, 0.0))]
-    box = {"alloc": alloc, "res": res}
+                              reserve_slack_gib=2.0, max_len=262144)
+    from engine.models.hy4_flash import serving
+    alloc, res = [int(x * GIB) for x in (shape.get("kept") or shape["load"] or (0.0, 0.0))]
+    box = {"alloc": alloc, "res": res}                           # one allocator: the builder's measure, then the policy
+
+    def stats(*keys):
+        return tuple(box["res"] if k.startswith("reserved") else box["alloc"] for k in keys)
     shed, limits, out = [], {}, {}
     try:
         app.STATE["serve_flags"] = dict(vars(a))                  # `_limits_at_start`: the flags as given
         if at_start:
             memlimits.overrides_at_start(a, {"engine": dict(at_start)})
 
+        own_line = []
+
         def build(a_, ctx):                                       # Hy4-flash's `serve`: only on the server's defaults
-            if own_start and (a_.mem_ceiling_gib, a_.mem_peak_gib) == (70.0, 77.0):
-                a_.mem_ceiling_gib, a_.mem_peak_gib = shape["start"]
+            if own_start:
+                serving.own_limits(a_, own_line.append,
+                                   held=lambda: serving.held_after_load(stats=stats, empty=lambda: None))
             return {}
         with contextlib.redirect_stdout(io.StringIO()):
             app._build_with_limits(build, a, None, limits)
+        out["own"] = own_line[0] if own_line else None
+        out["set"] = (a.mem_ceiling_gib, a.mem_peak_gib)
+        if shape["load"]:
+            box.update(alloc=int(shape["load"][0] * GIB), res=int(shape["load"][1] * GIB))   # the rest of the load
         mem = cache.Budget(int(a.mem_ceiling_gib * GIB), int(a.mem_peak_gib * GIB), int(a.reserve_slack_gib * GIB),
                            probe=lambda: (box["alloc"], box["res"]), empty=lambda: None)
         for lv in ("store", "anchors", "end", "stash"):
@@ -372,13 +385,24 @@ def test_one_accounting_rule_from_the_start_through_every_refresh():
         enforced 71.10 GiB from then on, 1.42 under its idle reserve, and every gate shed the caches;
       * a document's figure is enforced live as the next start enforces it (`overrides_at_start` makes it a
         configured flag), and a document that stops setting it gives back the start's figure in the start's terms;
+      * a model's own figure is measured on what the policy enforces, the reserve the load keeps
+        (engine/models/hy4_flash/serving.py `held_after_load`), not on what is allocated: on hy4-3.08 the two part
+        by about 9.4 GiB that no hand-back returns, and the allocated figure left 2.7 GiB over the idle reserve
+        where hy4-3.56 had 11.7;
       * on the Hy4-flash packs' loads, the gate after the refresh sheds nothing."""
     gib2 = lambda b: round(b / GIB, 2)                        # noqa: E731
     for name, sh in SHAPES.items():
         w, s = sh["window"], sh["side"]
-        c, p = sh["start"]
-        want = (round(c + s, 2), round(p + s, 2)) if sh["own"] else (round(c - w + s, 2), round(p - w + s, 2))
         got = _served(sh, docs=(None,))
+        if sh["own"]:
+            # measured on what the policy enforces: the reserve the load keeps, as its own line says
+            from engine.models.hy4_flash.serving import memory_limits
+            kept_a, kept_r = sh["kept"]
+            assert got["set"] == memory_limits(kept_r) != memory_limits(kept_a), (name, got["set"])
+            m = re.search(r"over the " + NUM + r" GiB .* keep reserved, " + NUM + " of it allocated", got["own"])
+            assert m and (float(m.group(1)), float(m.group(2))) == (kept_r, kept_a), (name, got["own"])
+        c, p = sh["start"] if not sh["own"] else got["set"]
+        want = (round(c + s, 2), round(p + s, 2)) if sh["own"] else (round(c - w + s, 2), round(p - w + s, 2))
         enforced = tuple(gib2(x) for x in got["refresh"][0])
         assert got["refresh"][0] == got["start"], (name, "the refresh moved the policy", got)
         assert tuple(round(x + s, 2) for x in got["kv_pool"]) == got["parallel"] == got["limits"] == want, (name, got)

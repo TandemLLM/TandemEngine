@@ -171,8 +171,10 @@ def set_own_basis(mem, basis: dict) -> None:
 
 
 def limit_of(mem, dest: str, b: int, own: bool = False) -> int:
-    """OPS-308, the one rule: the ceiling or peak (`dest`) the memory policy enforces for a figure of `b` bytes. The
-    policy enforces a figure plus its fixed bytes (`Budget.fixed`: the side slots, slot 0's window as the pool or a
+    """OPS-308, the one rule: the ceiling or peak (`dest`) the memory policy enforces for a figure of `b` bytes. Every
+    figure is one of the engine's reserve as the policy measures it (allocated plus the allocator's free blocks; the KV
+    pool's pages are outside it), a model's own figure measured on that reserve too (Hy4-flash: serving.py
+    `held_after_load`). The policy enforces a figure plus its fixed bytes (`Budget.fixed`: the side slots, slot 0's window as the pool or a
     longer window moves it), the figure's own basis given back for the model's own figure
     (`own`: the start's figure that the builder set from its load, `OWN_BASIS`). A figure the residency document
     sets is a configured one: at the next start `overrides_at_start` hands it to the load as a flag, and the start
