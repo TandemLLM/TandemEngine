@@ -243,6 +243,19 @@ def test_a_configured_limit_loses_slot_0s_window_to_the_pool():
     return f"{len(figs)} configured figures, each less the window ({w} GiB)"
 
 
+def test_a_models_own_limit_from_its_load_keeps_the_window_it_never_held():
+    """Hy4-flash's builder sets its pack's own limits from what the allocator holds after its load, 12 GiB over it
+    (serving.memory_limits), measured with slot 0's window already the pool's: B's start on 70c250f6 held 68.4 GiB
+    on hy4-3.56 (72.6 before the lanes, less the 4.12 GiB window) and set 81/88. `_kv_after_load` took the window
+    off again (76.88/83.88 before the side slots): the caches had about 7.9 GiB of the 12. A limit the model set from
+    its load now keeps it (81/88, then the side slots' 3.09: 84.09/91.09); the policy's fixed bytes still count the
+    window, for a figure the residency document sets later. A configured figure is as before (the test above)."""
+    w = round(WINDOW / GIB, 4)
+    assert _after_the_pool(81.0, 88.0, own=True) == (81.0, 88.0, -w), _after_the_pool(81.0, 88.0, own=True)
+    assert _after_the_pool(72.0, 79.0, own=True) == (72.0, 79.0, -w)
+    assert _after_the_pool(81.0, 88.0, own=False) == (round(81 - w, 4), round(88 - w, 4), -w)
+    return "own 81/88 and 72/79 keep the window; the same figures configured lose it"
+
 if __name__ == "__main__":
     from scriptmode import run
     run(globals())
