@@ -137,7 +137,7 @@ def test_hy4_binds_its_prompt_order_at_load():
         return X.EXL3Block(torch.zeros(K // 16, N // 16, X.tile_width(kb), dtype=torch.int16),
                            torch.ones(K, dtype=torch.float16), torch.ones(N, dtype=torch.float16))
     e = object.__new__(Hy4FlashEngine)
-    e.kernels = True
+    e.kernels, e.device = True, torch.device("cpu")
     e.W = {"layers.0.self_attn.q_a_proj.weight": blk(1024, 3072, 5), "layers.1.self_attn.q_a_proj.weight": blk(1024, 3072, 5),
            "layers.0.self_attn.compressed_indexer.query_projection.weight": blk(2048, 1024, 35),
            "layers.0.self_attn.kv_b_proj.packed": blk(4096, 512, 5), "lm_head.weight": blk(1024, 3072, 6),
@@ -152,9 +152,12 @@ def test_hy4_binds_its_prompt_order_at_load():
             pass
         else:
             raise AssertionError("an unequal shape must fail the load")
+    # a device whose profile builds no inline extension (here the CPU's, kernels claimed): `lin_prompt` runs
+    # exl3_matmul there, so nothing is bound and nothing can fail
+    assert "skipped" in e.bind_prompt_order()
     e.kernels = False
     assert "skipped" in e.bind_prompt_order()
-    return "3 trunk projections, 2 shapes bound; an unequal one fails the load; off the kernels nothing runs"
+    return "3 trunk projections, 2 shapes bound; an unequal one fails the load; no binding where the order does not run"
 
 
 if __name__ == "__main__":

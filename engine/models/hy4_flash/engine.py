@@ -337,10 +337,12 @@ class Hy4FlashEngine(Hy4FlashRef):
     def bind_prompt_order(self) -> dict:
         """R83: every packed projection `lin_prompt` reads (the trunk's; not the experts' banks, not the head, not
         kv_b_proj's packed value half), checked once a shape in the prompt order (tools/exl3_rows.py `bind`): a shape
-        whose kernels are not one order's bits raises `RowOrderError` here, at the load. Off the kernels nothing runs."""
+        whose kernels are not one order's bits raises `RowOrderError` here, at the load. Where `lin_prompt` does not run
+        the prompt order (the CPU, a GPU without the inline extensions: `exl3_matmul` there) nothing runs."""
         from tools import exl3_rows as R
-        if not self.kernels:
-            return {"skipped": "off the kernels"}
+        from tools import gpu as _gpu
+        if not (self.kernels and _gpu.profile(self.device).inline("exl3_linear")):
+            return {"skipped": "the prompt order does not run on this device (exl3_matmul's path)"}
         n = 0
         for name, w in self.W.items():
             if (name.startswith("layers.") and hasattr(w, "bf16_cached") and ".experts." not in name

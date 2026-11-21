@@ -51,8 +51,9 @@ import torch  # noqa: E402
 ARMS = {"v2": (True, "group", True), "v1-group": (False, "group", True), "v1-grouped": (False, "rows", True),
         "v1-pair": (False, "rows", False)}
 VIAS = ("prefill", "forward")
-#: the ops --ops records (the engine's methods, wrapped on the instance)
-OPS = ("lin", "engram_r", "engram_apply", "_hc_v2", "hc", "_attention_chunk_v2", "attention_chunk", "_mla",
+#: the ops --ops records (the engine's methods, wrapped on the instance; the V2 pass's packed products are
+#: `lin_prompt` and `_dense_v2` since R83)
+OPS = ("lin", "lin_prompt", "_dense_v2", "engram_r", "engram_apply", "_hc_v2", "hc", "_attention_chunk_v2", "attention_chunk", "_mla",
        "attend_chunk", "_index_chunk_v2", "_index_chunk", "_sparse_positions_chunk", "_mlp_chunk_v2", "mlp_chunk",
        "_experts_chunk", "_experts_grouped", "_final_v2", "final", "_inject_v2", "inject", "_norm_v2", "_heads_mm",
        "group_keys_r", "rms")
