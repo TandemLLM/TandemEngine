@@ -58,8 +58,8 @@ class GB10(Profile):
             return None
         return None
 
-    def arm_env(self) -> dict:
-        return {**super().arm_env(), "QSE_PARALLEL_FLOOR_GB": "10"}
+    def arm_env(self, pack: dict | None = None) -> dict:
+        return {**super().arm_env(pack), "QSE_PARALLEL_FLOOR_GB": "10"}
 
     def pack(self) -> str:
         return "flashnext-3.05"

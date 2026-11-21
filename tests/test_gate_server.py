@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -215,6 +216,101 @@ def test_a_pack_without_limits_or_a_cap_keeps_its_arms():
 
 #: the packs of 7f2a41f5's packs.yaml
 PINNED_PACKS = ("fake", "flashnext-3.05", "lfm25-exl3-4.0", "lfm25-exl3-2.5", "nemotron-bolt-exl3-4.0", "flint-exl3-4.0")
+
+
+def _server_limits() -> tuple:
+    """Hy4-flash's builder's test for the server's default limits (engine/models/hy4_flash/serving.py
+    `SERVER_LIMITS`), read from its source: a start that names these takes the pack's own."""
+    import ast
+    src = open(os.path.join(ROOT, "engine", "models", "hy4_flash", "serving.py")).read()
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign) and
+                getattr(n.targets[0], "id", None) == "SERVER_LIMITS")
+    return ast.literal_eval(node.value)
+
+
+def _arm_limits(pack: dict, prof, variant: str = "main") -> tuple:
+    """MEM_CEILING_GIB and MEM_PEAK_GIB as the arm's server start reads them: the tree's ops/serve.env sourced with
+    the arm's profile and its run/setup.env, by bash, as ops/start.sh sources them."""
+    d = Path(tempfile.mkdtemp(prefix="gate-limits-"))
+    tree = d / "tree"
+    shutil.copytree(os.path.join(ROOT, "ops"), tree / "ops", ignore=shutil.ignore_patterns("__pycache__"))
+    ol = server.OpsLauncher(prof, pack, {})
+    ol.prepare(tree)
+    arm = server.Arm("head", variant, tree, 8105, d / "home", arm_env(prof, pack, "head", variant))
+    (tree / "run" / "setup.env").write_text(ol.setup_env(arm))
+    out = subprocess.run(["bash", "-c", 'set -a; . "$0/ops/serve.env"; echo "$MEM_CEILING_GIB $MEM_PEAK_GIB '
+                          '$QSE_PARALLEL $QSE_ENGINE_FLAGS"', str(tree)],
+                         capture_output=True, text=True, env={"HOME": str(d), "PATH": os.environ.get("PATH", "")})
+    shutil.rmtree(d, ignore_errors=True)
+    got = out.stdout.split()
+    assert len(got) >= 4, out.stdout + out.stderr
+    return float(got[0]), float(got[1]), int(got[2]), " ".join(got[3:])
+
+
+def test_a_pack_with_its_own_limits_keeps_them_against_the_profiles():
+    """OPS-314: the gb10 profile's 66/77 GiB, written after the pack's profile, reached a Hy4-flash start, where the
+    model takes its pack's own limits only from serve.env's defaults (serving.py `SERVER_LIMITS`): it kept 66/77, under
+    what the 3.56 pack's load holds (72.7 GiB). With `limits: pack` the arm passes neither, and the start reads the
+    defaults the model replaces; a pack without the key keeps the profile's. Both Hy4-flash packs, both arms."""
+    from tools.gate.hw.gb10 import GB10
+    g = GB10(Fingerprint(name="NVIDIA GB10", memory_gib=119.7, cc="12.1", unified=True))
+    packs = load_packs()
+    want = _server_limits()
+    for pid in ("hy4-3.56", "hy4-3.08"):
+        pack = dict(packs[pid], id=pid)
+        env = arm_env(g, pack, "head", "main")
+        assert "MEM_CEILING_GIB" not in env and "MEM_PEAK_GIB" not in env, env
+        assert env == {k: v for k, v in g.arm_env().items() if k not in ("MEM_CEILING_GIB", "MEM_PEAK_GIB")}, env
+        for variant in ("main", "plain"):
+            ceiling, peak, lanes, flags = _arm_limits(pack, g, variant)
+            assert (ceiling, peak) == want and lanes == g.lanes(), (pid, variant, ceiling, peak, lanes)
+            assert flags.endswith("--drafter " + ("mtp" if variant == "main" else "none")), (pid, variant, flags)
+        before = {k: v for k, v in pack.items() if k != "limits"}
+        assert _arm_limits(before, g)[:2] == (g.ceiling_gib(), g.peak_gib()) != want, "the bypass, without the key"
+    flash = dict(packs["flashnext-3.05"], id="flashnext-3.05")
+    assert _arm_limits(flash, g)[:2] == (g.ceiling_gib(), g.peak_gib())
+    return f"both packs, both arms: {want[0]:g}/{want[1]:g} GiB reach the start (the model's own follow); without: 66/77"
+
+
+def test_a_pack_capped_at_one_plans_c1_rows_only():
+    """OPS-314: a Hy4-flash pack plans the decode suite's c1 shapes and a burst of one; the lanes stay the profile's
+    (the family's own 8); the dry run says so and takes the pack's base."""
+    from tools.gate.hw.gb10 import GB10
+    from tools.gate.client import prompts
+    from tools.gate.runner import AtOnce, pack_notes
+    from tools.gate.suites import decode
+    g = GB10(Fingerprint(name="NVIDIA GB10", memory_gib=119.7, cc="12.1", unified=True))
+    for pid in ("hy4-3.56", "hy4-3.08"):
+        pack = dict(load_packs()[pid], id=pid)
+        p = plan("quick", ["engine/models/hy4_flash/serving.py"], g, pack)
+        assert isinstance(p.profile, AtOnce) and p.profile.decode_levels() == [] and p.profile.burst() == (1, 2048)
+        assert p.profile.lanes() == 8 and p.profile.arm_env(pack)["QSE_PARALLEL"] == "8"
+        d = p.profile.describe()
+        assert d["decode_levels"] == [] and d["burst"] == [1, 2048] and d["at_once"] == 1, d
+        ctx = type("C", (), {"profile": p.profile, "pj": prompts()})()
+        assert [s[0] for s in decode.shapes(ctx)] == ["c1", "c1-1k"]
+        assert [(s, v) for s, v, _ in arms_of(p)] == [("base", "main"), ("head", "main"), ("head", "plain")]
+        notes = pack_notes(pack, p.profile, True)
+        assert len(notes) == 3 and "limits: pack" in notes[0] and "none above c1" in notes[1], notes
+        assert pack["base"] == "7f2a41f51b9793dcc8fddb30316d8a0161d10072"
+    assert plan("quick", [], g, dict(load_packs()["flashnext-3.05"], id="flashnext-3.05")).profile is g
+    return "c1 and c1-1k, a burst of one, 8 lanes, base and head and head plain"
+
+
+def test_a_dry_run_takes_a_hy4_pack():
+    """OPS-314: `python -m tools.gate run --pack hy4-3.56 --dry` is no longer refused with "no pack": it prints the plan
+    with the pack's base and its lines. Needs the pack's base commit in this checkout."""
+    if not _git_repo() or subprocess.run(["git", "-C", ROOT, "cat-file", "-e", load_packs()["hy4-3.56"]["base"]],
+                                         capture_output=True).returncode != 0:
+        return "skipped: no git checkout with the pack's base"
+    for pid in ("hy4-3.56", "hy4-3.08"):
+        r = subprocess.run([sys.executable, "-m", "tools.gate", "run", "--pack", pid, "--hw", "gb10", "--suite",
+                            "quick", "--dry"], cwd=ROOT, capture_output=True, text=True, timeout=300)
+        out = r.stdout + r.stderr
+        assert r.returncode == 0 and "no pack" not in out and f"pack {pid}" in out, out[-1500:]
+        assert "(7f2a41f51b9793dcc8fddb30316d8a0161d10072)" in out and "rows of at most 1 request(s)" in out, out[-1500:]
+        assert "servers: base, head, head:plain" in out, out[-1500:]
+    return "both packs: planned, base 7f2a41f5, c1 rows, servers base, head, head:plain"
 
 
 def test_packs_name_real_profiles():

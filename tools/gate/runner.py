@@ -21,6 +21,11 @@ an install's run/local.env is used where there is one.
 
 `--head-patch FILE` plants a change in the head's tree and `--head-env K=V` a setting in the head's
 servers (a dry run of the gate itself); the report says so and the CI check refuses it.
+
+A pack's entry may say three more things (OPS-314): `limits: pack`, it sets its own memory limits and the
+hardware profile's do not override them (tools/gate/hw/base.py `arm_env`); `at_once: N`, no row with more than N
+requests at once is planned (`AtOnce`); `base: REF`, the base side when --base is not given (a family that is not
+on main yet). The run says each one.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from pathlib import Path
 
 from tools.gate import LEVEL_SUITES, LEVELS, SCHEMA, VERSION, level_index
 from tools.gate import hw as hwmod
+from tools.gate.hw.base import own_limits
 from tools.gate import pathmap, server
 from tools.gate.client import client, prompts
 from tools.gate.suites import Ctx, Plan, module
@@ -62,7 +68,36 @@ def gate_code_sha256() -> str:
     return h.hexdigest()
 
 
+class AtOnce:
+    """A hardware profile under a pack's cap on requests at once (packs.yaml `at_once`, OPS-314): decode levels
+    above the cap are not planned and the first-token burst is at most the cap; everything else, the lanes the
+    server starts with among them, is the profile's."""
+
+    def __init__(self, prof, n: int):
+        self._prof, self.at_once = prof, int(n)
+
+    def __getattr__(self, name):
+        return getattr(self._prof, name)
+
+    def decode_levels(self) -> list[int]:
+        return [n for n in self._prof.decode_levels() if n <= self.at_once]
+
+    def burst(self) -> tuple[int, int]:
+        n, depth = self._prof.burst()
+        return (min(n, self.at_once), depth)
+
+    def describe(self) -> dict:
+        return dict(self._prof.describe(), decode_levels=self.decode_levels(), burst=list(self.burst()),
+                    at_once=self.at_once)
+
+
+def capped(prof, pack: dict):
+    """The profile a pack's run plans with: under its `at_once`, else the profile itself."""
+    return AtOnce(prof, pack["at_once"]) if pack.get("at_once") else prof
+
+
 def plan_of(a, prof, pack: dict, files: list[str]) -> Plan:
+    prof = capped(prof, pack)
     need = pathmap.required(files)
     level = need["level"] if a.suite == "auto" else a.suite
     if level == "none":
@@ -75,6 +110,20 @@ def plan_of(a, prof, pack: dict, files: list[str]) -> Plan:
         suites = [s for s in suites if s in a.only.split(",")]
     return Plan(level, suites, need["kernels"] if "kernels" in suites else [], prof, pack,
                 a.pairs if a.pairs else (2 if level == "full" else 1))
+
+
+def pack_notes(pack: dict, prof, base_from_pack: bool) -> list[str]:
+    """What a pack's entry changes in the run, one line each (OPS-314)."""
+    out = []
+    if own_limits(pack):
+        out.append(f"pack {pack['id']}: its own memory limits (limits: pack); the {prof.id} profile's ceiling and "
+                   "peak are not passed (the report's knobs say which won)")
+    if pack.get("at_once"):
+        out.append(f"pack {pack['id']}: rows of at most {pack['at_once']} request(s) at once (at_once); decode "
+                   f"levels {prof.decode_levels() or 'none above c1'}, burst {prof.burst()[0]} x {prof.burst()[1]}")
+    if pack.get("base") and base_from_pack:
+        out.append(f"pack {pack['id']}: base {pack['base']} (the pack's base: its family is not on main)")
+    return out
 
 
 def arms_of(plan: Plan) -> list[tuple[str, str, list[str]]]:
@@ -93,7 +142,7 @@ def arms_of(plan: Plan) -> list[tuple[str, str, list[str]]]:
 def arm_env(prof, pack: dict, side: str, variant: str, head_env: dict | None = None) -> dict:
     """An arm's environment: the hardware profile's, the variant's (plain: speculation off; wide:
     the wide prefill chunk), and on the head a dry run's planted knobs (`--head-env`)."""
-    env = dict(prof.arm_env())
+    env = dict(prof.arm_env(pack))
     if variant == "plain":
         env.update(pack.get("plain_env") or {})
     if variant == "wide":
@@ -169,7 +218,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tools.gate run", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--suite", default="auto", choices=("auto",) + LEVELS[1:])
-    ap.add_argument("--base", default="origin/main")
+    ap.add_argument("--base", default=None, help="default: the pack's `base`, else origin/main")
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--pack", default=None, help="default: the hardware profile's reference pack")
     ap.add_argument("--hw", default="auto")
@@ -193,12 +242,6 @@ def main(argv=None) -> int:
 
     head_env = dict(kv.split("=", 1) for kv in a.head_env)
     repo = str(REPO)
-    base_sha = server.git(repo, "rev-parse", f"{a.base}^{{commit}}")
-    head_sha = server.git(repo, "rev-parse", f"{a.head}^{{commit}}")
-    dirty = server.git(repo, "status", "--porcelain", "--untracked-files=no")
-    if dirty and a.head == "HEAD":
-        log("[gate] note: uncommitted changes are not measured (the head is the commit)")
-    files = pathmap.changed_files(base_sha, head_sha, repo)
     prof = hwmod.profile(a.hw, python=a.python)
     packs = load_packs()
     pack_id = a.pack or prof.pack()
@@ -207,12 +250,22 @@ def main(argv=None) -> int:
             f"{prof.pack()!r}")
         return 2
     pack = dict(packs[pack_id], id=pack_id)
+    base_ref = a.base or pack.get("base") or "origin/main"
+    base_sha = server.git(repo, "rev-parse", f"{base_ref}^{{commit}}")
+    head_sha = server.git(repo, "rev-parse", f"{a.head}^{{commit}}")
+    dirty = server.git(repo, "status", "--porcelain", "--untracked-files=no")
+    if dirty and a.head == "HEAD":
+        log("[gate] note: uncommitted changes are not measured (the head is the commit)")
+    files = pathmap.changed_files(base_sha, head_sha, repo)
     plan = plan_of(a, prof, pack, files)
+    prof = plan.profile
     arms = arms_of(plan)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = Path(a.out or REPO / "results" / "gate" / f"{head_sha[:12]}-{stamp}")
-    log(f"[gate] base {base_sha[:12]} ({a.base}), head {head_sha[:12]} ({a.head}), {len(files)} files; "
+    log(f"[gate] base {base_sha[:12]} ({base_ref}), head {head_sha[:12]} ({a.head}), {len(files)} files; "
         f"level {plan.level}; hardware {prof.id} ({prof.fp.name}); pack {pack_id}")
+    for line in pack_notes(pack, prof, a.base is None):
+        log(f"[gate] {line}")
     log(f"[gate] suites {', '.join(plan.suites) or '-'}; GPU tests {len(plan.kernels)}; servers: "
         + ", ".join(f"{s}{'' if v == 'main' else ':' + v}" for s, v, _ in arms))
     if a.dry or plan.level == "none":
@@ -288,7 +341,7 @@ def main(argv=None) -> int:
            "hardware": {"profile": prof.id, **prof.fp.as_dict()},
            "pack": {"id": pack_id, "profile": pack.get("profile"), "weights": weights,
                     "weights_sha256": wsha},
-           "base": {"ref": a.base, "sha": base_sha, "tree_sha256": tree_sha["base"]},
+           "base": {"ref": base_ref, "sha": base_sha, "tree_sha256": tree_sha["base"]},
            "head": {"ref": a.head, "sha": head_sha, "tree_sha256": tree_sha["head"]},
            "knobs": knobs, "profile": prof.describe(), "pairs": plan.pairs,
            "planted": ({"patch_sha256": hashlib.sha256(Path(a.head_patch).read_bytes()).hexdigest()

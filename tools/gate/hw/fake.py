@@ -46,7 +46,7 @@ class Fake(Profile):
     def min_free_gib(self) -> float:
         return 0.0
 
-    def arm_env(self) -> dict:
+    def arm_env(self, pack: dict | None = None) -> dict:
         return {"QSE_PARALLEL": str(self.lanes())}
 
     def pack(self) -> str:

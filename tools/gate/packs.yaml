@@ -12,6 +12,10 @@
 #   proof          what proves N requests decoded at once: `decoding` (the default: the slots in the
 #                  server's decode set, /health parallel.decoding) or `running` (the fake engine, whose
 #                  writer has no decode phase: the requests running at once)
+#   limits         `pack`: the pack sets its own memory limits, and the hardware profile's ceiling and peak are
+#                  not passed to its arms (OPS-314; the server's knobs in the report say which won)
+#   at_once        the most requests at once a row of this pack's run plans (decode levels, the burst)
+#   base           the base side's commit when --base is not given: a family that is not on main yet
 
 fake:
   launcher: fake
@@ -50,3 +54,28 @@ flint-exl3-4.0:
   profile: flint-exl3-4.0
   family: flint
   plain_env: {QSE_ENGINE_FLAGS: '--model ${QSE_WEIGHTS_DIR} --drafter none'}
+
+# OPS-314: Hy4-flash (engine/models/hy4_flash), one entry a pack, both run (SRV-897 point 5). Its profile leaves the
+# memory ceiling and peak at serve.env's defaults, and with those its model sets the pack's own from what its load
+# holds (serving.py `memory_limits`: 85/92 GiB logged on hy4-3.56 and 77/84 on hy4-3.08 at 262,144 tokens); the
+# hardware profile's ceiling and peak would bypass them, so `limits: pack`. The plain arm is speculation off; the
+# spec arm drafts with the profile's own `--drafter mtp` (DFly2, the lookup, StairCut). Rows of one request at a
+# time until two clients at once are proved on the family (ENG-485). Main has no hy4_flash family until the branch
+# merges, so the base side is the branch's 7f2a41f5, the head the program's proofs start from: drop `base` then
+hy4-3.56:
+  launcher: ops
+  profile: hy4-3.56
+  family: hy_v4_flash
+  plain_env: {QSE_ENGINE_FLAGS: '--model ${QSE_WEIGHTS_DIR} --drafter none'}
+  limits: pack
+  at_once: 1
+  base: 7f2a41f51b9793dcc8fddb30316d8a0161d10072
+
+hy4-3.08:
+  launcher: ops
+  profile: hy4-3.08
+  family: hy_v4_flash
+  plain_env: {QSE_ENGINE_FLAGS: '--model ${QSE_WEIGHTS_DIR} --drafter none'}
+  limits: pack
+  at_once: 1
+  base: 7f2a41f51b9793dcc8fddb30316d8a0161d10072

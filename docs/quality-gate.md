@@ -98,3 +98,5 @@ No fitting GPU? Say so in the pull request. A maintainer adds `gate-maintainer`,
 | `generic` | anything else | 4 from 40 GiB, else 2 | 16k from 40 GiB, else 8k | none |
 
 The Ada sizes are a starting point; no Ada card has run the gate yet.
+
+A pack's entry in `tools/gate/packs.yaml` can change three things (OPS-314). With `limits: pack` the pack sets its own memory limits, and its arms get no ceiling or peak from the hardware profile. The Hy4-flash packs need this: their model sets their limits from what the load holds when the start names serve.env's defaults, and the profile's values would bypass that. `at_once: N` plans no row with more than N requests at once (the Hy4-flash packs: 1, until two clients at once are proved on that family). `base: REF` is the base side when `--base` is not given, for a family that is not on main yet; a report on such a base fails the CI check until the family merges. The run prints a line for each of these, and the knobs in the report show which limits each server ran with.
