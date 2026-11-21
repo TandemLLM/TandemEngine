@@ -292,6 +292,32 @@ def test_the_table_without_a_plan():
     return f"{sum(1 for k in want if k.split('|', 1)[0] in only)} rows, {len(only)} families"
 
 
+#: SRV-893 class: the shared close's text (engine/spec.py ThinkBudget.PHRASE), recorded on 7f2a41f5
+PHRASE_SHA256 = "1c1e3fbcced96921231a7f1050ea3a5ea298afb5e19bdb1183a8324b3eea26d4"
+#: the families whose spec names a close of their own (ReasoningSpec.close); every other family keeps the shared one
+OWN_CLOSE = {"hy_v4_flash"}
+
+
+def test_every_other_family_keeps_the_shared_close():
+    """SRV-893 class: the text a budget's forced close writes is the server's `_think_close()` under the family's spec:
+    the shared vendor phrase, byte for byte as on 7f2a41f5, for every family but those whose spec names their own
+    (on 7f2a41f5, which has no such field, every family's close is the phrase). The budgets those closes leave are
+    the table's rows (test_the_table_without_a_plan) and tests/test_client_budgets.py's."""
+    from engine.spec import ThinkBudget
+    assert hashlib.sha256(ThinkBudget.PHRASE.encode()).hexdigest() == PHRASE_SHA256
+    own, saved = {}, app.STATE.get("spec")
+    try:
+        for name, a in sorted(REGISTRY.items()):
+            app.STATE["spec"] = a.spec
+            close = app._think_close() if hasattr(app, "_think_close") else ThinkBudget.PHRASE
+            if close != ThinkBudget.PHRASE:
+                own[name] = close
+    finally:
+        app.STATE["spec"] = saved
+    assert set(own) <= OWN_CLOSE, own
+    return f"{len(REGISTRY) - len(own)} families on the shared phrase; their own: {own or 'none'}"
+
+
 def test_a_list_or_dict_effort_in_kwargs_tokenizes():
     """/v1/tokenize reads a request leniently: a `chat_template_kwargs.reasoning_effort` that is a list or a dict is
     no template word, so the template gets none and the count answers 200, as on main (a membership test on a dict
