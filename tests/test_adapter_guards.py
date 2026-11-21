@@ -102,6 +102,9 @@ from engine.models import REGISTRY  # noqa: E402
 # family without it gets the call it got before, so the whole-tree half moves and the arithmetic half holds
 # hy4-m1's merge of hy4-m1-serve (f2618de1) and hy4-rowinv (4b2e7597), 2026-11-21: recomputed on the merged tree, both
 # halves are R83's (server/app.py, which hy4-m1-serve changed, is in neither)
+# ENG-476 (hy4-cap's merge, 2026-11-21): engine/spec.py's drafted-block cut at the reasoning cap moved both halves
+# (3b46a4e5 / 54b7fdc5); it counts tokens and computes no row, so its bytes are a SAME_ROWS entry
+# (engine/methods/manifest.py) and both halves stay R83's
 GOLDEN_V2 = ("7c6b4c314c5f6cf7f086c9208b0ac4f74198984a8093d1d41a82a71e9ca0d6f5",
              "feed262983cad1c8f5ff87bcd6250cd5393a8114e8ef2ed5fe9bd94ab11fee72")
 GOLDEN_FP4 = {
@@ -232,8 +235,9 @@ GOLDEN_FP4 = {
 MAY_MOVE = {"flint"}
 #: sha256 of SAME_ROWS' entries at v0.14.0 (sorted [path, now, replaced] triples, JSON); SRV-795 adds Flash-Next's
 #: engine.py on purpose (its reason in engine/methods/manifest.py); SPD-321 adds tools/fn_prefill_kernels.py's optional
-#: clamp on purpose (its reason there); ENG-472 adds engine/grammar.py's silent markers on purpose (its reason there)
-SAME_ROWS_SHA256 = "a3ae9039376336e71fbdfb4647f1f32d45fc11b08bf79af295f99e82b4509714"   # 33 entries
+#: clamp on purpose (its reason there); ENG-472 adds engine/grammar.py's silent markers on purpose (its reason there);
+#: ENG-476 adds engine/spec.py's drafted-block cut at the reasoning cap on purpose (its reason there)
+SAME_ROWS_SHA256 = "087f08daa9fd4836b8b26eb324eb99fc539d448fa7105f824169db967e9f9337"   # 34 entries
 
 
 def _manifest(name: str):

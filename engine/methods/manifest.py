@@ -118,6 +118,11 @@ SAME_ROWS = {("engine/loader.py", "823f9dd4c230ec45d133b52e0a5edc0343098184526d9
              # under a forced tool_choice; a mask on the sampled token, never a stored row
              ("engine/grammar.py", "90354f3a1efb86d4a3d1bc91233c746c6196d06994fb9d6f1464c1b00e8d96e3"):
              "c7fbee9ad0f1526b7c30df798e8c178c3a2185244ab7a2b29e44eed5ffe50749",
+             # ENG-476: a drafted block's commit stops at the reasoning cap (ThinkBudget's `cut`, `room` and `watch`,
+             # `draft_room`, StallArms' snapshot/restore): which drafted tokens are kept, counted as the plain step
+             # counts; a count of tokens, never a stored row
+             ("engine/spec.py", "d8a6081ea116032f77fb5e7a533fef2b22969b79671e2ee9af23ef6416dc1275"):
+             "51ea9425e4d3a5f9068c2baa81becbc7db9aecd654ed7af0985fedb3fa959b85",
              ("engine/models/flashnext/ref.py", "497c681a0b2e8d33e45a3bb2d4f565b5983ca2edc9da021619048bdb258267c4"):
              "f814ce162695f81e1ff8d7b80eb8c90619837f99e6cebb35f10bcb39983bf3f4",
              # OPS-225: the files' code unchanged (comments, docstrings, one message); dflash2.py's
