@@ -1431,40 +1431,60 @@ sv = T._Served(slow_s=0.3, serve=False)
 sv.seen["during"] = lambda: os.kill(os.getpid(), signal.SIGTERM)
 
 
+def mark(line):
+    # the markers on their own channel, a line one write: the server's threads print on stdout meanwhile
+    fd = os.open(sys.argv[2], os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, (line + "\n").encode())
+    finally:
+        os.close(fd)
+
+
 def client():
     try:
         raw, _ = sv.post({"prompt": "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG", "max_tokens": 40, "stream": True,
                           "temperature": 0})
-        print("CLIENT", raw.rstrip().endswith(b"data: [DONE]"), flush=True)
+        mark(f"CLIENT {raw.rstrip().endswith(b'data: [DONE]')}")
     except Exception as exc:
-        print("CLIENT", type(exc).__name__, exc, flush=True)
+        mark(f"CLIENT {type(exc).__name__} {exc}")
 
 
 threading.Thread(target=client, daemon=True).start()
 app.serve_until_drained(sv.httpd)
-print("CALLS", json.dumps([c[2] for c in sv.seen.get("calls") or []]), "CLOSING", app._CLOSING["n"], flush=True)
+mark(f"CALLS {json.dumps([c[2] for c in sv.seen.get('calls') or []])} CLOSING {app._CLOSING['n']}")
 """
+
+#: the close line of a read the stop ended (one print: its text is one write, whatever else prints beside it)
+_STOPPED_CLOSE = (r"\[cache\] \S+ end re-read: stopped, 0 rows in [0-9.]+ ms; the next prompt holds \d+ of the answer's \d+ "
+                  r"rows \([^)]*\); end reread; close [0-9.]+ ms")
 
 
 def test_a_server_stopped_during_a_read_exits_cleanly():
     """E28: the server's own stop (SIGTERM, `serve_until_drained`) while a turn's end read runs, in a process of its
     own: the read stops at its next chunk and keeps nothing (`end re-read: stopped`), the drain waits for the close
     (`stop_closes`) before it says `[server] stopped.`, nothing is left running, and the process exits 0, with no
-    "terminate called" and no core. Before the stop existed the read ran to its end under the drain."""
+    "terminate called" and no core. Before the stop existed the read ran to its end under the drain. The child's
+    markers go to a file of their own, a line one write; the server's lines are found by their text in its output, not
+    by where a line starts (its threads print beside each other)."""
+    import re
     import subprocess
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    p = subprocess.run([sys.executable, "-c", _STOP_RUN, HERE], capture_output=True, text=True, timeout=300, env=env,
-                       cwd=os.path.dirname(HERE))
+    fd, marks = tempfile.mkstemp(prefix="e28-", suffix=".marks")
+    os.close(fd)
+    try:
+        p = subprocess.run([sys.executable, "-c", _STOP_RUN, HERE, marks], capture_output=True, text=True, timeout=300,
+                           env=env, cwd=os.path.dirname(HERE))
+        got = open(marks).read().splitlines()
+    finally:
+        os.unlink(marks)
     out = p.stdout + p.stderr
     assert p.returncode == 0, (p.returncode, out[-1500:])
     assert "terminate called" not in out and "core dumped" not in out, out[-1500:]
-    lines = out.splitlines()
-    close = [i for i, ln in enumerate(lines) if " end re-read: " in ln]
-    stopped = [i for i, ln in enumerate(lines) if ln.startswith("[server] stopped.")]
-    assert close and stopped and close[-1] < stopped[0], out[-1500:]
-    assert " end re-read: stopped, 0 rows" in lines[close[-1]] and "; end reread;" in lines[close[-1]], lines[close[-1]]
-    assert "CLIENT True" in out and "CALLS [\"error\"] CLOSING 0" in out, out[-1500:]
-    return f"rc 0; {lines[close[-1]][len('[cache] '):][:120]}; then the drain's [server] stopped"
+    m = re.search(_STOPPED_CLOSE, p.stdout)
+    j = p.stdout.find("[server] stopped. ")
+    assert m is not None and j > m.start(), out[-1500:]
+    assert sorted(got) == sorted(["CLIENT True", 'CALLS ["error"] CLOSING 0']), (got, out[-1500:])
+    return f"rc 0; {m.group(0)[len('[cache] '):][:120]}; then the drain's [server] stopped; markers {got}"
 
 
 def test_the_real_template_decides_the_rows():
