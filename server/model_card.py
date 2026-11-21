@@ -19,7 +19,8 @@ two), the default output limit, whether the vision tower is loaded (`vision` is 
 whatever the architecture can do), the effort levels' caps (the router document's, else the seed's).
 A model with no card.json gets the loader's facts and conservative defaults (tools on, the rest
 off). A new architecture fills its card with a card.json and no edit here (tests/test_model_card.py
-serves a toy one).
+serves a toy one). A card file's `effort_default` names, for its readers, the family's own level for a
+request nobody decided (its spec's `EffortSpec.default`, ENG-468); the served card does not carry it.
 """
 
 from __future__ import annotations
