@@ -70,6 +70,8 @@ device.
                                                      test_a_streams_keep_alive_client_reconnects_for_its_follow_up
   E27  a JSON keep-alive follow-up written on the same socket during the read waits and is served after it
                                                      test_a_json_keep_alive_follow_up_on_the_same_socket_waits_and_is_served
+  E28  the server stopped (SIGTERM) during a read, in its own process: the read stops at its next chunk, the drain
+       waits for the close, exit 0, no core               test_a_server_stopped_during_a_read_exits_cleanly
 
 E1 and E6 pass before the fix and after; E2 to E18 fail before it. E19 to E25 fail on the tree before the rows the
 next prompt holds were asked (f8f6a4c1); E25 says "skipped" without HY4_TOKENIZER. E13 and E14 run the handler on the
@@ -858,7 +860,7 @@ class _Served:
     of an answer is the rows' own tokens). `slow_s`: the end read starts that long after it is called (a long answer's
     read, stood in for)."""
 
-    def __init__(self, slow_s: float = 1.0):
+    def __init__(self, slow_s: float = 1.0, serve: bool = True):
         import threading
         import time
         from http.server import ThreadingHTTPServer
@@ -910,7 +912,8 @@ class _Served:
                          pattern_stop=None, response_cache=None, suffix_store=None, resident=self.res)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        if serve:
+            threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def post(self, body: dict) -> tuple:
         """One request on its own connection, read to the end of the connection: (raw bytes, monotonic time of the
@@ -931,6 +934,12 @@ class _Served:
         return out, t
 
     def close(self) -> None:
+        """The server stopped as an in-process server stops: the turns' closes told to stop and waited for (a
+        follow-up's own close may still read; the handler threads are daemons nothing joins), then the listener, then
+        the state given back. Without the wait a test process could end under a read (on the box: a core)."""
+        stop = getattr(self.app, "stop_closes", None)
+        if stop is not None:
+            assert stop(timeout=60, resume=True), "a turn's close still runs a minute after the stop"
         self.httpd.shutdown()
         self.httpd.server_close()
         self.app.STATE.clear()
@@ -1409,6 +1418,53 @@ def test_a_json_keep_alive_follow_up_on_the_same_socket_waits_and_is_served():
     assert got["last"].get("kind") == "end" and got["last"].get("reused") == got["e"], (got["last"], got["e"])
     return (f"the follow-up written {got['t_send2'] - seen['t0']:+.2f} s from the read's start on the same socket, "
             f"served {got['t2'] - seen['t1']:.2f} s after it ended, resumed at the end {got['e']}")
+
+
+_STOP_RUN = r"""
+import json, os, signal, sys, threading
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, os.path.dirname(sys.argv[1]))
+import test_end_reread as T
+from server import app
+sv = T._Served(slow_s=0.3, serve=False)
+# the server's own stop (SIGTERM, `serve_until_drained`) while the turn's end read is about to start
+sv.seen["during"] = lambda: os.kill(os.getpid(), signal.SIGTERM)
+
+
+def client():
+    try:
+        raw, _ = sv.post({"prompt": "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG", "max_tokens": 40, "stream": True,
+                          "temperature": 0})
+        print("CLIENT", raw.rstrip().endswith(b"data: [DONE]"), flush=True)
+    except Exception as exc:
+        print("CLIENT", type(exc).__name__, exc, flush=True)
+
+
+threading.Thread(target=client, daemon=True).start()
+app.serve_until_drained(sv.httpd)
+print("CALLS", json.dumps([c[2] for c in sv.seen.get("calls") or []]), "CLOSING", app._CLOSING["n"], flush=True)
+"""
+
+
+def test_a_server_stopped_during_a_read_exits_cleanly():
+    """E28: the server's own stop (SIGTERM, `serve_until_drained`) while a turn's end read runs, in a process of its
+    own: the read stops at its next chunk and keeps nothing (`end re-read: stopped`), the drain waits for the close
+    (`stop_closes`) before it says `[server] stopped.`, nothing is left running, and the process exits 0, with no
+    "terminate called" and no core. Before the stop existed the read ran to its end under the drain."""
+    import subprocess
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    p = subprocess.run([sys.executable, "-c", _STOP_RUN, HERE], capture_output=True, text=True, timeout=300, env=env,
+                       cwd=os.path.dirname(HERE))
+    out = p.stdout + p.stderr
+    assert p.returncode == 0, (p.returncode, out[-1500:])
+    assert "terminate called" not in out and "core dumped" not in out, out[-1500:]
+    lines = out.splitlines()
+    close = [i for i, ln in enumerate(lines) if " end re-read: " in ln]
+    stopped = [i for i, ln in enumerate(lines) if ln.startswith("[server] stopped.")]
+    assert close and stopped and close[-1] < stopped[0], out[-1500:]
+    assert " end re-read: stopped, 0 rows" in lines[close[-1]] and "; end reread;" in lines[close[-1]], lines[close[-1]]
+    assert "CLIENT True" in out and "CALLS [\"error\"] CLOSING 0" in out, out[-1500:]
+    return f"rc 0; {lines[close[-1]][len('[cache] '):][:120]}; then the drain's [server] stopped"
 
 
 def test_the_real_template_decides_the_rows():

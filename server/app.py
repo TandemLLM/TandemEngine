@@ -4338,6 +4338,38 @@ def _remember(*args, **kw) -> None:
 #: last chunk, its usage and [DONE], or the JSON body), before its lane takes another request (`_turn_close`)
 _CLOSE = threading.local()
 
+#: the turns' closes running now (`_turn_close`), and the stop that ends them. The handler threads are
+#: ThreadingHTTPServer's daemons, which nothing joins: a process that ends while one of them still reads its end
+#: dies inside the engine (on the box, the end of a test process: "terminate called without an active exception",
+#: a core). A stopping server (`serve_until_drained`, `stop_closes`) starts no read, stops a running one at its next
+#: chunk (it keeps nothing, as a read that did not run) and waits for the closes to return
+_CLOSING = {"n": 0}
+_CLOSING_CV = threading.Condition()
+_CLOSE_STOP = threading.Event()
+
+
+class CloseStopped(Exception):
+    """The end read stopped at a chunk: the server stops (`_CLOSE_STOP`)."""
+
+
+def stop_closes(timeout: float | None = None, resume: bool = False) -> bool:
+    """Stop the turns' closes and wait for the ones running: none reads after this, a running read stops at its next
+    chunk and keeps nothing (the next start resumes at the prompt end). True when none is left within `timeout`
+    seconds (None: as long as they take, a chunk at most). `resume`: closes read again afterwards (an in-process
+    server stopped, as the tests stop theirs)."""
+    _CLOSE_STOP.set()
+    t_end = None if timeout is None else time.monotonic() + float(timeout)
+    with _CLOSING_CV:
+        while _CLOSING["n"]:
+            left = None if t_end is None else t_end - time.monotonic()
+            if left is not None and left <= 0:
+                break
+            _CLOSING_CV.wait(left)
+        done = not _CLOSING["n"]
+    if resume:
+        _CLOSE_STOP.clear()
+    return done
+
 
 def _reread_family(eng) -> bool:
     """The served family reads a turn's answer again at its end (`Capabilities.reread_end`)."""
@@ -4355,12 +4387,18 @@ def _turn_close(cid: str | None = None) -> str | None:
     fn, res, gen = job
     if res is not STATE.get("resident") or int(getattr(res, "rows_gen", -1)) != gen:
         return "moved"
+    with _CLOSING_CV:
+        _CLOSING["n"] += 1                 # counted before the stop is read (`stop_closes` waits for it)
     try:
         with torch.no_grad():
             return fn(cid)
     except Exception:                                              # noqa: BLE001
         logbuf.print_exc()
         return "error"
+    finally:
+        with _CLOSING_CV:
+            _CLOSING["n"] -= 1
+            _CLOSING_CV.notify_all()
 
 
 def _reread_gate(cid: str | None):
@@ -4482,12 +4520,24 @@ def _close_read(committed: list[int], conv_id: str | None, n_p: int, hidden: lis
                   f"{old_owner or 'the old one'} cut from {old_valid} to its shared head", flush=True)
     gate, held = _reread_gate(cid)
     pool = dict.get(STATE, "pool")
-    hook = _par_chunks(None) if pool is not None else None
+    turn_hook = _par_chunks(None) if pool is not None else None
+
+    def hook(done, total):
+        # a stopping server: the read ends at this chunk (`reread_end` keeps nothing of it), then the GPU turn
+        if _CLOSE_STOP.is_set():
+            raise CloseStopped(f"the server stops: the read stopped at row {done} of {total}")
+        if turn_hook is not None:
+            turn_hook(done, total)
+    top = min(len(committed), int(eng.kv.length))
     try:
-        top = min(len(committed), int(eng.kv.length))
-        with _prefill_mark(max(0, (top if upto is None else min(top, int(upto))) - n_p)):
-            how = res.reread_end(eng, drafter, committed, n_p, device=STATE.get("device"), on_chunk=hook,
-                                 gate=gate, upto=upto)
+        if _CLOSE_STOP.is_set():
+            how = "stopped"                            # the server stops: no read starts
+        else:
+            with _prefill_mark(max(0, (top if upto is None else min(top, int(upto))) - n_p)):
+                how = res.reread_end(eng, drafter, committed, n_p, device=STATE.get("device"), on_chunk=hook,
+                                     gate=gate, upto=upto)
+            if how == "error" and _CLOSE_STOP.is_set():
+                how = "stopped"                        # its chunk hook raised CloseStopped
     finally:
         if held:
             dict.get(STATE, "mem").prefill_done()      # its workspace leaves the policy's prefills in flight
@@ -15580,8 +15630,9 @@ def serve_until_drained(httpd) -> None:
         if STATE.get("draining"):
             return
         STATE["draining"] = True
+        _CLOSE_STOP.set()                  # SRV-911: no end read starts now; a running one stops at its next chunk
         print(f"[server] signal {signum}: draining, {INFLIGHT['running']} running, "
-              f"{INFLIGHT['waiting']} queued", flush=True)
+              f"{INFLIGHT['waiting']} queued, {_CLOSING['n']} closing", flush=True)
         threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, _drain)
@@ -15595,7 +15646,10 @@ def serve_until_drained(httpd) -> None:
         # drain had promised to finish -- every graceful stop, every hold's stop, every deploy
         # restart cut the generation in flight. So wait for the work that was admitted:
         # the one running and any already queued for the lock. stop.sh's grace period is the cap
-        # on how long a stop may take; this is not a second one.
+        # on how long a stop may take; this is not a second one. A turn's close (the end read again,
+        # SRV-911) runs after its response and counts as running until it returns; it is told to stop
+        # and waited for by name (`stop_closes`), so no handler thread is left reading when the process ends.
+        stop_closes()
         while True:
             with QUEUE:
                 busy = INFLIGHT["running"] + INFLIGHT["waiting"] + INFLIGHT["lane"]
