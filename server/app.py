@@ -7321,9 +7321,10 @@ def roles_report() -> dict:
     return out
 
 
-def _kv_after_load(a) -> None:
+def _kv_after_load(a, own: dict | None = None) -> None:
     """After slot 0's engine and drafters exist: the memory policy no longer holds slot 0's
-    window (its pages are the pool's now, outside the allocator), and the reclaimers in order."""
+    window (its pages are the pool's now, outside the allocator), and the reclaimers in order.
+    `own`: the limits the model's builder set from its load (`_build_with_limits`), none by default."""
     pool = kvpool.POOL
     eng = dict.get(STATE, "engine")
     pages = getattr(getattr(eng, "kv", None), "pages", None)
@@ -7337,7 +7338,7 @@ def _kv_after_load(a) -> None:
         # the allocator the policy measures: they go down by it. A limit the model's builder set from what the
         # allocator held after its load (`_build_with_limits`) was measured with the window already the pool's and
         # holds none of it. The fixed bytes always do: a figure the residency document sets later is a configured one
-        own = STATE.get("limits_from_load") or {}
+        own = own or {}
         cut = {d: 0 if d in own else static for d in ("mem_ceiling_gib", "mem_peak_gib")}
         mem.fixed -= static
         mem.ceiling -= cut["mem_ceiling_gib"]
@@ -13835,19 +13836,19 @@ def _limits_at_start(a) -> None:
 BUILDER_LIMITS = ("mem_ceiling_gib", "mem_peak_gib", "store_entry_gb")
 
 
-def _build_with_limits(build, a, ctx) -> dict:
+def _build_with_limits(build, a, ctx, own: dict | None = None) -> dict:
     """The model's builder; a memory limit it sets for its own pack becomes the flag the server falls back to.
     A request's refresh of the residency limits (server/memlimits.py) and the memory panel read the flags as
     started (STATE["serve_flags"], taken before the load): without this, the first request in chat mode took
     the cache policy back to serve.env's 70 GiB under a Hy4-flash 3.56 load of 72.7 GiB, and every save was
-    refused. A key the residency document sets still wins over it."""
+    refused. A key the residency document sets still wins over it. `own` (a dict, `_load`'s) gets the limits the
+    builder set, for `_kv_after_load`: start-time only, never the request path's state."""
     before = {d: getattr(a, d, None) for d in BUILDER_LIMITS}
     m = build(a, ctx)
     flags = STATE.get("serve_flags")
-    own = STATE["limits_from_load"] = {}
     for d, was in before.items():
         now = getattr(a, d, None)
-        if now != was:
+        if now != was and own is not None:
             own[d] = now          # `_kv_after_load`: set from the load, with slot 0's window already the pool's
         if now != was and flags is not None:
             flags[d] = now
@@ -13989,7 +13990,8 @@ def _load(a) -> None:
     build = arch.serve_builder()
     if build is None:
         raise SystemExit(f"[server] the {arch.name} family names no builder (engine/models: Arch.serve)")
-    m = _build_with_limits(build, a, ctx)
+    own = {}                                    # the limits the builder set from its load (`_kv_after_load`)
+    m = _build_with_limits(build, a, ctx, own)
     eng, tok, drafter = m["engine"], m["tok"], m["drafter"]
     global IDLE_CAPTURE_FAILED
     IDLE_CAPTURE_FAILED = _idle_capture_failed(eng)         # SPD-271: `graphs_once` prints it once, no traceback
@@ -14044,7 +14046,7 @@ def _load(a) -> None:
     if n_g is not None:
         print(f"[server] verify graphs: {n_g} captured in {time.time() - t_g:.1f}s", flush=True)
     led.mark("graphs")
-    _kv_after_load(a)
+    _kv_after_load(a, own)
     if eng.kv.pages is not None:
         # the warm-up's and the captures' rows are nobody's conversation
         eng.kv.pages.trim(_kv_keep_rows(eng, STATE.get("resident")))

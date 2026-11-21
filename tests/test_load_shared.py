@@ -68,10 +68,14 @@ class _Eng:
         return []
 
 
-def _run(caps, argv, serving, registry_builder: bool):
+def _run(caps, argv, serving, registry_builder: bool, limits: dict | None = None):
+    """`limits`: what the stand-in builder sets for its own pack (as Hy4-flash's sets its memory limits); then the
+    pool step (`_kv_after_load`) is a recorder, and `state["kv_after_load"]` what `_load` handed it."""
     eng, calls, lines, seen = _Eng(caps), [], [], {}
 
     def build(a, ctx):
+        for d, v in (limits or {}).items():
+            setattr(a, d, v)
         ctx.keys(ROOT, [])
         ctx.mark("engine")
         seen["ctx"] = ctx
@@ -84,6 +88,8 @@ def _run(caps, argv, serving, registry_builder: bool):
     patches = {"_arch_of": lambda m: arch,
                "generate_stream": lambda *a, **k: iter(()), "_warm_prefill": lambda *a, **k: None,
                "_build_side_slots": lambda *a: calls.append(a)}
+    if limits is not None:
+        patches["_kv_after_load"] = lambda a, own=None: seen.setdefault("kv_after_load", (dict(own or {}),))
     saved = {k: getattr(app, k) for k in patches}
     try:
         for k, v in patches.items():
@@ -93,6 +99,8 @@ def _run(caps, argv, serving, registry_builder: bool):
         app._load(app.parser().parse_args(argv))
         state = dict(app.STATE)
         written = set(app.STATE)
+        if limits is not None:
+            state["kv_after_load"] = seen.get("kv_after_load")
     finally:
         for k, v in saved.items():
             setattr(app, k, v)
@@ -136,6 +144,23 @@ def test_an_engine_with_caches_gets_the_policy_the_store_and_its_old_keys():
                                   "card_sampling", "sampling_flags", "mem_load", "usage_context"}
     assert not extra, sorted(extra)
     return f"memory policy, state store, side slots from the builder's cfg and weights; {len(KEYS_27B)} keys as before"
+
+
+def test_a_builders_own_limits_reach_the_pool_step_and_not_the_state():
+    """OPS-308: the limits a model's builder sets from its load (Hy4-flash's memory ceiling and peak) reach the pool
+    step (`_kv_after_load`), which keeps slot 0's window in them, through `_load` itself; the request path's state
+    holds no key for them; a builder that sets none hands on none."""
+    serving = {"tree": False, "sampled_tree": "off", "relax": Relax(1.0, 1)}
+    argv = ["--parallel", "2", "--drafter", "none", "--resident-gb", "0"]
+    own = {"mem_ceiling_gib": 81.0, "mem_peak_gib": 88.0}
+    _, st, _, _, written = _run(Capabilities(caches=True, side_slots=True), argv, serving, registry_builder=False,
+                                limits=own)
+    assert st["kv_after_load"] == (own,), st["kv_after_load"]
+    assert written <= set(_run(Capabilities(caches=True, side_slots=True), argv, serving, registry_builder=False)[4]), \
+        sorted(written)
+    _, st, _, _, _ = _run(Capabilities(caches=True, side_slots=True), argv, serving, registry_builder=False, limits={})
+    assert st["kv_after_load"] == ({},), st["kv_after_load"]
+    return "81/88 from the builder handed to the pool step; no state key; none set, none handed"
 
 
 def test_engine_usage_mode_reaches_the_shared_serving_state():
