@@ -319,6 +319,26 @@ class Hy4FlashEngine(Hy4FlashRef):
             return y if n is None else y[:, :n]
         return self.lin(x, w)
 
+    def lin_prompt(self, x: torch.Tensor, w) -> torch.Tensor:
+        """R83: a packed projection of the prompt pass in the prompt order (tools/exl3_rows.py: S1 w8 at every row count,
+        the skinny GEMM to its CROSS rows and the slab's s1 above, a 3.5-bit projection the slab at every row count), so a
+        prompt row's bits do not depend on the chunk it is read in, nor on where a cache resume cut the prompt. The row
+        pass and the drafter keep `lin1` and `lin`. A plain weight, and off the kernels, as `lin`."""
+        if not (self.kernels and hasattr(w, "bf16_cached") and x.dtype == torch.bfloat16):
+            return self.lin(x, w)
+        from tools import exl3_rows as R
+        x2 = x.reshape(-1, x.shape[-1])
+        if x2.shape[-1] < w.K:
+            x2 = F.pad(x2, (0, w.K - x2.shape[-1]))
+        y = R.linear(x2.contiguous(), w)
+        n = self.cuts.get(id(w))
+        return (y if n is None else y[:, :n]).view(*x.shape[:-1], -1)
+
+    def _dense_v2(self, x: torch.Tensor, p: str) -> torch.Tensor:
+        """`dense` (the reference's SwiGLU MLP) on `lin_prompt`: the prompt pass's dense MLPs and shared experts."""
+        g = F.silu(self.lin_prompt(x, self.w(p + "gate_proj.weight")))
+        return self.lin_prompt(g * self.lin_prompt(x, self.w(p + "up_proj.weight")), self.w(p + "down_proj.weight"))
+
     def pos3(self, positions: torch.Tensor) -> torch.Tensor:
         return positions.reshape(1, -1).expand(3, -1)
 
@@ -1003,8 +1023,9 @@ class Hy4FlashEngine(Hy4FlashRef):
         with the pending inject before it and the norm after it, attention (`_attention_chunk_v2`), the hyper-connection,
         the MLP; the head form of the hyper-connection on every row at the end (the drafter reads every prompt row's
         head input). On a device the row kernels (`K_.hc`, `K_.norm`, `K_.inject`) and `mm` with the rows on its tile
-        axis for the router and the Engram sums; the packed projections on `lin` and the experts on
-        `_experts_chunk`, as the pass before. Off the device the same body on the row pass's reference sums."""
+        axis for the router and the Engram sums; the packed projections on `lin_prompt` (R83: one order at every row
+        count) and the experts on `_experts_chunk`, as the pass before. Off the device the same body on the row pass's
+        reference sums."""
         cfg = self.cfg
         T, L0, slots, live, full, reads = self._chunk_begin(tokens, st)
         live = live.to(self.device)
@@ -1056,12 +1077,12 @@ class Hy4FlashEngine(Hy4FlashRef):
         """`mlp_chunk` with the router's sums on `mm` (`route_r`) and the norms on the row kernel."""
         p = f"layers.{li}.mlp."
         if self.cfg.is_dense_mlp(li):
-            return self._norm_v2(self.dense(x, p), self.w(p + "post_fc2_norm.weight"))
+            return self._norm_v2(self._dense_v2(x, p), self.w(p + "post_fc2_norm.weight"))
         idx, wts = self.route_r(x, li, lin=self._rows_mm)
-        z = self.lin(x, self.w(p + "routed_expert_down_proj.weight"))
+        z = self.lin_prompt(x, self.w(p + "routed_expert_down_proj.weight"))
         routed = self._experts_chunk(z, idx, wts, li) if li in self.banks else self._experts_grouped(z, idx, wts, li)
-        routed = self.lin(routed, self.w(p + "routed_expert_up_proj.weight"))
-        return self._norm_v2(routed + self.dense(x, p + "shared_experts."), self.w(p + "combine_output_norm.weight"))
+        routed = self.lin_prompt(routed, self.w(p + "routed_expert_up_proj.weight"))
+        return self._norm_v2(routed + self._dense_v2(x, p + "shared_experts."), self.w(p + "combine_output_norm.weight"))
 
     def _engram_reads(self, grams: torch.Tensor) -> dict:
         """SPD-319: a chunk's n-grams [T, n] -> {Engram layer: (its ids' shape, the future of its rows)}: every layer's ids
@@ -1185,7 +1206,7 @@ class Hy4FlashEngine(Hy4FlashRef):
             return ctl, sel
         p_ = f"layers.{li}.self_attn.compressed_indexer."
         nh, D, rd = cfg.index_n_heads, cfg.index_head_dim, cfg.sparse_attn.rope
-        iq = self.lin(qres, self.w(p_ + "query_projection.weight"))
+        iq = self.lin_prompt(qres, self.w(p_ + "query_projection.weight"))
         hw = self._rows_mm(x, self.w(p_ + "head_weight_projection.weight")).to(self.dtype)
         qi = iq.view(T, nh, D)
         qi = torch.cat((qi[..., :D - rd], rotate(qi[..., D - rd:], cos[:, None], sin[:, None])), dim=-1)
@@ -1238,10 +1259,10 @@ class Hy4FlashEngine(Hy4FlashRef):
         cfg, dev = self.cfg, self.device
         a, kind, p_ = cfg.attn(li), cfg.layer_types[li], f"layers.{li}.self_attn."
         T, R, L0, Wn = x.shape[0], cfg.kv_lora_rank, st.length, cfg.sliding_window
-        gate = self.lin(x, self.w(p_ + "linear_gate.weight"))
-        qres = self._norm_v2(self.lin(x, self.w(p_ + "q_a_proj.weight")), self.w(p_ + "q_a_layernorm.weight"))
-        q = self.lin(qres, self.w(p_ + "q_b_proj.weight")).view(T, a.heads, a.qk)
-        ckv = self.lin(x, self.w(p_ + "kv_a_proj_with_mqa.weight"))
+        gate = self.lin_prompt(x, self.w(p_ + "linear_gate.weight"))
+        qres = self._norm_v2(self.lin_prompt(x, self.w(p_ + "q_a_proj.weight")), self.w(p_ + "q_a_layernorm.weight"))
+        q = self.lin_prompt(qres, self.w(p_ + "q_b_proj.weight")).view(T, a.heads, a.qk)
+        ckv = self.lin_prompt(x, self.w(p_ + "kv_a_proj_with_mqa.weight"))
         cos, sin = self.rope(self.pos3(slots.cpu() + st.delta), kind)
         qr = rotate(q[..., a.nope:], cos[:, None], sin[:, None])
         lat = torch.cat((self._norm_v2(ckv[:, :R], self.w(p_ + "kv_a_layernorm.weight")), rotate(ckv[:, R:], cos, sin)), dim=-1)
@@ -1268,7 +1289,7 @@ class Hy4FlashEngine(Hy4FlashRef):
             st.win[li][slots[-Wn:] % Wn] = lat[-Wn:]
         out = self._heads_mm(mix, self.wv[li]).to(self.dtype)
         y = (out * torch.sigmoid(gate).view(T, a.heads, a.v)).reshape(T, a.heads * a.v)
-        return self._norm_v2(self.lin(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
+        return self._norm_v2(self.lin_prompt(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
 
     def attend_chunk(self, q: torch.Tensor, K: torch.Tensor, allowed: torch.Tensor, li: int, w: tuple | None = None) -> torch.Tensor:
         """q [t, heads, qk] over shared latents K [n, R + rope] with `allowed` [t, n] -> [t, heads, v]. `w`: another

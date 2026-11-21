@@ -164,6 +164,7 @@ kernels:
       - tests/gpu/test_exl3_silu_gpu.py
       - tests/gpu/test_exl3_slab_gemm_gpu.py
       - tests/gpu/test_dflash2_exl3_gpu.py
+      - tests/gpu/test_linear_rowinv_gpu.py
   - paths: ['tools/nvfp4_*.py', 'tools/csrc/nvfp4_*/**', 'tools/head_*.py', 'tools/small_linear.py']
     tests:
       - tests/gpu/test_skinny_gpu.py
@@ -202,4 +203,5 @@ kernels:
       - tests/gpu/test_hy4_vdense_gpu.py
       - tests/gpu/test_hy4_prefill_grouped_gpu.py
       - tests/gpu/test_hy4_mla_rows_gpu.py
+      - tests/gpu/test_linear_rowinv_gpu.py
       - tests/gpu/test_fn_moe_grouped_pin_gpu.py

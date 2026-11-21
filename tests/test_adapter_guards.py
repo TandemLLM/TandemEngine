@@ -98,8 +98,10 @@ from engine.models import REGISTRY  # noqa: E402
 # and Flash-Next's resident prefix and store reproduce byte for byte (tests/test_resident_pinned.py)
 # SRV-907: the interim one-lane rule (`Capabilities.solo`, `StateStore.holds`, `ResidentPrefix.sets_aside`) leaves
 # engine/cache.py now that Hy4-flash has side slots: the whole-tree half moves again, the arithmetic half holds
+# R83 (T5b): the prompt read passes `prompt=True` to a family with `Capabilities.prompt_rows` (engine/cache.py); every
+# family without it gets the call it got before, so the whole-tree half moves and the arithmetic half holds
 GOLDEN_V2 = ("7c6b4c314c5f6cf7f086c9208b0ac4f74198984a8093d1d41a82a71e9ca0d6f5",
-             "f25ee4d9c1e9197aae88d024c0a353cab80c620f042827fc53675d4e77a1b7ac")
+             "feed262983cad1c8f5ff87bcd6250cd5393a8114e8ef2ed5fe9bd94ab11fee72")
 GOLDEN_FP4 = {
     # SPD-201 (2026-10-24): the speed setup's knobs default on, so every family's fingerprint moved once;
     # SPD-215: Flash-Next's joint pass row-wise and grouped experts by default (its two adapters again);
@@ -210,13 +212,17 @@ GOLDEN_FP4 = {
     # SPD-321, the prefill review: the shared prefill kernel only where its inline kernels build (engine.py; the rows
     # where they do are the same): hy_v4_flash
     # SPD-321: EXPERTS_MIN 128 from the measured crossover (engine.py; the same bits on both paths): hy_v4_flash
+    # R83 (T5, T5b): Hy4-flash's prompt pass on one order a weight at every row count (S1 w8, tools/exl3_rows.py, now
+    # in its manifest), and a one-row prompt chunk on the prompt pass (`Capabilities.prompt_rows`; engine.py,
+    # serving.py). A named bit-moving step: the prompt pass's rows move once, Hy4-flash is unreleased, no cache sweep,
+    # no SAME_ROWS entry: hy_v4_flash
     "qwen4_exp": "12cd38b79e24220638d0b1a3aaa9fd29781e7457a28b2264404f2c0b4877a802",
     "nemotron_h": "81d0d5f57bceb5b496cef3b2f5e4587ab3de986b015632d11a118b2ce4d258e3",
     "lfm2_moe": "b4e4a64045d8a65cdcfbbe7c9d26c065d743b15b13cf9d0624612ab70d10425e",
     "qwen3_5_moe": "d6acb7f9cc633e2e051124444e7f75fc92b816600b909f365570852245a925f7",
     "flint": "b282e37d1f5d4acf22ba31b64e7f7056c408c453646ed11814b049398e0e0c8f",
     # Hy4-flash: a new family (its first golden), then the moves above
-    "hy_v4_flash": "1a476f4865b6987afdf5e44de374fbb29aaad969333c5c7b01c5c2ed72a4a646",
+    "hy_v4_flash": "c46219915624f862229c73ea449404e979eefd477dc24dd8f935ad7d607d601d",
 }
 #: adapters the refactor may move once (the coordinator's OK, 2026-10-22): Flint's knobs leave the shared
 #: table and its kernels take the generic launch option

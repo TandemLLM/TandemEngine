@@ -9,8 +9,10 @@ file in the pack's tokenizer), each arm (the prompt pass's knobs), each path and
 against ids[:k] then ids[k:] on one state. The paths:
 
   prefill   the engine's `prefill` (a one-row piece is a one-row prompt chunk)
-  forward   the server's verb, `Hy4FlashServing.forward` (a one-row piece at a start past 0 is a decode step,
-            through the captured graphs as served): what a request does
+  forward   the server's verb, `Hy4FlashServing.forward`, as the server's prompt read calls it: with
+            `prompt=True` where the family sets `Capabilities.prompt_rows` (a one-row piece is then a one-row prompt
+            chunk), else a one-row piece at a start past 0 is a decode step through the captured graphs: what a
+            request does
 
 Compared: every section and view of the state by sha256 (the first layer whose latents differ), the last row's
 logits (sha, largest difference, argmax) and --steps greedy tokens from each state (the first that differs). With
@@ -69,9 +71,13 @@ def ks_auto(n: int) -> list[int]:
     return sorted(k for k in ks if 1 <= k <= n - 1)
 
 
-def piece_class(rows: int, start: int, via: str, chunk: int = 4096, block: int = 32, until: int | None = None) -> str:
-    """The kernel class a piece's trunk products take on this tree's `lin`, by its chunks' rows."""
-    if via == "forward" and rows == 1 and start > 0:
+def piece_class(rows: int, start: int, via: str, chunk: int = 4096, block: int = 32, until: int | None = None,
+                prompt_rows: bool = False) -> str:
+    """The kernel class a piece's trunk products take on this tree's `lin` (by its chunks' rows), or on the prompt
+    order (`prompt_rows`: the family's prompt pass on tools/exl3_rows.py)."""
+    if prompt_rows:
+        return "prompt order (S1 w8)"
+    if via == "forward" and rows == 1 and start > 0 and not prompt_rows:
         return "decode step (row pass)"
     if until is None:
         from tools.exl3_linear import CHUNK_UNTIL as until
@@ -195,10 +201,13 @@ def greedy_prefill(eng, st, lg, steps: int) -> list:
 
 
 def run_forward(srv, ids: list, parts: list) -> tuple:
+    """The prompt as the server reads it (engine/cache.py `_prefill`): `forward` piece by piece, with `prompt=True`
+    where the family sets `Capabilities.prompt_rows` (a one-row piece then a prompt chunk, else a decode step)."""
     srv.restart()
+    kw = {"prompt": True} if getattr(getattr(srv, "caps", None), "prompt_rows", False) else {}
     lg = None
     for a, b in parts:
-        lg = srv.forward(torch.tensor(ids[a:b]), start=a)
+        lg = srv.forward(torch.tensor(ids[a:b]), start=a, **kw)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     # the logits are the row buffers' (the next step writes them): a copy
@@ -218,8 +227,9 @@ def case(name, prompt, n, arm, via, k, cold, res, extra=None) -> dict:
     (lg_c, s_c, d_c), (lg_r, s_r, d_r) = cold, res
     differing = sorted(x for x in s_c if s_c[x] != s_r.get(x) and not x.startswith("layer:"))
     fd = next((i for i, (p, q) in enumerate(zip(d_c, d_r)) if p != q), None)
+    pr = bool((extra or {}).pop("prompt_rows", False))
     out = {"case": name, "prompt": prompt, "n": n, "arm": arm, "via": via, "k": k, "pieces": [k, n - k],
-           "piece_classes": [piece_class(k, 0, via), piece_class(n - k, k, via)],
+           "piece_classes": [piece_class(k, 0, via, prompt_rows=pr), piece_class(n - k, k, via, prompt_rows=pr)],
            "logits_equal": sha(lg_c) == sha(lg_r), "logits_max_abs": float((lg_c - lg_r).abs().max()),
            "argmax_equal": int(lg_c.argmax()) == int(lg_r.argmax()), "state_differing": differing,
            "first_lat_layer": first_layer(s_c, s_r),
@@ -266,6 +276,7 @@ def run(eng, srv, prompts: dict, arms: list, vias: list, ks_of, steps: int, say,
                         lg, s = run_forward(srv, ids, [(0, k), (k, n)])
                         res = (lg, s, greedy_forward(srv, lg, steps))
                     name = f"{pname}.{arm}.{via}.k{k}"
+                    extra["prompt_rows"] = bool(getattr(getattr(srv, "caps", None), "prompt_rows", False)) and arm == "v2"
                     line = case(name, pname, n, arm, via, k, cold, res, extra)
                     cases[name] = line
                     say(line)

@@ -132,6 +132,9 @@ class Hy4FlashServing:
     # prompt without a plan is marked where its first user turn starts, so a repeated head is read once
     # (SRV-905, server/app.py `_head_mark`)
     caps = dataclasses.replace(caps, chat_first=True, head_mark=True)
+    # R83 (T5b): a one-row prompt chunk runs the prompt pass (`forward(..., prompt=True)`), whose products are in the
+    # prompt order at every row count, so a prompt-end resume with a one-row tail equals the cold read
+    caps = dataclasses.replace(caps, prompt_rows=True)
 
     def __init__(self, eng: Hy4FlashEngine, max_len: int):
         self.fn, self.cfg, self.max_len = eng, eng.cfg, int(max_len)
@@ -312,16 +315,17 @@ class Hy4FlashServing:
 
     # --- the loop's verbs ------------------------------------------------------------------------
     @torch.no_grad()
-    def forward(self, ids: torch.Tensor, start: int, last_only: bool = True) -> torch.Tensor:
+    def forward(self, ids: torch.Tensor, start: int, last_only: bool = True, prompt: bool = False) -> torch.Tensor:
         """Rows `ids` at positions start..: one token through the row path, more through the prefill.
-        Logits [1, 1, vocab] of the last row (fp32)."""
+        `prompt` (R83, `Capabilities.prompt_rows`): the rows are a prompt's, so one row is a one-row prompt chunk
+        on the prefill too, not a decode step. Logits [1, 1, vocab] of the last row (fp32)."""
         self._settle_chain()
         ids = ids.view(-1)
         self._at(start)
         T = ids.numel()
         self._ensure(start + T + BLOCK)
         self.graph_set.used()
-        if T == 1 and start > 0:
+        if T == 1 and start > 0 and not prompt:
             n0 = len(self.graphs) if self.graphs is not None else 0
             lg, n = self.fn.rows([int(ids[0])], [-1], self.st, graphs=self.graphs, clone=False)
             self.plain_captured = self.graphs is not None and len(self.graphs) != n0

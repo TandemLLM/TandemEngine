@@ -1,11 +1,11 @@
 """tools/resume_split.py (R83's G2) on a tiny random Hy4-flash model, on the CPU, where every row count takes one path
 (the torch reference: there is no class switch to see there):
 
-  1  the served pass (v2): a prompt read cold equals the same prompt read as two pieces through `prefill` at every
-     k, and through `forward` at every k but the one-row tail. There the piece is a decode step, whose row pass
-     differs from the prompt pass in five places (the rowinv review's M1): unequal on the CPU too, until a one-row
-     prompt chunk runs the prompt pass (R83-hy4's T5b), when this test is to say so. The pass before (v1-pair) is
-     reported only: on the CPU it is unequal at k 16 as well. The record is family_check's shape
+  1  the served pass (v2): a prompt read cold equals the same prompt read as two pieces at every k, through
+     `prefill` and through `forward`, the one-row tail included: Hy4-flash sets `Capabilities.prompt_rows` (R83, T5b),
+     so the server reads a one-row piece on the prompt pass, not as a decode step (whose row pass differs from the
+     prompt pass in five places, the rowinv review's M1). The pass before (v1-pair) is reported only: on the CPU it is
+     unequal at k 16. The record is family_check's shape
                                                                    test_cold_against_two_pieces_on_the_cpu
   2  the tool sees a difference: a state row changed between the two pieces is reported, with its layer, and the
      greedy tokens are compared                                    test_a_changed_row_is_reported
@@ -48,8 +48,9 @@ def _ids(n: int, seed: int = 3) -> list:
     return torch.randint(4, 60, (n,), generator=g).tolist()
 
 
-#: the cases known unequal on the CPU at this tree (the one-row tail through `forward` is a decode step)
-KNOWN_UNEQUAL = {"p.v2.forward.k39"}
+#: the cases known unequal on the CPU at this tree (none of the served pass: before T5b the one-row tail through
+#: `forward` was a decode step)
+KNOWN_UNEQUAL: set = set()
 
 
 def test_cold_against_two_pieces_on_the_cpu():
@@ -61,12 +62,12 @@ def test_cold_against_two_pieces_on_the_cpu():
     bad = sorted(k for k, v in v2.items() if not v["equal"])
     assert set(bad) == KNOWN_UNEQUAL, (bad, {k: (v2[k]["state_differing"], v2[k]["logits_max_abs"]) for k in bad})
     tail = cases["p.v2.forward.k39"]
-    assert tail["piece_classes"][1] == "decode step (row pass)" and cases["p.v2.prefill.k39"]["piece_classes"][1] == "row kernel"
+    assert tail["piece_classes"][1] == "prompt order (S1 w8)", tail["piece_classes"]
+    assert RS.piece_class(1, 39, "forward") == "decode step (row pass)"         # a family without the capability
     rec = RS.record(cases, "hy4_flash", "tiny")
     assert rec["pin"] == "g2" and set(rec["cases"]) == set(cases)
     v1 = sorted(k for k, v in cases.items() if ".v1-pair." in k and not v["equal"])
-    return f"v2: {len(v2) - len(bad)} of {len(v2)} equal, the one-row tail through forward not ({tail['state_differing']}); " \
-           f"v1-pair unequal: {v1}"
+    return f"v2: {len(v2) - len(bad)} of {len(v2)} equal, the one-row tail through forward included; v1-pair unequal: {v1}"
 
 
 def test_a_changed_row_is_reported():
