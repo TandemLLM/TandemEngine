@@ -8796,6 +8796,22 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, payload: dict, extra_headers: tuple = ()) -> None:
         self._send_bytes(code, json.dumps(payload, ensure_ascii=False).encode(), extra_headers)
 
+    def _end_response(self) -> None:
+        """Before work the response does not wait for (the end read again, `_turn_close`): its bytes flushed, and on a
+        connection that closes after this request (a stream's `Connection: close`) the write side shut, so a client
+        that reads to the end of the connection has it now, not when the handler returns. A keep-alive response has
+        its length and needs no end. Never raises."""
+        try:
+            self.wfile.flush()
+        except Exception:                                          # noqa: BLE001
+            return
+        conn = getattr(self, "connection", None)
+        if self.close_connection and isinstance(conn, socket.socket):
+            try:
+                conn.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
     # -------------------------------------------------------------- a stream opened early (S1)
     # A streamed request whose profile shows its state lines opens its stream while it still
     # waits for the engine, so the client sees why ("waiting: ..."). Whatever would have been a
@@ -12740,10 +12756,8 @@ class Handler(BaseHTTPRequestHandler):
                 # the end read again (a family with `Capabilities.reread_end`): the client has its last bytes
                 # (the stream's [DONE], the JSON body); the read holds this lane alone, on its own GPU turn, before
                 # its pages are trimmed, the allocator's reserve goes back and the slot takes another request
-                try:
-                    self.wfile.flush()
-                except Exception:                                  # noqa: BLE001
-                    pass
+                if getattr(_CLOSE, "job", None) is not None:
+                    self._end_response()
                 _turn_close(cid)
             if micro:
                 # the side lane never held the engine past its job (server/preempt.py)

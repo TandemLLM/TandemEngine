@@ -2164,7 +2164,8 @@ class ResidentPrefix:
         """At a turn's end, on a prefix with `end_reread`: the rows from the highest exact point at or below the
         prompt's end (`_read_start`) to the end `keep_end` would keep read again on the prompt pass, with the
         calls a prompt read makes (`forward(..., prompt=True)` on a `prompt_rows` family, the drafter's `sync`,
-        the grid's anchors), so the state the engine stands in after it is a cold read's of the same ids. Then
+        the anchors on the prompt's own grid, its head mark included), so the state the engine stands in after it is
+        a cold read's of the same ids. Then
         `keep_end(..., reread=True)` keeps it. The prompt end's buffers are read, never written.
 
         `tokens`: the request's context (the served prompt, then what was committed, hidden tokens included),
@@ -2200,6 +2201,10 @@ class ResidentPrefix:
         if device is None:
             device = model_views(eng)[0][0].device
         prompt_rows = bool(getattr(getattr(eng, "caps", None), "prompt_rows", False))
+        # the lines the prompt's prefill was cut at (its head mark, SPD-249): the read's anchors are lines the next
+        # prompt with that head resumes from (the cut itself moves no bit on a row-invariant prompt pass)
+        p = self.pend
+        grid = Grid(self.chunk, p.get("mark") if p is not None and int(p["at"]) == n else None)
         t0 = time.perf_counter()
         i = start
         try:
@@ -2221,7 +2226,7 @@ class ResidentPrefix:
             self.valid = start
             self.capturing = True
             while i < e:
-                t = min((i // self.chunk + 1) * self.chunk - i, e - i)
+                t = min(grid.next(i) - i, e - i)
                 blk = torch.tensor(toks[i:i + t], device=device, dtype=torch.long)
                 if prompt_rows:
                     eng.forward(blk, start=i, last_only=True, prompt=True)
@@ -2231,7 +2236,7 @@ class ResidentPrefix:
                     drafter.sync(toks[i:i + t], eng.hidden_post_norm[0], i)
                 i += t
                 _after_chunk(eng, drafter, self, None, None, None, None, False, self.chunk, i, e, e, toks,
-                             None, None, None)
+                             None, None, None, grid)
                 if on_chunk is not None and i < e:
                     on_chunk(i, e)
         except Exception:                                          # noqa: BLE001
@@ -2244,6 +2249,12 @@ class ResidentPrefix:
             self._unread("error")
             return "error"
         self.capturing = False
+        if drafter is not None and hasattr(drafter, "state_resume"):
+            # the drafter at the end, as a resume there puts it (`resume_end`): its rows valid to the last one, the
+            # last row's streams held for the next token, so a session snapshot covers the answer. Rows of the read's
+            # last chunk keep what the turn's rounds wrote there: a draft head is approximate by design (it skips rows
+            # on plain turns and trims its backlog; its drafts are verified, the text never depends on them)
+            drafter.state_resume(e)
         self._read = {"at": e, "n": n, "start": start, "from": how, "gen": self.rows_gen}
         ms = (time.perf_counter() - t0) * 1e3
         self.stats["end_rereads"] = self.stats.get("end_rereads", 0) + 1
@@ -2370,8 +2381,10 @@ class ResidentPrefix:
         self.pend = {"at": int(n), "tokens": [int(t) for t in tokens[:n]]}
         if self.end_reread:
             # a prompt read on a row-invariant prompt pass over rows no session's state wrote: a cold read's
-            # state, so a resume here writes a cold read's rows (`begin`) and the end read starts here
+            # state, so a resume here writes a cold read's rows (`begin`) and the end read starts here, on the
+            # prefill's own grid (its head mark: the lines the conversation's next prompt resumes from)
             self.pend["exact"] = self.taint is None
+            self.pend["mark"] = getattr(self.grid, "mark", None)
         self.stats["pend_kept"] += 1
         return "kept"
 

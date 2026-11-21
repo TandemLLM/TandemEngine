@@ -317,6 +317,111 @@ def test_the_first_round_after_each_resume_drafts():
     return f"drafted positions and stale rounds by resume: {got}"
 
 
+def test_the_end_read_with_the_draft_head_gives_a_cold_reads_state():
+    """The end read again (`Capabilities.reread_end`) with the served drafter (DFly through the tree drafter): turn 1
+    drafts its answer through the server's loop, and its close reads the answer again with the drafter's own calls
+    (`state_resume`, `sync`) and leaves the drafter where a resume at the end puts it: its head valid to the end's last
+    row, so the session snapshot's drafter part covers the answer. Turn 2, resumed at that end and, the rows cleared,
+    from the session snapshot, holds a cold read's target state (the logits, every section and view, bit for bit) and
+    its answer through the drafted loop is the cold server's. The head's own rows are not held to bits: the head is approximate by
+    design (plain turns skip rows, the backlog is trimmed; its drafts are verified). bf16: the served dtype, whose
+    prompt pass gives the same bits at every cut on the CPU."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_forward_tree as T  # noqa: F401  (the CPU environment before the server imports)
+    from engine import cache
+    from engine.drafters.ngram import NgramDrafter
+    from engine.methods.mtp_drafter import MTPTreeDrafter
+    from engine.methods.staircut import PriceModel, StairCut
+    from engine.penalty import PenaltySpec
+    from engine.spec import Relax
+    from server import app
+    from test_app_loop import FakeTok
+    ch, big = 16, 1 << 30
+
+    def served():
+        cfg, eng, srv, head = setup(torch.bfloat16)
+        d = MTPTreeDrafter(srv, head, StairCut(PriceModel(), siblings=True),
+                           NgramDrafter(corpus_path="", min_order=3, max_depth=16))
+        srv.heads["dfly"] = head
+        return srv, d
+
+    def state(srv, res, store, d):
+        app.STATE.clear()
+        app.STATE.update(engine=srv, drafter=d, k=d.head.depth, tree=True, sampled_tree="det", relax=Relax(1.0, 1),
+                         verbose=False, state_store=store, prefix_cache=True, prefix_chunk=ch, session_cache=True,
+                         tok=FakeTok(), device="cpu", max_len=srv.max_len, default_max_tokens=64, pen_spec=PenaltySpec(),
+                         model="t", cfg_eos=None, think_budget=0, think_stall=False, reasoning_format="tags",
+                         request_timeout=0.0, max_queue=8, queue_timeout=5.0, pattern_stop=None, response_cache=None,
+                         suffix_store=None, resident=res)
+
+    def prefill(srv, d, ids, **kw):
+        d.reset()
+        d.prime(list(ids))
+        info: dict = {}
+        lg, reused, _ = cache.prefill(srv, d, list(ids), "cpu", chunk=ch, info=info, **kw)
+        return lg, info.get("kind"), reused
+
+    def same(a, b, n):
+        for (k, x), y in zip(a.cache_state().sections().items(), b.cache_state().sections().values()):
+            assert torch.equal(x, y), k
+        for (k, x, ax), (_, y, _) in zip(a.cache_state().views(), b.cache_state().views()):
+            assert torch.equal(x.narrow(ax, 0, n), y.narrow(ax, 0, n)), k
+
+    def turn1():
+        srv, d = served()
+        res = cache.ResidentPrefix(big, ch, stash_bytes=big, end=True, end_reread=True)
+        store = cache.StateStore(big, chunk=ch)
+        state(srv, res, store, d)
+        p1 = tokens(37, 30)
+        out1 = list(app.generate_stream(torch.tensor(p1), 24, set(), None, "A"))
+        ctx1 = list(app.STATE["last_ctx"])
+        assert srv.stats["verify_blocks"] > 0, srv.stats
+        app._remember(list(p1), out1, "A")
+        assert res.end is not None and res.end.get("exact") is True and res.stats.get("end_rereads") == 1, res.end
+        e = res.end["at"]
+        snap = [x for x in store._d.values() if x.kind == "session"]
+        assert len(snap) == 1 and snap[0].exact and snap[0].snap.drafter["len"] == e - 1, \
+            [(x.kind, x.exact, (x.snap.drafter or {}).get("len")) for x in store._d.values()]
+        return srv, d, res, store, ctx1 + tokens(5, 31), e
+
+    saved = dict(app.STATE)
+    keep_pe, cache.PROMPT_END = cache.PROMPT_END, True
+    got = []
+    try:
+        with torch.no_grad():
+            for via in ("end", "session"):
+                # the target's state after the resume, bit for bit against a cold read with a fresh drafter
+                srv, d, res, store, p2, e = turn1()
+                if via == "session":
+                    res.clear()
+                lg, kind, reused = prefill(srv, d, p2, resident=res, store=store, conv_id="A")
+                assert kind == via and reused == e, (kind, reused, e)
+                cs, cd = served()
+                lg_c, _, _ = prefill(cs, cd, p2)
+                assert torch.equal(lg, lg_c), (lg - lg_c).abs().max()
+                same(srv, cs, len(p2))
+                # the drafted answer from that resume, against a cold server's with a fresh drafter
+                srv, d, res, store, p2, e = turn1()
+                if via == "session":
+                    res.clear()
+                blocks = srv.stats["verify_blocks"]
+                out2 = list(app.generate_stream(torch.tensor(p2), 12, set(), None, "A"))
+                last = dict(app.STATE["last_prefill"])
+                assert last["kind"] == via and last["reused"] == e, (last, srv.stats)
+                drafted = srv.stats["verify_blocks"] - blocks       # the cut decides by its timings: recorded
+                cs, cd = served()
+                state(cs, None, None, cd)
+                app.STATE.update(prefix_cache=False, prefix_chunk=0, session_cache=False)
+                cold2 = list(app.generate_stream(torch.tensor(p2), 12, set(), None, "B"))
+                assert out2 == cold2, (out2, cold2)
+                got.append(f"{via} at {e}: the target's state and 12 tokens equal a cold read's ({drafted} drafted rounds)")
+    finally:
+        cache.PROMPT_END = keep_pe
+        app.STATE.clear()
+        app.STATE.update(saved)
+    return "; ".join(got)
+
+
 def test_drafted_is_plain_after_the_v2_prompt_pass():
     """SPD-323, SPD-325: after a prompt read on the prompt pass on fixed-order kernels (HY4_PREFILL_V2) drafted rounds
     write the plain greedy text, token for token and logit for logit, in fp32 and bf16, and through the served loop."""

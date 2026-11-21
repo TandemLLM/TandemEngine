@@ -39,8 +39,18 @@ device.
   E13  the client has the stream's last chunk, its usage and [DONE] before the read starts; the lane is still the
        request's                                     test_a_streamed_client_has_its_last_bytes_before_the_read
   E14  the same for a JSON response                  test_a_json_client_has_its_body_before_the_read
+  E15  the read passes the memory gate a prefill passes (`Budget.gate`, the rows it forwards priced by
+       `workspace_rows`, a refusal not counted): admitted, its workspace leaves the policy after it; refused, no end
+       and no session snapshot                      test_the_read_passes_the_memory_gate_a_prefill_passes
+  E16  on a real socket, a streamed client that reads to the end of the connection has it ([DONE], then the end)
+       while the read still runs                    test_a_client_reading_to_the_connections_end_does_not_wait_for_the_read
+  E17  a follow-up sent while the read runs waits for the lane, then resumes at the end the read kept
+                                                     test_a_follow_up_during_the_read_waits_and_resumes_at_its_end
+  E18  a prompt with a head mark: the read cuts and takes its anchors on the prompt's own grid (the mark, then every
+       chunk from it), and the next prompt with that head resumes at one of them, equal to a cold read
+                                                     test_the_read_takes_the_prompts_grid
 
-E1 and E6 pass before the fix and after; E2 to E14 fail before it. E13 and E14 run the handler on the tiny Hy4-flash
+E1 and E6 pass before the fix and after; E2 to E18 fail before it. E13 and E14 run the handler on the tiny Hy4-flash
 (tests/hy4_tiny.py), which sets the capability.
 
 Run: python tests/test_end_reread.py
@@ -738,6 +748,243 @@ def test_a_json_client_has_its_body_before_the_read():
     assert seen["bytes"] == final and seen["running"] >= 1, seen
     assert seen["how"] == "read" and res.end is not None and res.end.get("exact") is True, (seen, res.end)
     return f"the {n}-byte body out before the read; the lane still the request's; end exact"
+
+
+# ------------------------------------------------------------------ E15: the memory gate
+
+def test_the_read_passes_the_memory_gate_a_prefill_passes():
+    """E15: the read asks the policy as a prefill does (server/app.py `_reread_gate`: `Budget.gate` on the live reserve
+    for the rows it forwards onto the end, `count` False). Admitted: the gate priced the read's own rows, and its
+    workspace leaves the policy once it has run (`prefill_done`). Refused (the reserve at the peak): no read, no end, no
+    session snapshot, nothing counted as a request's refusal, no workspace held."""
+    from server import app
+    from test_budget import FakeAlloc, budget
+    got = []
+    for label, alloc in (("admitted", 60.0), ("refused", 76.9)):
+        with _pend():
+            fa = FakeAlloc(alloc)
+            mem = budget(fa)
+            store = cache.StateStore(BIG, chunk=CH)
+            res = _prefix()
+            eng = Marked()
+            prompt = tokens(40, 18)
+            lg, _, _ = cache.prefill(eng, None, prompt, "cpu", chunk=CH, resident=res, conv_id="A", store=store,
+                                     checkpoint=True)
+            ctx = prompt + _answer(eng, lg, 40, chain=False)
+            e = min(int(eng.kv.length), len(ctx))
+            gates, refused = mem.stats["gates"], int(mem.stats.get("refused", 0))
+            keep = dict(app.STATE)
+            app.STATE.clear()
+            app.STATE.update(engine=eng, drafter=None, resident=res, state_store=store, session_cache=True, mem=mem,
+                             last_ctx=list(ctx), last_prompt_n=40, hidden_spans=[], suffix_store=None, verbose=False)
+            try:
+                app._remember_turn(list(ctx[:40]), list(ctx[40:]), "A")
+            finally:
+                app.STATE.clear()
+                app.STATE.update(keep)
+            g = mem.stats.get("last_gate") or {}
+            assert mem.stats["gates"] == gates + 1 and g.get("n") == e and g.get("rows") == e - 40, (label, g, e)
+            assert mem.ws_now == 0 and int(mem.stats.get("refused", 0)) == refused, (label, mem.ws_now, mem.stats)
+            sessions = [x for x in store._d.values() if x.kind == "session"]
+            if label == "admitted":
+                assert res.end is not None and res.end.get("exact") is True, res.end
+                assert len(sessions) == 1 and sessions[0].exact, [(x.kind, x.exact) for x in store._d.values()]
+            else:
+                assert res.end is None and not sessions and res.stats.get("end_reread_memory") == 1, (res.end, res.stats)
+            got.append(f"{label} at {alloc:g} GiB of 77 (rows {g.get('rows')} onto {g.get('n')})")
+    return "; ".join(got)
+
+
+# ------------------------------------------------------------------ E18: the grid of a marked prompt
+
+def test_the_read_takes_the_prompts_grid():
+    """E18: a prompt cut at its head mark (SPD-249, `grid_mark` 21 on a 16-row grid: lines 16, 21, 37, 53, 69): the
+    read cuts its rows and takes its anchors on that grid, at 53 and not at the 0-anchored 48 or 64, so a later prompt
+    with that head that parts inside the answer resumes at the read's anchor and equals a cold read on that grid."""
+    with _pend():
+        res = _prefix()
+        eng = Marked()
+        prompt = tokens(40, 19)
+        lg, _, _ = cache.prefill(eng, None, prompt, "cpu", chunk=CH, resident=res, conv_id="A", grid_mark=21)
+        assert sorted(res.anchors) == [16, 21, 37] and res.pend.get("mark") == 21, (sorted(res.anchors), res.pend)
+        ctx = prompt + _answer(eng, lg, 40, chain=False)
+        pos = int(eng.kv.length)                   # the last decided token is not forwarded
+        for t in tokens(23, 21):                   # a longer answer by decode steps: past the 53 and 69 lines
+            eng.forward(torch.tensor([ctx[-1]]), start=pos)
+            pos += 1
+            ctx.append(t)                          # the next token decided (the double's text does not matter)
+        assert eng.kv.length == len(ctx) - 1
+        _remember(eng, res, ctx, 40)
+        e = res.end["at"]
+        assert e > 69 and {53, 69} <= set(res.anchors) and not {48, 64} & set(res.anchors), (e, sorted(res.anchors))
+        p2 = ctx[:60] + [ctx[60] ^ 1] + NEW
+        info: dict = {}
+        lg2, reused, _ = cache.prefill(eng, None, p2, "cpu", chunk=CH, resident=res, conv_id="A", grid_mark=21,
+                                       info=info)
+        assert info["kind"] == "resident" and reused == 53, (info, reused)
+        ref = Marked()
+        ref_lg, _, _ = cache.prefill(ref, None, p2, "cpu", chunk=CH, grid_mark=21)
+        assert torch.equal(lg2, ref_lg) and _same_state(eng, ref, len(p2)) == []
+    return f"anchors {sorted(res.anchors)} after the read to {e}; a prompt parting at 60 resumed at 53, equal to cold"
+
+
+# ------------------------------------------------------------------ E16, E17: a real socket
+
+class _Served:
+    """The handler on a real socket (`ThreadingHTTPServer`, as tests/test_app_loop.py runs it) over the tiny Hy4-flash
+    with its capabilities' prefix, one lane, and a tokenizer whose text comes back as the same ids (so a client's copy
+    of an answer is the rows' own tokens). `slow_s`: the end read starts that long after it is called (a long answer's
+    read, stood in for)."""
+
+    def __init__(self, slow_s: float = 1.0):
+        import threading
+        import time
+        from http.server import ThreadingHTTPServer
+        from engine.penalty import PenaltySpec
+        from engine.spec import Relax
+        from server import app
+        from test_app_loop import FakeTok
+        from test_hy4_serving import serving32
+
+        class RoundTok(FakeTok):
+            """Text -> ids and back: one character an id, ids 0..63 as the characters 28..91."""
+
+            def __call__(self, text, add_special_tokens=False, return_tensors=None):
+                if text in ("<think>", "</think>") or not all(28 <= ord(c) <= 91 for c in text):
+                    return super().__call__(text, add_special_tokens, return_tensors)
+                ids = [ord(c) - 28 for c in text]
+                if return_tensors == "pt":
+                    ids = torch.tensor([ids])
+                return type("R", (), {"input_ids": ids})()
+
+            def decode(self, seq, skip_special_tokens=True):
+                return "".join(chr(int(t) + 28) for t in seq)
+        self.app, self.time, self.seen = app, time, {}
+        self.saved = dict(app.STATE)
+        srv = serving32(256)
+        self.res = cache.ResidentPrefix(BIG, CH, stash_bytes=BIG, end=True, chat_first=True, guest_store=True)
+        self.res.end_reread = True
+        real = self.res.reread_end
+
+        def spy(*a, **kw):
+            self.seen["t0"] = time.monotonic()
+            hook = self.seen.pop("during", None)
+            if hook is not None:
+                hook()
+            time.sleep(slow_s)
+            got = real(*a, **kw)
+            self.seen["t1"], self.seen["how"] = time.monotonic(), got
+            return got
+        self.res.reread_end = spy
+        app.STATE.clear()
+        app.STATE.update(engine=srv, drafter=None, k=4, tree=False, sampled_tree="det", relax=Relax(1.0, 1),
+                         verbose=False, state_store=cache.StateStore(BIG, chunk=CH), prefix_cache=True, prefix_chunk=CH,
+                         session_cache=True, tok=RoundTok(), device="cpu", max_len=srv.max_len, default_max_tokens=64,
+                         pen_spec=PenaltySpec(), model="t", cfg_eos=None, think_budget=0, think_stall=False,
+                         reasoning_format="tags", request_timeout=0.0, max_queue=8, queue_timeout=30.0,
+                         pattern_stop=None, response_cache=None, suffix_store=None, resident=self.res)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def post(self, body: dict) -> tuple:
+        """One request on its own connection, read to the end of the connection: (raw bytes, monotonic time of the
+        end)."""
+        import socket
+        raw = json.dumps(body).encode()
+        c = socket.create_connection(("127.0.0.1", self.port), timeout=60)
+        c.sendall(b"POST /v1/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                  + f"Content-Length: {len(raw)}\r\nConnection: close\r\n\r\n".encode() + raw)
+        out = b""
+        while True:
+            got = c.recv(65536)
+            if not got:
+                break
+            out += got
+        t = self.time.monotonic()
+        c.close()
+        return out, t
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.app.STATE.clear()
+        self.app.STATE.update(self.saved)
+
+
+def _text_of_stream(raw: bytes) -> str:
+    out = ""
+    for ln in raw.decode().split("\r\n\r\n", 1)[1].splitlines():
+        if ln.startswith("data: {"):
+            for ch in json.loads(ln[6:]).get("choices") or []:
+                out += ch.get("text") or ""
+    return out
+
+
+def test_a_client_reading_to_the_connections_end_does_not_wait_for_the_read():
+    """E16 (ruling 3 on a real socket): a streamed response closes its connection after it (`Connection: close`), and
+    a client that reads to the end of the connection (curl, hold 1's rows.py) gets that end once [DONE] is out: the
+    handler shuts the write side before the end read (`_end_response`), so the client never waits for the read (made
+    to take a second here), which then runs on the lane and keeps the end."""
+    sv = _Served(slow_s=1.0)
+    try:
+        raw, t_end = sv.post({"prompt": "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG", "max_tokens": 9, "stream": True,
+                              "temperature": 0})
+        for _ in range(100):
+            if "t1" in sv.seen:
+                break
+            sv.time.sleep(0.05)
+    finally:
+        sv.close()
+    assert raw.startswith(b"HTTP/1.1 200") and raw.rstrip().endswith(b"data: [DONE]"), raw[-200:]
+    assert "t0" in sv.seen and "t1" in sv.seen and sv.seen["how"] == "read", sv.seen
+    assert t_end < sv.seen["t1"] - 0.5, (t_end - sv.seen["t0"], sv.seen["t1"] - sv.seen["t0"])
+    assert sv.res.end is not None and sv.res.end.get("exact") is True, sv.res.end
+    return (f"the end of the connection {t_end - sv.seen['t0']:+.2f} s from the read's start, the read ended at "
+            f"{sv.seen['t1'] - sv.seen['t0']:.2f} s; end exact")
+
+
+def test_a_follow_up_during_the_read_waits_and_resumes_at_its_end():
+    """E17: the follow-up a client sends the moment it has its answer arrives while the read runs: it waits for the lane
+    (the engine lock, held through the close), is not served before the read ends, and then resumes at the end the read
+    kept, forwarding only its new rows."""
+    import threading
+    sv = _Served(slow_s=1.0)
+    first = {"prompt": "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG", "max_tokens": 9, "stream": True, "temperature": 0}
+    follow, waiting = {}, []
+
+    def during():
+        def go():
+            follow["raw"], follow["t"] = sv.post(dict(first, prompt=follow["prompt"], max_tokens=4))
+        threading.Thread(target=go, daemon=True).start()
+        for _ in range(40):
+            sv.time.sleep(0.025)
+            if sv.app.INFLIGHT.get("waiting", 0) >= 1:
+                waiting.append(True)
+                break
+    try:
+        # the follow-up's prompt is the first prompt, its answer and a new line: known once the first answer is out,
+        # so the hook takes it from the first request's context (the rows' tokens, which this tokenizer writes back)
+        def set_prompt():
+            follow["prompt"] = sv.app.STATE["tok"].decode(list(sv.app.STATE["last_ctx"])) + " AND THEN"
+            during()
+        sv.seen["during"] = set_prompt
+        raw, t_end = sv.post(first)
+        for _ in range(200):
+            if "t" in follow:
+                break
+            sv.time.sleep(0.05)
+        e = sv.res.end["at"] if sv.res.end is not None else None
+        last = dict(sv.app.STATE.get("last_prefill") or {})
+    finally:
+        sv.close()
+    assert raw.rstrip().endswith(b"data: [DONE]") and "t" in follow, (raw[-100:], follow.keys())
+    assert waiting, "the follow-up never waited in the queue"
+    assert follow["t"] > sv.seen["t1"], (follow["t"] - sv.seen["t0"], sv.seen["t1"] - sv.seen["t0"])
+    assert last.get("kind") == "end" and last.get("reused") == e, (last, e)
+    assert follow["raw"].rstrip().endswith(b"data: [DONE]"), follow["raw"][-200:]
+    return (f"the follow-up waited ({sv.app.INFLIGHT.get('served')} served), then resumed at the end {e} and forwarded "
+            f"{last.get('forwarded')} rows")
 
 
 if __name__ == "__main__":
