@@ -4216,6 +4216,12 @@ def _spec() -> ServeSpec:
     return STATE.get("spec") or DEFAULT_SPEC
 
 
+def _think_close() -> str:
+    """The text a budget's close writes (ThinkBudget's forced close): the family's own (`ReasoningSpec.close`), else
+    the shared vendor phrase."""
+    return _spec().reasoning.close or ThinkBudget.PHRASE
+
+
 def _answer(ctx, start: int, extra, think) -> str:
     """The text written after the reasoning block (all of it when the prompt did not open one),
     hidden tokens included: after a hidden turn the answer is what follows its empty block."""
@@ -11385,8 +11391,12 @@ class Handler(BaseHTTPRequestHandler):
             # its turn inside the block. A request that asked for none is served as before.
             # SRV-899: a family's own default level (`ReasoningSpec.effort.default`) caps a request that nobody else
             # decided: no client budget, no plan that decides the effort, no --think-budget. It closes with
-            # ThinkBudget's phrase, after the answer reserve below
+            # ThinkBudget's close (the family's, `_think_close`), after the answer reserve below
             default_cap = 0
+            # the close the reserve counts is the one that will be written: a monitor that acts holds the cap and
+            # closes with its own (the vendor's phrase, hidden), ThinkBudget with the family's (`_think_close`)
+            close_text = (ThinkBudget.PHRASE if sup is not None and n_choices == 1 and sup.mode == "on"
+                          else _think_close())
             eff = _spec().reasoning.effort
             decides = plan is not None and plan.decides_effort
             if eff.default and in_think and not budget and not client.asked and not decides:
@@ -11398,7 +11408,7 @@ class Handler(BaseHTTPRequestHandler):
                 # the thinking cannot spend the whole output limit and cut the JSON (UT1: a
                 # 270-token think block, then `{"name": "Margot Ellery", "age": 41, "t` at
                 # max_tokens 300)
-                closer = len(tok(ThinkBudget.PHRASE, add_special_tokens=False).input_ids)
+                closer = len(tok(close_text, add_special_tokens=False).input_ids)
                 cap, reserve = thinking_mod.with_reserve(
                     budget, max_new, STATE.get("answer_reserve", thinking_mod.AUTO), closer)
                 lowered = cap != budget
@@ -11410,8 +11420,8 @@ class Handler(BaseHTTPRequestHandler):
                         "lowered": lowered}
                 budget = cap
             if client.asked and in_think:
-                # the closing phrase is counted in: it streams where no monitor hides it
-                closer = len(tok(ThinkBudget.PHRASE, add_special_tokens=False).input_ids)
+                # the close is counted in (`close_text`): it streams where no monitor hides it
+                closer = len(tok(close_text, add_special_tokens=False).input_ids)
                 cap, reserve = thinking_mod.with_reserve(
                     budget, max_new, STATE.get("answer_reserve", thinking_mod.AUTO), closer)
                 lowered = cap != budget
@@ -11427,7 +11437,7 @@ class Handler(BaseHTTPRequestHandler):
             if default_cap and in_think and not json_answer:
                 # the family's default cap leaves the answer its reserve, as a client's budget does; `lowered`
                 # stays as it is, so the close is ThinkBudget's own
-                closer = len(tok(ThinkBudget.PHRASE, add_special_tokens=False).input_ids)
+                closer = len(tok(close_text, add_special_tokens=False).input_ids)
                 cap, reserve = thinking_mod.with_reserve(
                     budget, max_new, STATE.get("answer_reserve", thinking_mod.AUTO), closer)
                 print(f"[think] {cid} server default: answer reserve {reserve} of {max_new} -> cap {cap}",
@@ -11481,7 +11491,7 @@ class Handler(BaseHTTPRequestHandler):
             arms = sup.arms if sup is not None and STATE.get("think_stall", True) else None
             if sup is not None:
                 sup.req.max_tokens = max_new
-            think = ThinkBudget(tok, budget, arms=arms)
+            think = ThinkBudget(tok, budget, phrase=_think_close(), arms=arms)
             rec.live_refs = (think, None)              # read by the live sampler
             prompt_ids = prompt.tolist()
             # SR1: the shadow reader is fed this turn's served prompt (host work only; it reads
@@ -11703,7 +11713,7 @@ class Handler(BaseHTTPRequestHandler):
                         # are generated one after another, and never replayed from the cache.
                         pstop = (PatternStop(*STATE["pattern_stop"])
                                  if STATE.get("pattern_stop") else None)
-                        think = ThinkBudget(tok, budget, arms=arms)
+                        think = ThinkBudget(tok, budget, phrase=_think_close(), arms=arms)
                         rec.live_refs = (think, None)
                         lpr = lp_mod.Recorder(lp_top) if lp_top is not None else None
                         source = open_source(sampler.for_choice(ci), think, pstop, lpr, None)

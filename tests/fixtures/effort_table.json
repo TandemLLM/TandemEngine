@@ -2,7 +2,7 @@
  "about": "tests/test_effort_table.py: every family's template call, prompt and budget for each effort a request can carry. Written on the tree named here; a family's rows change only with its spec.",
  "made_on": {
   "engine": "87137125",
-  "how": "tests/test_effort_table.py --write on a tree of origin/main 87137125 (the six families' rows and plan rows, TandemApp 7207618 at TANDEMAPP_SRC), then --write --families hy_v4_flash --with-plan on 185d3148 with HY4_TOKENIZER at the hy4-3.56 pack (Hy4-flash's rows, plan rows and real-template rows), merged; DGX Spark, 2026-11-20",
+  "how": "tests/test_effort_table.py --write on a tree of origin/main 87137125 (the six families' rows and plan rows, TandemApp 7207618 at TANDEMAPP_SRC), then --write --families hy_v4_flash --with-plan on 185d3148 with HY4_TOKENIZER at the hy4-3.56 pack (Hy4-flash's rows, plan rows and real-template rows), merged; DGX Spark, 2026-11-20; then SRV-899 (hy4-m1-close, the family's close ReasoningSpec.close): Hy4-flash's rows (no plan) written again with --write --families hy_v4_flash on a CPU and merged; only budget and the [think] lines moved, where the answer reserve counts its close; the plan rows kept (an acting monitor closes with the vendor's phrase); its real-template rows kept (the close is no part of a prompt); 2026-11-21",
   "hy_v4_flash": "185d3148",
   "tandemapp": "7207618"
  },
@@ -40859,7 +40859,7 @@
    "think": []
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -40873,7 +40873,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=-|limit=32768": {
@@ -40895,7 +40895,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -40909,7 +40909,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=low|limit=32768": {
@@ -40931,7 +40931,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -40945,7 +40945,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=medium|limit=32768": {
@@ -40967,7 +40967,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -40981,7 +40981,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=off|limit=32768": {
@@ -41003,7 +41003,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -41017,7 +41017,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (chat_template_kwargs.reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=high|default=xhigh|limit=32768": {
@@ -41339,7 +41339,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41353,11 +41353,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=-|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41371,11 +41371,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41389,11 +41389,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=low|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41407,11 +41407,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41425,11 +41425,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=medium|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41443,11 +41443,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41461,11 +41461,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=off|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41479,11 +41479,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41497,11 +41497,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=max|default=xhigh|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -41515,11 +41515,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -41533,7 +41533,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=-|limit=32768": {
@@ -41555,7 +41555,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -41569,7 +41569,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=low|limit=32768": {
@@ -41591,7 +41591,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -41605,7 +41605,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=medium|limit=32768": {
@@ -41627,7 +41627,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -41641,7 +41641,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=off|limit=32768": {
@@ -41663,7 +41663,7 @@
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -41677,7 +41677,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (chat_template_kwargs.reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=medium|default=xhigh|limit=32768": {
@@ -42039,7 +42039,7 @@
    "think": []
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42053,11 +42053,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=-|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42071,11 +42071,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42089,11 +42089,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=low|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42107,11 +42107,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42125,11 +42125,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=medium|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42143,11 +42143,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42161,11 +42161,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=off|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42179,11 +42179,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42197,11 +42197,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|kwargs.reasoning_effort=xhigh|default=xhigh|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -42215,7 +42215,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (chat_template_kwargs.reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|max_reasoning_tokens=512|default=-|limit=2048": {
@@ -42399,7 +42399,7 @@
    ]
   },
   "hy_v4_flash|nothing|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42414,7 +42414,7 @@
    "status": "200",
    "think": [
     "[think] <cid> server default medium: cap 8192",
-    "[think] <cid> server default: answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> server default: answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|nothing|default=-|limit=32768": {
@@ -42437,7 +42437,7 @@
    ]
   },
   "hy_v4_flash|nothing|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42452,7 +42452,7 @@
    "status": "200",
    "think": [
     "[think] <cid> server default medium: cap 8192",
-    "[think] <cid> server default: answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> server default: answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|nothing|default=low|limit=32768": {
@@ -42475,7 +42475,7 @@
    ]
   },
   "hy_v4_flash|nothing|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42490,7 +42490,7 @@
    "status": "200",
    "think": [
     "[think] <cid> server default medium: cap 8192",
-    "[think] <cid> server default: answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> server default: answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|nothing|default=medium|limit=32768": {
@@ -42545,7 +42545,7 @@
    "think": []
   },
   "hy_v4_flash|nothing|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42560,7 +42560,7 @@
    "status": "200",
    "think": [
     "[think] <cid> server default medium: cap 8192",
-    "[think] <cid> server default: answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> server default: answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|nothing|default=xhigh|limit=32768": {
@@ -42583,7 +42583,7 @@
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42597,7 +42597,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=-|limit=32768": {
@@ -42619,7 +42619,7 @@
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42633,7 +42633,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=low|limit=32768": {
@@ -42655,7 +42655,7 @@
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42669,7 +42669,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=medium|limit=32768": {
@@ -42691,7 +42691,7 @@
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42705,7 +42705,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=off|limit=32768": {
@@ -42727,7 +42727,7 @@
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42741,7 +42741,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning.enabled), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning.enabled|default=xhigh|limit=32768": {
@@ -42763,7 +42763,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42777,7 +42777,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=-|limit=32768": {
@@ -42799,7 +42799,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42813,7 +42813,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=low|limit=32768": {
@@ -42835,7 +42835,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42849,7 +42849,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=medium|limit=32768": {
@@ -42871,7 +42871,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42885,7 +42885,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=off|limit=32768": {
@@ -42907,7 +42907,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -42921,7 +42921,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 16384 (reasoning_effort), in force 16384, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=high|default=xhigh|limit=32768": {
@@ -43123,7 +43123,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43137,11 +43137,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=-|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43155,11 +43155,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43173,11 +43173,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=low|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43191,11 +43191,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43209,11 +43209,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=medium|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43227,11 +43227,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43245,11 +43245,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=off|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43263,11 +43263,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43281,11 +43281,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=max|default=xhigh|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43299,11 +43299,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -43317,7 +43317,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=-|limit=32768": {
@@ -43339,7 +43339,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -43353,7 +43353,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=low|limit=32768": {
@@ -43375,7 +43375,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -43389,7 +43389,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=medium|limit=32768": {
@@ -43411,7 +43411,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -43425,7 +43425,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=off|limit=32768": {
@@ -43447,7 +43447,7 @@
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -43461,7 +43461,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 8192 (reasoning_effort), in force 8192, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=medium|default=xhigh|limit=32768": {
@@ -43823,7 +43823,7 @@
    "think": []
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43837,11 +43837,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=-|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43855,11 +43855,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43873,11 +43873,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=low|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43891,11 +43891,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43909,11 +43909,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=medium|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43927,11 +43927,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43945,11 +43945,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=off|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43963,11 +43963,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43981,11 +43981,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|reasoning_effort=xhigh|default=xhigh|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "633089891729e8af",
    "kwargs": {
@@ -43999,11 +43999,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (reasoning_effort), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=-|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44017,11 +44017,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=-|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44035,11 +44035,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=low|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44053,11 +44053,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=low|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44071,11 +44071,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=medium|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44089,11 +44089,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=medium|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44107,11 +44107,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=off|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44125,11 +44125,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=off|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44143,11 +44143,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=xhigh|limit=2048": {
-   "budget": 1425,
+   "budget": 1535,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44161,11 +44161,11 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1425"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 512 of 2048 -> cap 1535"
    ]
   },
   "hy_v4_flash|thinking.type=enabled|default=xhigh|limit=32768": {
-   "budget": 30609,
+   "budget": 30719,
    "calls": 3,
    "calls_sha": "529b7421bfdb6bbc",
    "kwargs": {
@@ -44179,7 +44179,7 @@
    "prompt_sha": "8ee064a5a06333f4",
    "status": "200",
    "think": [
-    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30609"
+    "[think] <cid> client budget 0 (thinking.type), in force none, answer reserve 2048 of 32768 -> cap 30719"
    ]
   },
   "lfm2_moe|enable_thinking=false|default=-|limit=2048": {

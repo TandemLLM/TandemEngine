@@ -385,9 +385,11 @@ class _Spy:
         app.generate_stream = self.real
 
 
-def _handler(b: dict, mode=None, cond=None, reserve=None, headers=None, think_budget=0):
+def _handler(b: dict, mode=None, cond=None, reserve=None, headers=None, think_budget=0, spec=None):
     serve(None)
     app.STATE.update(tok=frame.MonTok(), think_budget=think_budget)
+    if spec is not None:
+        app.STATE["spec"] = spec
     if reserve is not None:
         app.STATE["answer_reserve"] = reserve
     if cond is not None:
@@ -457,6 +459,27 @@ def test_over_the_handler_raw_hermes_closes_with_the_phrase_and_answers():
     assert u["completion_tokens_details"]["reasoning_tokens"] == _reasoning_count(ids)
     assert u["completion_tokens"] > u["completion_tokens_details"]["reasoning_tokens"]
     assert "client budget 8192 (reasoning_effort)" in log and f"cap {cap}" in log, log
+
+
+def test_over_the_handler_a_familys_own_close_streams_in_place_of_the_phrase():
+    """SRV-893 class: a family's spec names its close (`ReasoningSpec.close`, Hy4-flash: its end tag alone): on the
+    raw route the budget closes with it, no vendor sentence before it and no blank lines after, the answer follows,
+    and the reserve counts that close. The default spec's close is the phrase as before (the test above)."""
+    from engine.models.adapter import ReasoningSpec, ServeSpec
+    own = ServeSpec(reasoning=ReasoningSpec(close="</think>"))
+    assert app.ServeSpec().reasoning.close is None and ReasoningSpec().close is None
+    b = hermes("medium", 160, stream=False, reasoning_format="tags")
+    for spec, closer in ((own, "</think>"), (_hy4(), "</think>")):
+        raw, calls, log = _handler(b, reserve=20, spec=spec)
+        text = json.loads(raw)["choices"][0]["message"]["content"]
+        c = len(frame.MonTok().encode(closer))
+        cap = 160 - 20 - c
+        assert c < P and calls[0]["budget"] == cap, (calls[0]["budget"], cap)
+        assert PHRASE not in text and text.count("</think>") == 1, text
+        assert text.split("</think>", 1)[1].strip(), text
+        assert frame.MonTok().encode(app._think_close()) == [frame.CLOSE], app._think_close()
+    raw, calls, _ = _handler(b, reserve=20)
+    assert PHRASE in json.loads(raw)["choices"][0]["message"]["content"] and calls[0]["budget"] == 160 - 20 - P
 
 
 def test_over_the_handler_hermes_streamed_gets_an_answer():
