@@ -18,9 +18,13 @@ ARCH = register(Arch(
     # lets the model write it); side slots (ENG-485: lanes that take turns, each the full window). Its template
     # takes three modes (max, high, no_think; the pack's chat_template.jinja): the levels from low to high are its
     # high, and only a request's own xhigh or max is its max. With no effort asked and nothing else deciding,
-    # medium: the mode high with that level's cap (SRV-899, ENG-468)
+    # medium: the mode high with that level's cap (SRV-899, ENG-468). A block a budget ends closes as the template
+    # ends a finished one, its </think:opensource> with the answer straight after, in place of the shared close
+    # (Qwen's vendor sentence, then blank lines, which the template never writes). On the raw route the scouting run
+    # on 7f2a41f5 found budget-closed answers holding reasoning, the sentence itself once; that the shared close
+    # caused it is not shown
     spec=ServeSpec(tool_format="argkey", call_wrapper=("<tool_calls>", "</tool_calls>"), side_slots=True,
-                   reasoning=ReasoningSpec(effort=EffortSpec(
+                   reasoning=ReasoningSpec(close="</think>", effort=EffortSpec(
                        words=(("low", "high"), ("medium", "high"), ("high", "high"), ("xhigh", "max")),
                        default="medium"))),
     # Flash-Next's reference primitives (the stable top-k, the expert bank, an EXL3 projection's product) and

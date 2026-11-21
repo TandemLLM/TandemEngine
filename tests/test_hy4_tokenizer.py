@@ -143,6 +143,64 @@ def test_the_real_template_thinking_on_and_off():
     return f"on ends with {o}, off with {o} {c}; the effort line reads high, no_think and max (a word not its own: high)"
 
 
+def _closed_stream(tok, close: str, prompt: list, reasoning: str, answer: str, fmt: str) -> tuple[list, list]:
+    """A budget-closed turn as the server streams it: the prompt opens the block (the template's generation prompt),
+    the model reasons, the server writes `close` (ThinkBudget's forced close, the ids the model reads next), the model
+    answers. Returns (the forced ids, the (field, text) pieces the reasoning split hands out, piece by piece)."""
+    from engine.spec import ThinkBudget
+    from server.stream import Detokenizer, Reasoning, opens_think
+    tb = ThinkBudget(tok, 4, phrase=close).start(prompt)
+    assert tb.inside, "the template's generation prompt opens the block"
+    r = tok(reasoning, add_special_tokens=False).input_ids
+    tb.observe(r)
+    forced = list(tb.close_ids)
+    tb.observe(forced)
+    assert tb.done and not tb.inside, "the forced close ends the block for the budget"
+    a = tok(answer, add_special_tokens=False).input_ids
+    split = Reasoning(fmt, in_think=opens_think(tok.decode(prompt[-8:], skip_special_tokens=False)))
+    det = Detokenizer(lambda seq: tok.decode(seq, skip_special_tokens=True))
+    ids, out = [], []
+    for t in r + forced + a:
+        ids.append(t)
+        out += split.push(det.push(ids))
+    out += split.push(det.flush(ids)) + split.finish()
+    return forced, out
+
+
+def test_a_forced_close_ends_the_reasoning_where_the_answer_starts():
+    """SRV-893 class (the scouting run on 7f2a41f5: on the raw route a budget-closed Hy4-flash turn's answer held
+    reasoning, once the vendor's close phrase itself): the family's spec closes a budget-ended block the way its
+    template ends a finished one, `</think:opensource>` and the answer straight after (no sentence, no blank lines).
+    With the pack's tokenizer: the forced ids are that one token, the reasoning field is the model's reasoning to the
+    close, the next text the split sees is the answer, and in `tags` the block's text ends with the close."""
+    if SKIP:
+        return SKIP
+    from engine.models import REGISTRY
+    from engine.spec import ThinkBudget
+    tok = _real()
+    close = REGISTRY["hy_v4_flash"].spec.reasoning.close
+    msgs = [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "What is 2 + 2?"}]
+    prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=True)
+    prompt = list(prompt["input_ids"] if hasattr(prompt, "keys") else prompt)
+    reasoning, answer = "The user asks for 2 + 2. That is", "2 + 2 = 4."
+    end = tok._tok.convert_tokens_to_ids(f"</think{S}>")
+    forced, out = _closed_stream(tok, close, prompt, reasoning, answer, "reasoning_content")
+    assert forced == [end], (forced, [tok._tok.convert_ids_to_tokens(t) for t in forced])
+    got = {f: "".join(t for k, t in out if k == f) for f in ("reasoning", "content")}
+    assert got == {"reasoning": reasoning, "content": answer}, got
+    fields = [k for k, t in out if t]
+    assert fields == sorted(fields, key=("reasoning", "content").index), f"answer text inside the reasoning: {out}"
+    _, tagged = _closed_stream(tok, close, prompt, reasoning, answer, "tags")
+    block = "".join(t for k, t in tagged if k == "tagged")
+    assert block.endswith("</think>") and block[:-len("</think>")] == reasoning, block
+    assert "".join(t for k, t in tagged if k == "content") == answer, tagged
+    # the shared close (every other family's) on this tokenizer: the vendor's sentence, then the same end token, then
+    # blank lines the template never writes after it; it stays every other family's close
+    old = ThinkBudget(tok, 4).close_ids
+    assert old[-2] == end and tok.decode(old[-1:]) == "\n\n" and "Considering the limited time" in tok.decode(old), old
+    return f"the forced close is {forced} ({tok._tok.convert_ids_to_tokens(end)}); the next text is the answer"
+
+
 def test_the_real_template_tools_and_a_call_round_trip():
     if SKIP:
         return SKIP

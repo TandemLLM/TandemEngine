@@ -247,6 +247,47 @@ def _arm_limits(pack: dict, prof, variant: str = "main") -> tuple:
     return float(got[0]), float(got[1]), int(got[2]), " ".join(got[3:])
 
 
+def _arm_mode(pack: dict, prof, site: dict | None = None) -> tuple:
+    """(QSE_MODE, QSE_EXT, CONDUCTOR, QSE_CONDUCTOR_CONFIG is off) as the arm's server start reads them: the arm's own
+    state made (its conductor folder), its run/setup.env written, the tree's ops/serve.env sourced by bash."""
+    d = Path(tempfile.mkdtemp(prefix="gate-mode-"))
+    tree = d / "tree"
+    shutil.copytree(os.path.join(ROOT, "ops"), tree / "ops", ignore=shutil.ignore_patterns("__pycache__"))
+    ol = server.OpsLauncher(prof, pack, site or {})
+    ol.prepare(tree)
+    arm = server.Arm("head", "main", tree, 8105, d / "home", arm_env(prof, pack, "head", "main"))
+    ol.arm_state(arm)
+    (tree / "run" / "setup.env").write_text(ol.setup_env(arm))
+    out = subprocess.run(["bash", "-c", 'set -a; . "$0/ops/serve.env"; echo "$QSE_MODE|$QSE_EXT|$CONDUCTOR|'
+                          '$QSE_CONDUCTOR_CONFIG"', str(tree)],
+                         capture_output=True, text=True, env={"HOME": str(d), "PATH": os.environ.get("PATH", "")})
+    shutil.rmtree(d, ignore_errors=True)
+    got = out.stdout.strip().split("|")
+    assert len(got) == 4, out.stdout + out.stderr
+    return got[0], got[1], got[2], got[3] == "off"
+
+
+def test_a_gate_arm_serves_the_engine_alone():
+    """The gate measures the engine, not the chat layer (tools/gate/client.py: every request X-Tandem raw). An arm's
+    state makes a conductor folder and its setup.env names it, and serve.env (OPS-260) starts chat mode for an existing
+    conductor folder when nothing sets QSE_MODE, which loads TandemApp's extension (QSE_EXT tandemapp.engine_ext): an
+    engine whose Python has no TandemApp refused to start ("[ext] REFUSING", the gate run on 70c250f6). Every arm is in
+    engine mode, conductor raw; a site that names a conductor copy (`conductor_from`) asks for chat mode, as before."""
+    from tools.gate.hw.gb10 import GB10
+    g = GB10(Fingerprint(name="NVIDIA GB10", memory_gib=119.7, cc="12.1", unified=True))
+    packs = load_packs()
+    for pid in ("flashnext-3.05", "hy4-3.56", "flint-exl3-4.0"):
+        pack = dict(packs[pid], id=pid)
+        assert _arm_mode(pack, g) == ("engine", "", "raw", True), (pid, _arm_mode(pack, g))
+    cond = Path(tempfile.mkdtemp(prefix="gate-cond-"))
+    (cond / "config.json").write_text("{}")
+    mode, ext, conductor, off = _arm_mode(dict(packs["flashnext-3.05"], id="flashnext-3.05"), g,
+                                          {"conductor_from": str(cond)})
+    shutil.rmtree(cond, ignore_errors=True)
+    assert (mode, ext, off) == ("chat", "tandemapp.engine_ext", False), (mode, ext, conductor, off)
+    return "three packs: engine mode, conductor raw, no extension; a site's conductor copy: chat"
+
+
 def test_a_pack_with_its_own_limits_keeps_them_against_the_profiles():
     """OPS-314: the gb10 profile's 66/77 GiB, written after the pack's profile, reached a Hy4-flash start, where the
     model takes its pack's own limits only from serve.env's defaults (serving.py `SERVER_LIMITS`): it kept 66/77, under

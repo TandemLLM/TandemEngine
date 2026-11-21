@@ -57,8 +57,8 @@ flint-exl3-4.0:
 
 # OPS-314: Hy4-flash (engine/models/hy4_flash), one entry a pack, both run (SRV-897 point 5). Its profile leaves the
 # memory ceiling and peak at serve.env's defaults, and with those its model sets the pack's own from what its load
-# holds (serving.py `memory_limits`: 85/92 GiB logged on hy4-3.56 and 77/84 on hy4-3.08 at 262,144 tokens); the
-# hardware profile's ceiling and peak would bypass them, so `limits: pack`. The plain arm is speculation off; the
+# holds (serving.py `memory_limits`: 81/88 GiB logged on hy4-3.56 and 72/79 on hy4-3.08 at 262,144 tokens, on
+# 70c250f6); the hardware profile's ceiling and peak would bypass them, so `limits: pack`. The plain arm is speculation off; the
 # spec arm drafts with the profile's own `--drafter mtp` (DFly2, the lookup, StairCut). Rows of one request at a
 # time until two clients at once are proved on the family (ENG-485). Main has no hy4_flash family until the branch
 # merges, so the base side is the branch's 7f2a41f5, the head the program's proofs start from: drop `base` then

@@ -120,6 +120,10 @@ class ReasoningSpec:
     # nothing added
     off_note: str | None = None
     off_role: str = "developer"
+    # the text the server writes to close a reasoning block a budget ends (ThinkBudget's forced close, the ids the model
+    # reads next), in the template's plain tags, which the family's tokenizer turns into its own. None: the shared
+    # close, the vendor's sentence, `</think>` and blank lines (engine/spec.py ThinkBudget.PHRASE)
+    close: str | None = None
     # SRV-899: how its template takes an effort level, and its own server default
     effort: EffortSpec = field(default_factory=EffortSpec)
 
