@@ -2727,6 +2727,11 @@ def _runner_decode(par, eng, drafter, sampler, pen, pstop, ctx, pos, tok, n_out,
         if slot.phase == "runner" and slot.owner == owner:
             par.turn.acquire(i)
             slot.phase = ""
+            # SRV-885: with the turn no round is in flight: the task leaves the runner here, before the request's
+            # teardown trims the lane's pages or gives the slot to the next request. A round the runner picked it
+            # for before the client left drops it under the turn (`Runner._taken_back`); without this turn (the
+            # slot given back) `cancel` does the same
+            runner.drop(task)
     if task.err is not None:
         raise task.err
     return task if task.back is not None else None

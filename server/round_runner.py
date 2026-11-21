@@ -289,7 +289,9 @@ class Runner:
                       # rounds by the slots in their verify pass (the concurrency proof: N rows a round)
                       "joint_hist": {},
                       # SPD-249: hand-backs by point, and the rounds a task sat out for its SP1 verdict
-                      "back": {}, "sp1_marks": 0, "sat_out": 0, "verdict_wait_ms": 0.0}
+                      "back": {}, "sp1_marks": 0, "sat_out": 0, "verdict_wait_ms": 0.0,
+                      # SRV-885: tasks whose client left while the runner waited for the turn, ended before the round
+                      "taken_back": 0}
         # host ms a round by phase (summed; `report`): the proposals to their drafts, the packed draft's
         # issue, the proposals' rest (it reads the draft back), the verify's issue, the walk (it reads the
         # pass back), the tails
@@ -461,7 +463,7 @@ class Runner:
                 live = [t for t in self.tasks if not t.done]
                 for t in self.tasks:
                     if t.cancel and not t.done:
-                        t.end("cancelled")
+                        self._end_task(t, "cancelled")
                 self.tasks = [t for t in self.tasks if not t.done]
                 if not self.tasks and (self._gc_off or self._busy_on or self._held or self._gc_full_due):
                     idle = True                 # SPD-249: the idle work, after the lock (`_idle`)
@@ -495,6 +497,12 @@ class Runner:
             if turn is not None:
                 self._acquire(turn)
             try:
+                # SRV-885: the wait for the turn can last a prefill chunk of another lane, and a client may leave in it.
+                # Its handler sets `cancel`, then needs the turn to tear its lane down (its pages go back): with the
+                # turn held here, a task taken back since the pick ends now, before any of the round's work reads it
+                live = self._taken_back(live)
+                if not live:
+                    continue                    # the turn goes back in the `finally`
                 self._round(live)
             except BaseException as exc:                                # noqa: BLE001
                 self.stats["errors"] += 1
@@ -510,6 +518,36 @@ class Runner:
                     if BUSY_WORK and turn.waiting():
                         self._hand_off()            # another holder takes the turn next
                     turn.release("runner")
+
+    @staticmethod
+    def _end_task(t: Task, why: str) -> None:
+        """A task ends outside a round (under `cv`): a draft the last round's tails queued for it is closed unread."""
+        if t.steps is not None:
+            t.steps.close()
+            t.steps = None
+        t.pre = False
+        t.end(why)
+
+    def _taken_back(self, live: list) -> list:
+        """SRV-885 (the runner holds the turn): the picked tasks whose client left since the pick end here; the rest
+        decode this round."""
+        with self.cv:
+            for t in live:
+                if t.cancel and not t.done:
+                    self._end_task(t, "cancelled")
+                    self.stats["taken_back"] += 1
+            return [t for t in live if not t.done]
+
+    def drop(self, task: Task) -> None:
+        """SRV-885: the slot's thread takes its request back (`_runner_decode`'s `finally`, holding the turn, so no round
+        is in flight): the task ends and leaves the runner before the lane is torn down, and no later round can read
+        a lane whose pages went back or that the slot's next request holds."""
+        with self.cv:
+            if not task.done:
+                self._end_task(task, "cancelled")
+            if task in self.tasks:
+                self.tasks.remove(task)
+            self.cv.notify_all()
 
     def _bind(self, t):
         from server import slots as slots_mod
@@ -982,8 +1020,10 @@ class Runner:
         """Each task's proposal to its draft, then one packed draft for them (queued, not read). `deadline`
         False (PIPE, inside a tail): the deadline is the next round's to check, after the stream."""
         from engine.drafters import tree_steps
+        from engine import kvpool
         from engine.spec import draft_room
         app = self.app
+        paged = kvpool.POOL is not None
         self._collect = []
         if MTP_PACK and sum(1 for t in tasks if not t.done) > 1:
             self._mtp_collect = []
@@ -1000,6 +1040,16 @@ class Runner:
             if deadline and t.deadline is not None and t.deadline.expired():
                 t.end("deadline")
                 continue
+            if paged and callable(getattr(t.eng.kv, "ensure", None)):
+                # SRV-885: the rows the draft reads are committed before it runs, as `_verify` commits a pass's: a
+                # draft head gathers its picks (the family's read floor at least) before it masks them. A pool that
+                # cannot give them ends this lane, not the round; committed already, it is one compare
+                try:
+                    t.eng.kv.ensure(t.pos + 1)
+                except kvpool.PoolFull as exc:
+                    t.err = exc
+                    t.end("error")
+                    continue
             app._row_cap(self.pool, t.drafter)
             t.steps, t.tree = app._launch(tree_steps(t.drafter, t.ctx,
                                                      draft_room(t.think, min(t.k, t.max_new - t.n_out))))
