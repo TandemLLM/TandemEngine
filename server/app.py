@@ -47,7 +47,7 @@ from engine import capture_lock  # noqa: E402  (no CUDA call inside a graph capt
 from engine.settings import SETTINGS as _S  # noqa: E402  (every QWEN38_* knob)
 from engine.drafters import tree_steps  # noqa: E402
 from engine.methods import walk  # noqa: E402  (ENG-E8 the walk every model's blocks take)
-from engine.spec import Relax, ThinkBudget  # noqa: E402
+from engine.spec import Relax, ThinkBudget, draft_room  # noqa: E402
 from engine.penalty import PatternStop, PenaltySpec, PenaltyState  # noqa: E402
 from engine.sample import Sampler  # noqa: E402
 from server.tokcache import SegmentCache, opens_think_ids  # noqa: E402
@@ -2898,6 +2898,47 @@ def _end_cut_said(rows: int) -> None:
         print(f"[spec] the accepted path ran {rows} row(s) past the end: not committed", flush=True)
 
 
+def _act_field(act, name: str):
+    """A field of an extension's act: a mapping's key or (since 1.2) an object's attribute."""
+    return act.get(name) if isinstance(act, dict) else getattr(act, name, None)
+
+
+#: verified blocks a reasoning cut shortened (`_think_cut`), since the start
+THINK_CUTS = {"blocks": 0, "rows": 0}
+
+
+def _think_cut(think, new: list[int]) -> int | None:
+    """How many of a verified block's `new` tokens the generation keeps so that a close decided
+    at a token count inside the reasoning lands where the plain step's does (`ThinkBudget.cut`:
+    the budget, a supervisor's cap, a stall arm firing), for every family and every drafted path.
+    The plain step decides after each token; a drafted block used to be looked at whole, so the
+    budget's close came after the block's last token, past the cap (fncheck, Hy4, both packs:
+    reasoning [49, 54] against cap 48, [1026, 1030] against the plan's 1,024). None: keep them all.
+
+    The kept tokens are a shorter accept, not SRV-530's cut: the rows of all of them but the last
+    are committed (`path[:cut]`, a chain's `keep = cut`), and the last kept token is the next
+    forward's anchor, as a bonus token is. `_end_cut` keeps the last token's row too, because the
+    generation ends there; after a reasoning cut it goes on, and the close (`_force_close`) and
+    the next block forward `ctx[-1]` at `pos`."""
+    if think is None:
+        return None
+    c = think.cut(new)
+    return c if c is not None and c < len(new) else None
+
+
+def _think_cut_said(rows: int) -> None:
+    """A block's rows past a reasoning cut were left uncommitted: counted (THINK_CUTS) and said."""
+    THINK_CUTS["blocks"] += 1
+    THINK_CUTS["rows"] += max(0, int(rows))
+    if STATE.get("verbose"):
+        print(f"[spec] the accepted path ran {rows} row(s) past a reasoning cut: not committed",
+              flush=True)
+
+
+#: a proposal's length under the reasoning's next cap (engine/spec.py `draft_room`)
+_draft_room = draft_room
+
+
 #: #98: `cache_prompt: false`. The caches compare a cold prompt under this first key, which no token
 #: id has, so no cache resumes it and no anchor it leaves matches a later prompt; and file it under
 #: this session, so the conversation in place is stashed, parked or spilled as for another client's
@@ -3276,7 +3317,7 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
                     tree, ahead = _collect(*ahead), None
                 else:
                     _row_cap(par, drafter)
-                    tree = drafter.propose_tree(ctx, min(k, max_new - n_out))
+                    tree = drafter.propose_tree(ctx, _draft_room(think, min(k, max_new - n_out)))
                 if par is not None:
                     _par_note(par, "draft_ms", len(par.decoding()), (time.perf_counter() - t_dr) * 1e3)
                 # the KV write counts NODES (anchor included) while the budget above
@@ -3368,6 +3409,12 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
                         # tokens a round on this slot: in a joint pass (by blocks in it) or alone
                         _par_note(par, "accept", f"joint{par.last_joint.get(_par_index(), 1)}"
                                   if vms is False else "alone", len(new))
+                    tc = _think_cut(think, new)
+                    if tc is not None:
+                        # a close decided at a count inside the reasoning lands where the plain
+                        # step's does: a shorter accept, before anything reads the block's end
+                        _think_cut_said(len(path) - tc)
+                        path, new = path[:tc], new[:tc]
                     if probe is not None:
                         j = next((i for i, t in enumerate(new) if t in eos), None)
                         if j is not None:
@@ -3418,8 +3465,8 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
                                          len(ctx))
                         if (think is None or not think.hit) and close is None:
                             _row_cap(par, drafter)
-                            ahead = _launch(tree_steps(drafter, ctx,
-                                                       min(k, max_new - n_out - len(new))))
+                            ahead = _launch(tree_steps(drafter, ctx, _draft_room(
+                                think, min(k, max_new - n_out - len(new)))))
                         sent = 0
                         try:
                             for t in new:
@@ -3485,7 +3532,7 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
                             tok = ctx[-1]
                     continue
             else:
-                draft = (drafter.propose(ctx, min(k, max_new - n_out))
+                draft = (drafter.propose(ctx, _draft_room(think, min(k, max_new - n_out)))
                          if drafter is not None else [])
                 # the block's KV write is `1 + len(draft)` rows (the anchor's own row is
                 # one of them) while every clamp above counts output tokens, and a drafter may
@@ -3608,6 +3655,11 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
                     break
                 new = draft[:n] + [picks[n]]
             keep = n + 1                     # the block's rows the commit keeps
+            tc = _think_cut(think, new)
+            if tc is not None:
+                # the reasoning cut, as in the tree loop: a shorter accept, the last kept token the anchor
+                _think_cut_said(keep - tc)
+                keep, new = tc, new[:tc]
             if probe is not None:
                 j = next((i for i, t in enumerate(new) if t in eos), None)
                 if j is not None:
@@ -11254,8 +11306,11 @@ class Handler(BaseHTTPRequestHandler):
                     tool_names=list(tool_names or ()), thinking_off=bool(client.off),
                     loop_escape=getattr(rec, "loop_escape", None))
                 sup = rec.sup = req_x.supervise(req_ev)
+            sp4_caps: list[int] = []         # SP4's reasoning caps, which SP1 closes at (`watch`)
             if sup is not None:
                 acts = sup.at_request(req_ev)
+                sp4_caps = [int(_act_field(a, "budget") or 0) for a in acts or ()
+                            if ext_mod.act_kind(a) == ext_mod.SET_THINK_BUDGET]
                 if acts and any(ext_mod.act_kind(a) == ext_mod.SET_CONSTRAINT for a in acts):
                     # engine-ext-v1 3.2 (ENG-458): the extension's constraint, carried out by the
                     # engine's own grammar as the request's own field would be; apply_request
@@ -11528,7 +11583,9 @@ class Handler(BaseHTTPRequestHandler):
             arms = sup.arms if sup is not None and STATE.get("think_stall", True) else None
             if sup is not None:
                 sup.req.max_tokens = max_new
-            think = ThinkBudget(tok, budget, phrase=_think_close(), arms=arms)
+            # the counts SP1 closes the block at, for a drafted block to stop at as at the budget
+            think_watch = (routed, *sp4_caps) if sup is not None else ()
+            think = ThinkBudget(tok, budget, phrase=_think_close(), arms=arms, watch=think_watch)
             rec.live_refs = (think, None)              # read by the live sampler
             prompt_ids = prompt.tolist()
             # SR1: the shadow reader is fed this turn's served prompt (host work only; it reads
@@ -11750,7 +11807,8 @@ class Handler(BaseHTTPRequestHandler):
                         # are generated one after another, and never replayed from the cache.
                         pstop = (PatternStop(*STATE["pattern_stop"])
                                  if STATE.get("pattern_stop") else None)
-                        think = ThinkBudget(tok, budget, phrase=_think_close(), arms=arms)
+                        think = ThinkBudget(tok, budget, phrase=_think_close(), arms=arms,
+                                            watch=think_watch)
                         rec.live_refs = (think, None)
                         lpr = lp_mod.Recorder(lp_top) if lp_top is not None else None
                         source = open_source(sampler.for_choice(ci), think, pstop, lpr, None)

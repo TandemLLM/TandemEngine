@@ -521,9 +521,13 @@ class ThinkBudget:
     # The parameters are the policy's; `StallArms` holds their state.
 
     def __init__(self, tokenizer, budget: int = 0, phrase: str | None = None,
-                 arms: dict | None = None):
+                 arms: dict | None = None, watch=()):
         self.budget = int(budget or 0)
         self.arms_cfg = arms or None
+        # The block's token counts at which a supervisor's SP1 may close it (the cap routed to the
+        # monitor, SP4's SET_THINK_BUDGET): a drafted block stops there as at the budget (`cut`,
+        # `room`), so SP1 is asked at the token the plain step asks it at. `hit` never reads them.
+        self.watch = tuple(sorted({int(c) for c in watch if c and int(c) > 0}))
         self.open_id = _special_id(tokenizer, "<think>")
         self.end_id = _special_id(tokenizer, "</think>")
         # The model does not always emit the SPECIAL token: on prompts that look like raw text
@@ -564,27 +568,85 @@ class ThinkBudget:
         """True when the tail of `ids` ends with the token sequence `seq`."""
         return bool(seq) and len(ids) >= len(seq) and list(ids)[-len(seq):] == list(seq)
 
+    def _move(self, t: int, seen: list[int], inside: bool) -> str:
+        """One token's move through the block, the one rule `observe` and `cut` share: `t` joins
+        `seen` (the short tail that finds the literal "<think>" / "</think>" sequences token by
+        token, whichever form the model chose), then "open" (the block opens at it), "out"
+        (outside the block), "close" (it closes the block: the special id, or the token that
+        completes the literal text) or "in" (a reasoning token, the one kind that counts)."""
+        seen.append(t)
+        if len(seen) > 8:
+            del seen[:-8]
+        if not inside:
+            return "open" if t == self.open_id or self._suffix_is(self.open_text, seen) else "out"
+        if t == self.end_id or self._suffix_is(self.end_text, seen):
+            return "close"
+        return "in"
+
     def observe(self, ids) -> None:
         for t in ids:
             if self.done:
                 return
-            # Keep a short tail so the literal "<think>" / "</think>" sequences are detectable
-            # token-by-token, whichever form the model chose.
-            self._seen.append(int(t))
-            if len(self._seen) > 8:
-                del self._seen[:-8]
-            if not self.inside:
-                if t == self.open_id or self._suffix_is(self.open_text, self._seen):
-                    self.inside = True
-                continue
-            if t == self.end_id or self._suffix_is(self.end_text, self._seen):
+            move = self._move(int(t), self._seen, self.inside)
+            if move == "open":
+                self.inside = True
+            elif move == "close":
                 self.inside, self.done = False, True
                 self.t_closed = time.perf_counter()
-            else:
+            elif move == "in":
                 self.n += 1
                 if self._arms is None or self.reason is not None:
                     continue
                 self.reason = self._arms.feed(int(t), self.n)
+
+    def _ahead(self) -> tuple[int, ...]:
+        """The counts ahead of `n` at which a close is decided at a count: the budget, `watch`."""
+        caps = ((self.budget,) if self.budget else ()) + self.watch
+        return tuple(c for c in caps if c > self.n)
+
+    @property
+    def room(self) -> int | None:
+        """The reasoning tokens before the next count at which a close is decided (the budget, a
+        `watch` cap), counted as `observe` counts them; None when none is ahead or the block is
+        not open. Never 0: a cap already reached is behind. A drafted proposal is no longer."""
+        if self.done or not self.inside:
+            return None
+        ahead = self._ahead()
+        return min(ahead) - self.n if ahead else None
+
+    def cut(self, ids) -> int | None:
+        """How many of a drafted block's `ids` its commit keeps so that a close decided at a token
+        inside the reasoning lands where the token-by-token decode's does: through the token at
+        which the budget is spent, a `watch` cap is reached or a stall arm fires (SP1 is asked
+        there). None: no such token in `ids` (too few, or the block closes first). Counted as
+        `observe` counts (the close and the literal close's last token do not count, a block may
+        open inside `ids`); nothing is observed, and the arms are fed on a copy and put back."""
+        if self.done or not ids:
+            return None
+        ahead = self._ahead()
+        arms = self._arms if self._arms is not None and self.reason is None else None
+        if not ahead and arms is None:
+            return None
+        first = min(ahead) if ahead else None
+        seen, inside, n = list(self._seen), self.inside, self.n
+        snap = arms.snapshot() if arms is not None else None
+        try:
+            for i, t in enumerate(ids):
+                move = self._move(int(t), seen, inside)
+                if move == "open":
+                    inside = True
+                elif move == "close":
+                    return None
+                elif move == "in":
+                    n += 1
+                    if first is not None and n >= first:
+                        return i + 1
+                    if arms is not None and arms.feed(int(t), n) is not None:
+                        return i + 1
+            return None
+        finally:
+            if snap is not None:
+                arms.restore(snap)
 
     def closes_in(self, ids) -> bool:
         """Would these tokens, observed next, close the open block? Nothing is observed."""
@@ -608,6 +670,13 @@ class ThinkBudget:
         if self.done or not self.inside:
             return False
         return bool(self.budget) and self.n >= self.budget
+
+
+def draft_room(think, count: int) -> int:
+    """A drafted proposal's length under the reasoning's next cap (`ThinkBudget.room`): no draft row
+    past the count where a close is decided; `count` itself when no cap is ahead (or no budget)."""
+    r = think.room if think is not None else None
+    return count if r is None else min(count, r)
 
 
 class StallArms:
@@ -640,6 +709,7 @@ class StallArms:
             self._last: list[int] = []       # the last `gram` tokens
             self._seen: set[int] = set()     # grams that end before the window
             self._streak = 0
+            self._added: list[int] | None = None   # during a dry run: the hashes it put in _seen
         if self.nov:
             self._recent: list[int] = []
             self._next = self.nov["min_tokens"]
@@ -674,6 +744,33 @@ class StallArms:
                     why = f"novelty({v:.2f})"
         return why
 
+    def snapshot(self) -> dict:
+        """What `restore` needs to undo the feeds after this call (`ThinkBudget.cut`'s dry run):
+        the small state copied, the append-only lists by length, the hashes added to `_seen`."""
+        s: dict = {"share": self.share}
+        if self._sizes:
+            s["tail"], s["runs"] = list(self._tail), list(self._runs)
+        if self.rep:
+            s["grams"], s["last"], s["streak"] = len(self._grams), list(self._last), self._streak
+            self._added = []
+        if self.nov:
+            s["recent"], s["next"] = list(self._recent), self._next
+        return s
+
+    def restore(self, s: dict) -> None:
+        """The arms as they were at `snapshot`."""
+        self.share = s["share"]
+        if self._sizes:
+            self._tail[:], self._runs[:] = s["tail"], s["runs"]
+        if self.rep:
+            del self._grams[s["grams"]:]
+            self._last[:], self._streak = s["last"], s["streak"]
+            for h in self._added or ():
+                self._seen.discard(h)
+            self._added = None
+        if self.nov:
+            self._recent[:], self._next = s["recent"], s["next"]
+
     def _repeat(self, t: int, n: int) -> str | None:
         r, last = self.rep, self._last
         g, w = r["gram"], r["window"]
@@ -684,7 +781,10 @@ class StallArms:
             self._grams.append(hash(tuple(last)))
         j = n - w - g                        # the gram starting here ends just before the window
         if j >= 0:
-            self._seen.add(self._grams[j])
+            h = self._grams[j]
+            if self._added is not None and h not in self._seen:
+                self._added.append(h)
+            self._seen.add(h)
         if n < r["min_tokens"] or n < w or n % r["every"]:
             return None
         window = self._grams[n - w:n - g + 1]

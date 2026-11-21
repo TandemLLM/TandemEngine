@@ -362,7 +362,7 @@ def test_the_lane_mode_is_decided_on_live_rounds_and_a_capture_sets_no_rate():
         r.app = NS(_row_cap=lambda pool, d: None, _launch=lambda steps: (None, None))
         joint = NS(joint_plain=True)
         r.tasks = [NS(done=False, pre=False, eng=NS(caps=joint), drafter=Drafter(), slot=NS(index=i), deadline=None,
-                      ctx=[1, 2, 3], k=4, max_new=512, n_out=0) for i in range(8)]
+                      ctx=[1, 2, 3], k=4, max_new=512, n_out=0, think=None) for i in range(8)]
         modes = []
         for _ in range(60):
             r.stats["rounds"] += 1
@@ -679,6 +679,81 @@ def test_spd249_a_d1_arm_stall_closes_through_sp1():
     assert all(fired) and all(kw["sup"].acted for _, _, kw in run), fired
     assert st["back"].get("sp1", 0) == 2, st["back"]
     return f"the arms fired ({fired}) and SP1 closed: texts equal"
+
+
+def _plain_refs(prompts, n, mk):
+    """Each request decoded one token a forward (no drafter, no pool) with `mk(i)`'s keywords: the text a
+    drafted request must write under the same cap."""
+    import torch
+    from server import app
+    import test_supervisor_frame as F
+    cfg = T.tiny_config()
+    w = T.FakeWeights(cfg, seed=18)
+    out = []
+    for i, p in enumerate(prompts):
+        T._setup([T._engine(cfg, w)], [None])
+        T._teardown()
+        app.STATE["tok"] = F.MonTok()
+        kw = mk(i)
+        with F.quiet(), torch.no_grad():
+            out.append(list(app.generate_stream(torch.tensor(p), n, set(), **kw)))
+    return out
+
+
+def test_a_spent_budget_closes_where_the_plain_decode_closes():
+    """ENG-476 (fncheck, Hy4: the drafted close came 1 to 5 reasoning tokens after the plain one): a drafted
+    block stops at the reasoning cap (`app._think_cut`), in the runner's tails as in the slot loop, with the
+    runner's pipe and without it (`QSE_RUNNER_PIPE=0`, as Hy4 serves). Both write what one token a forward
+    writes under the same budget, for caps at several offsets of a block."""
+    from engine.spec import ThinkBudget
+    import test_supervisor_frame as F
+    lines, saved = [], R.PIPE
+    try:
+        for pipe in (True, False):
+            R.PIPE = pipe
+            for b0 in (5, 7, 10, 13):
+                budgets = [b0, b0 + 3]
+                def mk(i):
+                    return {"think": ThinkBudget(F.MonTok(), budget=budgets[i])}
+                refs = _plain_refs(_prompts(2), 40, mk)
+                loop, run, st = _pair(mk)
+                for i in range(2):
+                    assert loop[i][0] == refs[i], (pipe, b0, i, "slot loop", refs[i], loop[i][0])
+                    assert run[i][0] == refs[i], (pipe, b0, i, "runner", refs[i], run[i][0])
+                    assert loop[i][2]["think"].n == run[i][2]["think"].n
+                assert st["back"].get("budget", 0) == 2, st["back"]
+                lines.append(f"{budgets}")
+    finally:
+        R.PIPE = saved
+    return f"budgets {', '.join(lines[:4])}, the pipe on and off: the runner and the slot loop write the plain text"
+
+
+def test_a_cap_routed_to_the_monitor_closes_where_the_plain_decode_closes():
+    """ENG-476: the cap the monitor closes at SP1 (`route_budget`, the router's or the client's cap under a
+    monitor that acts) is the ThinkBudget's `watch`: a drafted block stops there, SP1 is asked at the cap, and
+    the hidden close lands where the plain decode's does, in the runner and in the slot loop."""
+    from engine.spec import ThinkBudget
+    import test_supervisor_frame as F
+    caps, saved = [8, 12], R.PIPE
+
+    def mk(i):
+        mon = F.monitor("on", {})
+        sup = F.begin(mon)
+        assert sup.route_budget(caps[i], task="route")
+        return {"sup": sup, "think": ThinkBudget(F.MonTok(), 0, arms=sup.arms, watch=(caps[i],))}
+    try:
+        for pipe in (True, False):
+            R.PIPE = pipe
+            refs = _plain_refs(_prompts(2), 40, mk)
+            loop, run, st = _pair(mk)
+            _same(loop, run, "routed cap")
+            for i in range(2):
+                assert loop[i][0] == refs[i] and run[i][0] == refs[i], (pipe, i, refs[i], loop[i][0], run[i][0])
+                assert run[i][1] and run[i][2]["sup"].hidden_tokens > 0, (pipe, i, "the close was the monitor's")
+            assert st["back"].get("sp1", 0) == 2, st["back"]
+    finally:
+        R.PIPE = saved
+    return f"caps {caps} closed hidden at SP1, the pipe on and off: the plain decode's text in the runner and the slot loop"
 
 
 def test_spd249_a_spent_budget_is_closed_on_the_slots_thread():

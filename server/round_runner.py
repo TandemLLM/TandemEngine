@@ -982,6 +982,7 @@ class Runner:
         """Each task's proposal to its draft, then one packed draft for them (queued, not read). `deadline`
         False (PIPE, inside a tail): the deadline is the next round's to check, after the stream."""
         from engine.drafters import tree_steps
+        from engine.spec import draft_room
         app = self.app
         self._collect = []
         if MTP_PACK and sum(1 for t in tasks if not t.done) > 1:
@@ -1000,7 +1001,8 @@ class Runner:
                 t.end("deadline")
                 continue
             app._row_cap(self.pool, t.drafter)
-            t.steps, t.tree = app._launch(tree_steps(t.drafter, t.ctx, min(t.k, t.max_new - t.n_out)))
+            t.steps, t.tree = app._launch(tree_steps(t.drafter, t.ctx,
+                                                     draft_room(t.think, min(t.k, t.max_new - t.n_out))))
         calls, self._collect = self._collect, None
         heads, self._mtp_collect = self._mtp_collect, None
         self._bind_none()
@@ -1285,8 +1287,13 @@ class Runner:
             yield t, x, path, new
 
     def _cut(self, t: Task, path, new) -> tuple:
-        """The block's kept rows and tokens: through its first end token and inside the budget
+        """The block's kept rows and tokens: first the reasoning cut (`app._think_cut`, a shorter accept
+        whose last token is the next anchor), then through its first end token and inside the budget
         (`app._end_cut`); SPD-249: before the end token where SP2 asks, with the hand-back (else None)."""
+        tc = self.app._think_cut(t.think, new)
+        if tc is not None:
+            self.app._think_cut_said(len(path) - tc)
+            path, new = path[:tc], new[:tc]
         j = self._sp2_at(t, new)
         if j is not None:
             back = {"why": "sp2", "extra": list(new[:j]), "end": int(new[j]), "room": t.eng.max_len - t.pos}
