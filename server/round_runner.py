@@ -1040,10 +1040,12 @@ class Runner:
             if deadline and t.deadline is not None and t.deadline.expired():
                 t.end("deadline")
                 continue
-            if paged and callable(getattr(t.eng.kv, "ensure", None)):
+            if paged and deadline and callable(getattr(t.eng.kv, "ensure", None)):
                 # SRV-885: the rows the draft reads are committed before it runs, as `_verify` commits a pass's: a
                 # draft head gathers its picks (the family's read floor at least) before it masks them. A pool that
-                # cannot give them ends this lane, not the round; committed already, it is one compare
+                # cannot give them ends this lane, not the round; committed already, it is one compare. At the
+                # round's start only: a tail's draft (PIPE) follows its own round's verify, which committed the floor,
+                # and a task ended there would end before the round's tokens are pushed
                 try:
                     t.eng.kv.ensure(t.pos + 1)
                 except kvpool.PoolFull as exc:
