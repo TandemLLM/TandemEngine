@@ -14,6 +14,9 @@ the one place text and ids meet:
   decode                 the suffixed tags come out plain; the `<tool_calls>` wrapper around a turn's calls comes
                          out as nothing (each call stands alone in the arg-key form)
   encode, token lookup   a plain tag goes in as the model's token (`</think>` is the id of `</think:opensource>`)
+  silent_tags            the wrapper's tags by their plain names with the model's ids, which the token lookup takes
+                         too: a forced tool_choice lets the model write them around its calls (ENG-472, the family's
+                         `ServeSpec.call_wrapper`), and the text still leaves them out
   apply_chat_template    the checkpoint's own template, untouched, so the prompt holds the model's real tags and
                          the wrapper around an earlier turn's calls. Thinking is the template's `reasoning_effort`:
                          `no_think` when the request turns thinking off (the template then closes the block in the
@@ -30,6 +33,10 @@ SUFFIX = ":opensource"
 TAGS = {f"<{slash}{name}>": f"<{slash}{name}{SUFFIX}>" for name in ("think", "tool_call", "arg_key", "arg_value") for slash in ("", "/")}
 #: the wrapper around a turn's calls: written by the model and by the template, not part of the arg-key form
 WRAPPERS = (f"<tool_calls{SUFFIX}>", f"</tool_calls{SUFFIX}>")
+#: ENG-472: the wrapper's plain names (arch.py's `call_wrapper`) -> the model's token text, for the token lookup only:
+#: the text never holds them, so neither `plain` nor `real` writes them
+WRAPPER_TAGS = dict(zip(("<tool_calls>", "</tool_calls>"), WRAPPERS))
+_LOOKUP = {**TAGS, **WRAPPER_TAGS}
 #: the modes the pack's template takes as `reasoning_effort` (its chat_template.jinja, lines 38-46)
 MODES = ("max", "high", "no_think")
 
@@ -95,8 +102,14 @@ class Hy4Tokenizer:
 
     def convert_tokens_to_ids(self, tokens):
         if isinstance(tokens, str):
-            return self._tok.convert_tokens_to_ids(TAGS.get(tokens, tokens))
-        return self._tok.convert_tokens_to_ids([TAGS.get(t, t) for t in tokens])
+            return self._tok.convert_tokens_to_ids(_LOOKUP.get(tokens, tokens))
+        return self._tok.convert_tokens_to_ids([_LOOKUP.get(t, t) for t in tokens])
+
+    @property
+    def silent_tags(self) -> dict:
+        """ENG-472: the tags the text leaves out, by their plain names, with the model's ids (engine/grammar.py
+        `Vocab.from_tokenizer`)."""
+        return {p: self._tok.convert_tokens_to_ids(r) for p, r in WRAPPER_TAGS.items()}
 
     def apply_chat_template(self, messages, *args, **kw):
         kw = dict(kw)

@@ -141,6 +141,10 @@ class ServeSpec:
     `serve()` returns it as `serving["spec"]`; shared code reads it, never a model's name."""
 
     tool_format: str = "xml"
+    # ENG-472: the tags the model writes around a turn's calls, outside its form, one token each, which its
+    # tokenizer leaves out of the text (an opener and a closer, by the plain names its tokenizer looks them up
+    # by): a forced tool_choice lets the model write them as its own ids around the calls. Empty: none
+    call_wrapper: tuple = ()
     reasoning: ReasoningSpec = field(default_factory=ReasoningSpec)
     prompt: PromptSpec = field(default_factory=PromptSpec)
     # #104: the family's engine builds side slots (`--parallel` beyond one); False: it serves one chat at a

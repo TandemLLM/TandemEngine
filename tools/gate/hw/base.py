@@ -12,7 +12,8 @@ A profile answers:
     long_ctx(lv)         the longest prompt the long suite sends
     wide_chunk_ctx()     the prompt of the wide prefill chunk case
     ceiling_gib(), peak_gib()   the memory ceiling and peak flags each arm starts with
-    arm_env()            the environment every arm's server gets for this GPU
+    arm_env(pack)        the environment every arm's server gets for this GPU; for a pack that sets its own memory
+                         limits (packs.yaml `limits: pack`), without the ceiling and peak
     pack()               the reference pack (models/<pack>, tools/gate/packs.yaml)
     min_free_gib()       memory that must be free before an arm starts, and free_gib() what is
     mem_floor_gib()      MemAvailable under which the gate kills its own server (unified memory)
@@ -44,6 +45,11 @@ class Fingerprint:
 
     def as_dict(self) -> dict:
         return dataclasses.asdict(self)
+
+
+def own_limits(pack: dict | None) -> bool:
+    """Whether a pack sets its own memory limits (packs.yaml `limits: pack`, OPS-314)."""
+    return (pack or {}).get("limits") == "pack"
 
 
 class Profile:
@@ -108,9 +114,15 @@ class Profile:
         """Memory free for a new server now (None: this profile cannot tell)."""
         return None
 
-    def arm_env(self) -> dict:
-        return {"QSE_PARALLEL": str(self.lanes()), "MEM_CEILING_GIB": f"{self.ceiling_gib():g}",
-                "MEM_PEAK_GIB": f"{self.peak_gib():g}"}
+    def arm_env(self, pack: dict | None = None) -> dict:
+        """`pack`: the arm's packs.yaml entry. OPS-314: a pack whose entry says `limits: pack` sets its own memory
+        limits (its profile's, or its model's from its load where the start names the server's defaults), and the
+        profile's ceiling and peak, set after the pack's profile, would bypass them: its arms get neither."""
+        env = {"QSE_PARALLEL": str(self.lanes()), "MEM_CEILING_GIB": f"{self.ceiling_gib():g}",
+               "MEM_PEAK_GIB": f"{self.peak_gib():g}"}
+        if own_limits(pack):
+            del env["MEM_CEILING_GIB"], env["MEM_PEAK_GIB"]
+        return env
 
     # -- what runs --------------------------------------------------------------------------
     def pack(self) -> str | None:

@@ -600,8 +600,11 @@ class Vocab:
         """`markers`: added tokens that are text in the answer (not the tokenizer's special ids)
         and keep their text, so a constraint allows the model's own id for them
         (SRV-619: `<tool_call>` is one id; spelled out byte by byte it is off the
-        model's distribution)."""
+        model's distribution). ENG-472: or a tag the tokenizer leaves out of the text (a
+        family's call wrapper), which it names with its id in `silent_tags`: the constraint
+        walks the tag, the answer never holds it."""
         from server.logprobs import _DECODER
+        silent = getattr(tok, "silent_tags", None) or {}
         special = set(getattr(tok, "all_special_ids", []) or [])
         hard = set(special)
         added = getattr(tok, "added_tokens_decoder", None) or {}
@@ -620,7 +623,7 @@ class Vocab:
             i = tok.convert_tokens_to_ids(m)
             if (not isinstance(i, int) or not 0 <= i < size or i in hard
                     or i == getattr(tok, "unk_token_id", None)
-                    or tok.decode([i], skip_special_tokens=True) != m):
+                    or (tok.decode([i], skip_special_tokens=True) != m and silent.get(m) != i)):
                 continue
             out.extend([None] * (i + 1 - len(out)))
             out[i] = m.encode("utf-8")

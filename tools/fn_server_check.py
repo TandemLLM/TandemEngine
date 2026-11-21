@@ -20,6 +20,18 @@ twice; one more pair of the first case without a seed (two draws, expected to di
 such runs checks every seeded answer the same text with and without speculation (the det walk draws by
 seed and position, so the draft cannot change a draw); each answer keeps its `timings` (tokens a block,
 tok/s).
+
+    python tools/fn_server_check.py --corners run-mtp.json                           # ENG-476
+
+The requests name no model's own tags or template: the same set ran on LFM2.5 and NemotronH, and runs on Hy4-flash
+(ENG-476), whose template the server renders and whose tags its tokenizer names. The logit_bias ids are token ids of
+every vocabulary: on Hy4-flash's 11 and 13 are `,` and `.` as on Qwen's, 264 and 279 other common tokens.
+
+`--corners`: one run's answers against what the API says, for any family: the stop string never in the
+answer and finish_reason stop; every logprob token with its logprob and a top list of five, best first; a
+seeded request the same text when sent again; the penalties and logit_bias served; a forced tool_choice a
+parsed call (the named one where one is named); response_format json_object a JSON object. Exit: the
+failures.
 """
 
 from __future__ import annotations
@@ -189,13 +201,77 @@ def compare(a: dict, b: dict) -> dict:
     return {"all_same": ok, "cases": res}
 
 
+def _object(text) -> bool:
+    try:
+        return isinstance(json.loads(text or "{}"), dict)
+    except ValueError:
+        return False
+
+
+def corners(run_: dict) -> dict:
+    """ENG-476: one run's answers checked against what the API says (the module's docstring), case by case."""
+    ans = run_["answers"]
+
+    def msg(name):
+        r = ans.get(name) or {}
+        return r if r.get("stream") else ((r.get("choices") or [{}])[0].get("message") or {})
+
+    def finish(name):
+        r = ans.get(name) or {}
+        return r.get("finish_reason") if r.get("stream") else (r.get("choices") or [{}])[0].get("finish_reason")
+
+    out = {}
+    if "stop_string" in ans:
+        text = msg("stop_string").get("content") or ""
+        out["stop_string"] = ("seven" not in text.lower() and finish("stop_string") == "stop",
+                              f"finish {finish('stop_string')}, ends {text[-40:]!r}")
+    if "logprobs" in ans:
+        lp = ((ans["logprobs"].get("choices") or [{}])[0].get("logprobs") or {}).get("content") or []
+        bad = [i for i, t in enumerate(lp) if not isinstance(t.get("logprob"), (int, float)) or t["logprob"] > 1e-6
+               or len(t.get("top_logprobs") or []) != 5
+               or [x["logprob"] for x in t["top_logprobs"]] != sorted((x["logprob"] for x in t["top_logprobs"]),
+                                                                       reverse=True)]
+        out["logprobs"] = (bool(lp) and not bad, f"{len(lp)} tokens, {len(bad)} without a logprob or an ordered top 5")
+    for name in REPEAT:
+        if name in ans and "_again" in ans[name]:
+            same = _main_text(ans[name]) == _main_text(ans[name]["_again"])
+            out[f"{name}_repeats"] = (same, "the seeded request sent twice: " + ("the same" if same else "differs"))
+    for name in ("penalty_bias", "penalty_bias_2", "penalty_bias_3"):
+        if name in ans:
+            text = msg(name).get("content") or ""
+            out[name] = (finish(name) in ("stop", "length") and bool(text.strip()), f"finish {finish(name)}")
+    for name, body in CASES.items():
+        if name not in ans or not body.get("tool_choice"):
+            continue
+        calls = msg(name).get("tool_calls") or []
+        want = body["tool_choice"]["function"]["name"] if isinstance(body["tool_choice"], dict) else None
+        names = [c["function"]["name"] for c in calls]
+        ok_args = all(_object(c["function"]["arguments"]) for c in calls)
+        out[name] = (bool(calls) and ok_args and finish(name) == "tool_calls" and (want is None or set(names) == {want}),
+                     f"calls {names}, finish {finish(name)}")
+    for name in ("json_format", "json_format_2", "json_format_3"):
+        if name in ans:
+            try:
+                ok = isinstance(json.loads(msg(name).get("content") or ""), (dict, list))
+            except ValueError:
+                ok = False
+            out[name] = (ok, f"finish {finish(name)}")
+    return {"all_pass": all(v[0] for v in out.values()) and bool(out),
+            "cases": {k: {"pass": v[0], "seen": v[1]} for k, v in out.items()}}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8011")
     ap.add_argument("--out")
     ap.add_argument("--compare", nargs=2)
     ap.add_argument("--sampled", action="store_true", help="ENG-237: the long seeded sampled requests alone")
+    ap.add_argument("--corners", help="ENG-476: one run's answers against what the API says")
     a = ap.parse_args()
+    if a.corners:
+        r = corners(json.load(open(a.corners)))
+        print(json.dumps(r, indent=1))
+        sys.exit(sum(1 for c in r["cases"].values() if not c["pass"]) or (0 if r["cases"] else 1))
     if a.compare:
         r = compare(json.load(open(a.compare[0])), json.load(open(a.compare[1])))
         print(json.dumps(r, indent=1))

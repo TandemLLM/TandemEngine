@@ -21,6 +21,17 @@ Every request is greedy with a small token budget. Per request the file records 
 server reported (`timings`: forwarded and cached tokens, prompt_ms, the cache it resumed from)
 and the answer's text; at the end `/v1/cache/stats`. `--compare` holds two files request by
 request: the texts, and the forwarded tokens and prompt time of each phase.
+
+The agent shape (ENG-474), all opt-in, the defaults as before: `--tools N` offers N tools (the
+nine described ones, then opencode's others: 12 is the bots' count), `--calls-per-turn N`
+writes N calls into each scripted turn with a result each, `--parallel-tool-calls` asks for
+parallel calls, `--stream` streams every request (the calls from their deltas), `--extra JSON`
+adds body fields, `--own-calls` answers the model's own calls (its assistant turn and a result
+for each call) in place of the next scripted turn, and `--expect-calls` counts every answer
+that is not a parsed call, a call left as text, and every answer with no token: the exit code.
+
+    python tools/session_replay.py --base http://127.0.0.1:8011/v1 --out p2.json --tools 12 \
+        --calls-per-turn 3 --parallel-tool-calls --stream --own-calls --expect-calls --max-tokens 2048
 """
 
 from __future__ import annotations
@@ -69,9 +80,54 @@ def _pieces(pattern_list, size: int) -> list[str]:
     return out
 
 
-def _tools() -> list:
+def _tools(n: int | None = None) -> list:
+    """opencode's nine described tools; `n` above nine adds its other tools (tests/fixtures/opencode_tools.json),
+    in its order, up to n."""
     with open(os.path.join(HERE, "tests", "fixtures", "opencode_tools_described.json")) as f:
-        return json.load(f)
+        tools = json.load(f)
+    if n is None:
+        return tools
+    if n > len(tools):
+        with open(os.path.join(HERE, "tests", "fixtures", "opencode_tools.json")) as f:
+            have = {t["function"]["name"] for t in tools}
+            tools += [t for t in json.load(f)["tools"] if t["function"]["name"] not in have]
+    return tools[:n]
+
+
+def _post_stream(base: str, body: dict, timeout: float = 1800.0) -> dict:
+    """A streamed request read back into the JSON response's shape: the message's content, reasoning and calls
+    (assembled from their deltas, one index a call), the finish reason, the usage and the timings."""
+    req = urllib.request.Request(base.rstrip("/") + "/chat/completions",
+                                 data=json.dumps(dict(body, stream=True,
+                                                      stream_options={"include_usage": True})).encode(),
+                                 headers=dict(HEADERS))
+    t = time.perf_counter()
+    content, reasoning, calls, finish, usage, timings = "", "", {}, None, None, None
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        for raw in r:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            ev = json.loads(line[6:])
+            usage = ev.get("usage") or usage
+            timings = ev.get("timings") or timings
+            for ch in ev.get("choices") or []:
+                d = ch.get("delta") or {}
+                content += d.get("content") or ""
+                reasoning += d.get("reasoning_content") or ""
+                for tc in d.get("tool_calls") or []:
+                    c = calls.setdefault(tc.get("index", len(calls)), {"id": None, "type": "function",
+                                                                       "function": {"name": "", "arguments": ""}})
+                    c["id"] = tc.get("id") or c["id"]
+                    fn = tc.get("function") or {}
+                    c["function"]["name"] += fn.get("name") or ""
+                    c["function"]["arguments"] += fn.get("arguments") or ""
+                finish = ch.get("finish_reason") or finish
+    msg = {"role": "assistant", "content": content, "reasoning_content": reasoning}
+    if calls:
+        msg["tool_calls"] = [calls[k] for k in sorted(calls)]
+    return {"choices": [{"message": msg, "finish_reason": finish}], "usage": usage, "timings": timings,
+            "_client_ms": (time.perf_counter() - t) * 1e3}
 
 
 def _system(chars: int, date: str) -> str:
@@ -86,27 +142,62 @@ def _system(chars: int, date: str) -> str:
 
 
 class Session:
-    def __init__(self, system: str, request: str, files):
-        self.tools = _tools()
+    def __init__(self, system: str, request: str, files, tools: int | None = None, calls: int = 1,
+                 extra: dict | None = None):
+        self.tools = _tools(tools)
         self.messages = [{"role": "system", "content": system},
                          {"role": "user", "content": request}]
         self.files = files
         self.turn = 0
+        self.calls = calls
+        self.extra = extra or {}
 
     def add_turn(self, chars: int) -> None:
-        path, text = self.files.pop(0)
-        cid = f"call_{self.turn:04d}"
+        if self.calls == 1:
+            path, text = self.files.pop(0)
+            cid = f"call_{self.turn:04d}"
+            self.messages.append({
+                "role": "assistant", "content": "",
+                "reasoning_content": f"I should read {path} next.",
+                "tool_calls": [{"id": cid, "type": "function", "function": {
+                    "name": "read", "arguments": json.dumps({"filePath": "/repo/" + path})}}]})
+            self.messages.append({"role": "tool", "tool_call_id": cid, "content": text[:chars]})
+            self.turn += 1
+            return
+        got = [self.files.pop(0) for _ in range(self.calls)]
+        ids = [f"call_{self.turn:04d}_{k}" for k in range(self.calls)]
         self.messages.append({
             "role": "assistant", "content": "",
-            "reasoning_content": f"I should read {path} next.",
+            "reasoning_content": f"I should read {', '.join(p for p, _ in got)} next.",
             "tool_calls": [{"id": cid, "type": "function", "function": {
-                "name": "read", "arguments": json.dumps({"filePath": "/repo/" + path})}}]})
-        self.messages.append({"role": "tool", "tool_call_id": cid, "content": text[:chars]})
+                "name": "read", "arguments": json.dumps({"filePath": "/repo/" + path})}}
+                for cid, (path, _) in zip(ids, got)]})
+        for cid, (_, text) in zip(ids, got):
+            self.messages.append({"role": "tool", "tool_call_id": cid, "content": text[:chars]})
         self.turn += 1
+
+    def answer_calls(self, msg: dict, chars: int) -> bool:
+        """The model's own calls as the next turn: its assistant message, then a result for each call (the next
+        file pieces). False when the answer called nothing."""
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            return False
+        own = {"role": "assistant", "content": msg.get("content") or "", "tool_calls": [
+            {"id": c.get("id") or f"call_{self.turn:04d}_{k}", "type": "function",
+             "function": {"name": c["function"]["name"], "arguments": c["function"]["arguments"]}}
+            for k, c in enumerate(calls)]}
+        if msg.get("reasoning_content"):
+            own["reasoning_content"] = msg["reasoning_content"]
+        self.messages.append(own)
+        for c in own["tool_calls"]:
+            _, text = self.files.pop(0)
+            self.messages.append({"role": "tool", "tool_call_id": c["id"], "content": text[:chars]})
+        self.turn += 1
+        return True
 
     def body(self, max_tokens: int) -> dict:
         return {"model": "replay", "messages": self.messages, "tools": self.tools,
-                "max_tokens": max_tokens, "temperature": 0, "stream": False}
+                "max_tokens": max_tokens, "temperature": 0, "stream": False, **self.extra}
 
     def as_text(self) -> str:
         """The history as one block of text, the way a compaction request carries it."""
@@ -127,7 +218,13 @@ def _record(kind: str, out: dict) -> dict:
     msg = (out.get("choices") or [{}])[0].get("message") or {}
     text = (msg.get("reasoning_content") or "") + "\x00" + (msg.get("content") or "") + "\x00" + \
         json.dumps([c.get("function") for c in (msg.get("tool_calls") or [])], sort_keys=True)
+    calls = msg.get("tool_calls") or []
     return {"kind": kind, "prompt": u.get("prompt_tokens"),
+            "calls": [c.get("function", {}).get("name") for c in calls],
+            "calls_bad": [c.get("function", {}).get("name") for c in calls if not _json_ok(
+                c.get("function", {}).get("arguments"))],
+            "call_text": _call_text(msg.get("content")),
+            "call_in_reasoning": _call_text(msg.get("reasoning_content")),
             "cached": (u.get("prompt_tokens_details") or {}).get("cached_tokens"),
             "forwarded": t.get("prompt_n"), "prompt_ms": t.get("prompt_ms"),
             "ttft_ms": t.get("ttft_ms"), "cache_source": t.get("cache_source"),
@@ -136,13 +233,30 @@ def _record(kind: str, out: dict) -> dict:
             "text_sha": hashlib.sha256(text.encode()).hexdigest()[:16], "text": text}
 
 
+def _call_text(text) -> bool:
+    """A call's tags left in a text (the content, or the reasoning when the call was written inside it)."""
+    return any(t in (text or "") for t in ("<tool_call", "<arg_key>", "<function="))
+
+
+def _json_ok(text) -> bool:
+    try:
+        return isinstance(json.loads(text or "{}"), dict)
+    except ValueError:
+        return False
+
+
 def run(a) -> dict:
     files = _pieces(("engine/*.py", "server/*.py", "tools/*.py"), a.piece_chars)
     rep = {"when": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "base": a.base, "args": vars(a),
            "requests": []}
+    extra = json.loads(a.extra) if a.extra else {}
+    if a.parallel_tool_calls:
+        extra["parallel_tool_calls"] = True
+    shape = {"tools": a.tools, "calls": a.calls_per_turn, "extra": extra}
+    post = _post_stream if a.stream else _post
 
     def send(kind, body):
-        out = _post(a.base, body)
+        out = post(a.base, body)
         r = _record(kind, out)
         rep["requests"].append(r)
         print(f"[replay] {len(rep['requests']):3d} {kind:10s} prompt {r['prompt']} cached "
@@ -150,14 +264,20 @@ def run(a) -> dict:
               f"({r['cache_source']})", flush=True)
         return out
 
+    def step(sess, out) -> None:
+        """The next turn: the model's own calls answered (--own-calls), else the scripted one."""
+        msg = ((out.get("choices") or [{}])[0].get("message") or {})
+        if not (a.own_calls and sess.answer_calls(msg, a.turn_chars)):
+            sess.add_turn(a.turn_chars)
+
     s = Session(_system(a.system_chars, "Tue Sep 29 2026"),
-                "Read the engine's source files and summarise how a request flows.", files)
+                "Read the engine's source files and summarise how a request flows.", files, **shape)
     for _ in range(a.first_files):
         s.add_turn(a.piece_chars)
-    send("first", s.body(a.max_tokens))
+    out = send("first", s.body(a.max_tokens))
     for _ in range(a.turns):
-        s.add_turn(a.turn_chars)
-        send("turn", s.body(a.max_tokens))
+        step(s, out)
+        out = send("turn", s.body(a.max_tokens))
     comp = {"model": "replay", "stream": False, "temperature": 0, "max_tokens": a.summary_tokens,
             "messages": [{"role": "user", "content":
                           "Summarise the conversation below for a new session.\n\n" + s.as_text()}]}
@@ -165,16 +285,16 @@ def run(a) -> dict:
     summary = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     s2 = Session(_system(a.system_chars, "Tue Sep 29 2026"),
                  "Continue from this summary of the work so far:\n\n" + summary
-                 + "\n\n" + s.as_text()[:a.summary_chars], files)
-    send("post", s2.body(a.max_tokens))
+                 + "\n\n" + s.as_text()[:a.summary_chars], files, **shape)
+    out = send("post", s2.body(a.max_tokens))
     for i in range(a.after_turns):
-        s2.add_turn(a.turn_chars)
+        step(s2, out)
         if i == a.after_turns // 2:
             s2.messages[0]["content"] = _system(a.system_chars, "Wed Sep 30 2026")
-            send("date", s2.body(a.max_tokens))
+            out = send("date", s2.body(a.max_tokens))
         else:
-            send("after", s2.body(a.max_tokens))
-    chat = Session("You are a helpful assistant.", "Help me read a few files.", files)
+            out = send("after", s2.body(a.max_tokens))
+    chat = Session("You are a helpful assistant.", "Help me read a few files.", files, **shape)
     for _ in range(a.chat_turns):
         chat.add_turn(a.chat_chars)
         send("chat", chat.body(a.max_tokens))
@@ -184,7 +304,39 @@ def run(a) -> dict:
         rep["cache_stats"] = _get(root + "/v1/cache/stats")
     except Exception as exc:                                        # noqa: BLE001
         rep["cache_stats"] = {"error": str(exc)}
+    rep["calls"] = calls_summary(rep["requests"])
     return rep
+
+
+def calls_summary(reqs: list) -> dict:
+    """ENG-474: of the requests that offered tools (all but the compaction), the answers that ended in parsed
+    calls, those with more than one call, and the failures: an answer that is no call, a call whose arguments are
+    not a JSON object, a call left as text in the content or written inside the reasoning, an answer with no token.
+    An answer that is no call may be a right one (prose after the tool's result): the lists say which."""
+    tooled = [r for r in reqs if r["kind"] != "compaction"]
+    out = {"requests": len(tooled), "called": 0, "several": 0, "max_calls": 0, "no_call": [], "bad_args": [],
+           "call_text": [], "call_in_reasoning": [], "zero_tokens": []}
+    for i, r in enumerate(reqs):
+        if r["kind"] == "compaction":
+            continue
+        n = len(r.get("calls") or [])
+        out["max_calls"] = max(out["max_calls"], n)
+        if n and r.get("finish") == "tool_calls":
+            out["called"] += 1
+            out["several"] += n > 1
+        else:
+            out["no_call"].append(i)
+        if r.get("calls_bad"):
+            out["bad_args"].append(i)
+        if r.get("call_text"):
+            out["call_text"].append(i)
+        if r.get("call_in_reasoning"):
+            out["call_in_reasoning"].append(i)
+        if not r.get("completion"):
+            out["zero_tokens"].append(i)
+    out["failures"] = sum(len(out[k]) for k in ("no_call", "bad_args", "call_text", "call_in_reasoning",
+                                                  "zero_tokens"))
+    return out
 
 
 def compare(paths: list[str]) -> None:
@@ -238,6 +390,16 @@ def main() -> None:
     ap.add_argument("--max-tokens", type=int, default=32)
     ap.add_argument("--x-tandem", default="", choices=("", "raw", "shadow", "on"),
                     help="send X-Tandem with every request (raw: the raw path of a conductor server)")
+    # ENG-474: the agent shape (the module's docstring)
+    ap.add_argument("--tools", type=int, default=None, help="tools offered (default: the nine described ones)")
+    ap.add_argument("--calls-per-turn", type=int, default=1, help="calls in each scripted turn")
+    ap.add_argument("--parallel-tool-calls", action="store_true")
+    ap.add_argument("--stream", action="store_true", help="stream every request")
+    ap.add_argument("--extra", default="", help="body fields added to every request (JSON)")
+    ap.add_argument("--own-calls", action="store_true",
+                    help="answer the model's own calls in place of the next scripted turn")
+    ap.add_argument("--expect-calls", action="store_true",
+                    help="exit with the count of answers that are no parsed call (calls_summary)")
     a = ap.parse_args()
     if a.x_tandem:
         HEADERS["X-Tandem"] = a.x_tandem
@@ -247,7 +409,14 @@ def main() -> None:
     rep = run(a)
     with open(a.out, "w") as f:
         json.dump(rep, f, indent=1)
+    c = rep["calls"]
+    print(f"[replay] calls: {c['called']} of {c['requests']} answers called ({c['several']} with several, "
+          f"most {c['max_calls']}); no call {c['no_call']}, bad arguments {c['bad_args']}, call text "
+          f"{c['call_text']}, call in the reasoning {c['call_in_reasoning']}, no token {c['zero_tokens']}",
+          flush=True)
     print(f"[replay] wrote {a.out}", flush=True)
+    if a.expect_calls:
+        return min(c["failures"], 100)
 
 
 if __name__ == "__main__":
