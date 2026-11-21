@@ -100,6 +100,8 @@ from engine.models import REGISTRY  # noqa: E402
 # engine/cache.py now that Hy4-flash has side slots: the whole-tree half moves again, the arithmetic half holds
 # R83 (T5b): the prompt read passes `prompt=True` to a family with `Capabilities.prompt_rows` (engine/cache.py); every
 # family without it gets the call it got before, so the whole-tree half moves and the arithmetic half holds
+# hy4-m1's merge of hy4-m1-serve (f2618de1) and hy4-rowinv (4b2e7597), 2026-11-21: recomputed on the merged tree, both
+# halves are R83's (server/app.py, which hy4-m1-serve changed, is in neither)
 GOLDEN_V2 = ("7c6b4c314c5f6cf7f086c9208b0ac4f74198984a8093d1d41a82a71e9ca0d6f5",
              "feed262983cad1c8f5ff87bcd6250cd5393a8114e8ef2ed5fe9bd94ab11fee72")
 GOLDEN_FP4 = {
@@ -221,7 +223,8 @@ GOLDEN_FP4 = {
     "lfm2_moe": "b4e4a64045d8a65cdcfbbe7c9d26c065d743b15b13cf9d0624612ab70d10425e",
     "qwen3_5_moe": "d6acb7f9cc633e2e051124444e7f75fc92b816600b909f365570852245a925f7",
     "flint": "b282e37d1f5d4acf22ba31b64e7f7056c408c453646ed11814b049398e0e0c8f",
-    # Hy4-flash: a new family (its first golden), then the moves above
+    # Hy4-flash: a new family (its first golden), then the moves above; recomputed on hy4-m1's merge of hy4-m1-serve
+    # and hy4-rowinv (2026-11-21): R83's, and every other family's holds
     "hy_v4_flash": "e08ccbc870b719d9899bed731b64a8896f9d13d281efc67ecaa1f2f4c6dff933",
 }
 #: adapters the refactor may move once (the coordinator's OK, 2026-10-22): Flint's knobs leave the shared
