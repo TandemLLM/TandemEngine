@@ -232,6 +232,77 @@ def test_peak_running_is_the_high_water_mark():
     assert pool.report()["max_running"] == 2 and pool.stats["peak_running"] == 2
 
 
+class _Get(A.Handler):
+    """A GET without a socket."""
+
+    def __init__(self, path: str = "/health"):
+        self.rfile, self.wfile, self.headers = io.BytesIO(b""), io.BytesIO(), {}
+        self.path, self.command, self.request_version = path, "GET", "HTTP/1.1"
+        self.requestline, self.client_address = "GET " + path, ("127.0.0.1", 0)
+        self.close_connection = True
+
+
+def _health() -> dict:
+    import json
+    g = _Get()
+    with contextlib.redirect_stdout(io.StringIO()):
+        g.do_GET()
+    head, _, raw = g.wfile.getvalue().partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 200"), head[:80]
+    return json.loads(raw)
+
+
+def _counts(h: dict) -> tuple:
+    """/health's two waiting counts: requests waiting for a lane or the engine (`inflight.waiting`), and requests
+    holding a lane that wait for memory before their prefill (`parallel.admission.waiting_memory`)."""
+    return h["inflight"]["waiting"], ((h.get("parallel") or {}).get("admission") or {}).get("waiting_memory")
+
+
+def test_health_counts_a_request_waiting_for_a_lane_and_one_waiting_for_memory():
+    """SRV-903 (hold 1a, 2026-11-21: a 9th caller beside 8 busy lanes waited 150 s with its waiting lines while the
+    hold's probe read /health `queue.waiting` 0 in 707 samples). /health has no `queue`: that object is the dashboard's
+    system view (/v1/dashboard/system). /health counts such a request in `inflight.waiting`, which the one wait loop
+    for slot 0 and every side slot raises (server/app.py `_serve`'s queue), for every family; one that holds a lane
+    and waits for memory is `parallel.admission.waiting_memory` (server/slots.py `Admission.waiting`). Here every lane
+    is busy (slot 0 a client's run, both side slots taken), a request waits for a lane, then one waits for memory."""
+    pool = _fake_parallel()
+    assert _counts(_health()) == (0, 0), _counts(_health())
+    A.LOCK.acquire()
+    A.LOCK.turn.release(0)
+    with A.QUEUE:                                          # a client's request holds slot 0
+        A.HOLDER["who"] = {"rank": A.RANK_TURN, "t": time.monotonic(), "t_hold": time.monotonic()}
+    sides = [pool.take_side(1, owner=f"busy-{i}") for i in (1, 2)]
+    assert all(sides), sides
+    out: dict = {}
+    th = threading.Thread(target=_send, args=(_body(), out))
+    seen = []
+    try:
+        th.start()
+        t_end = time.monotonic() + 5.0
+        while time.monotonic() < t_end and _counts(_health())[0] < 1:
+            time.sleep(0.05)
+        h = _health()
+        seen.append(_counts(h))
+        assert th.is_alive() and _counts(h) == (1, 0), (_counts(h), th.is_alive())
+        assert A._system()["queue"]["waiting"] == 1                # the dashboard's view agrees
+        pool.admission.wait("lane-held-waiting-for-memory")
+        seen.append(_counts(_health()))
+        assert _counts(_health()) == (1, 1), _counts(_health())
+        pool.admission.unwait("lane-held-waiting-for-memory")
+        pool.release_side(sides[0])                           # a lane frees: the request takes it
+        th.join(30)
+    finally:
+        with A.QUEUE:
+            A.HOLDER["who"] = None
+        A.LOCK._lk.release()
+        for sl in sides[1:]:
+            pool.release_side(sl)
+        th.join(30)
+    assert '"choices"' in out.get("raw", ""), out.get("raw", "")[:300]
+    assert _counts(_health()) == (0, 0), _counts(_health())
+    return f"waiting for a lane, then for memory: {seen}; served, then (0, 0)"
+
+
 # ------------------------------------------------------------------ through the handler
 def _fake_parallel():
     from server import fake_engine
