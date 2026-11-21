@@ -9,6 +9,8 @@ tail is one row equals the cold read; a family without the capability gets the c
   3  Hy4-flash's `forward` with `prompt=True` reads one row on the prompt pass: the state and the logits of the
      prompt read as n - 1 rows and then one equal the cold read's; without it the row is a decode step
                                               test_hy4_one_row_prompt_chunk_is_the_prompt_pass
+  4  (R83) the load binds every trunk projection of the prompt pass, and an unequal shape fails it
+                                              test_hy4_binds_its_prompt_order_at_load
 
 CPU. Run: python tests/test_prompt_rows.py
 """
@@ -120,6 +122,39 @@ def test_hy4_one_row_prompt_chunk_is_the_prompt_pass():
         else:
             assert took_step, "without `prompt` a lone token past 0 is a decode step"
     return f"{n} rows: n - 1 then one on the prompt pass equals the cold read (logits, every section and view)"
+
+
+def test_hy4_binds_its_prompt_order_at_load():
+    """R83: the load checks every trunk projection `lin_prompt` reads, once a shape, and a shape that is not one
+    order's bits fails there (`build` calls this before the self-check); the experts' banks, the head and kv_b_proj's
+    packed value half are not the prompt pass's and are left out."""
+    from exl3_launches import Launches
+    from engine.models.hy4_flash.engine import Hy4FlashEngine
+    from tools import exl3_linear as X
+    from tools import exl3_rows as R
+
+    def blk(N, K, kb):
+        return X.EXL3Block(torch.zeros(K // 16, N // 16, X.tile_width(kb), dtype=torch.int16),
+                           torch.ones(K, dtype=torch.float16), torch.ones(N, dtype=torch.float16))
+    e = object.__new__(Hy4FlashEngine)
+    e.kernels = True
+    e.W = {"layers.0.self_attn.q_a_proj.weight": blk(1024, 3072, 5), "layers.1.self_attn.q_a_proj.weight": blk(1024, 3072, 5),
+           "layers.0.self_attn.compressed_indexer.query_projection.weight": blk(2048, 1024, 35),
+           "layers.0.self_attn.kv_b_proj.packed": blk(4096, 512, 5), "lm_head.weight": blk(1024, 3072, 6),
+           "layers.0.mlp.experts.0.gate_proj.weight": blk(512, 1024, 3), "layers.0.input_layernorm.weight": torch.ones(8)}
+    with Launches():
+        got = e.bind_prompt_order()
+        assert got["weights"] == 3 and got["shapes"] == 2 and got["failed"] == 0, got
+    with Launches(checks="fail"):
+        try:
+            e.bind_prompt_order()
+        except R.RowOrderError:
+            pass
+        else:
+            raise AssertionError("an unequal shape must fail the load")
+    e.kernels = False
+    assert "skipped" in e.bind_prompt_order()
+    return "3 trunk projections, 2 shapes bound; an unequal one fails the load; off the kernels nothing runs"
 
 
 if __name__ == "__main__":

@@ -452,6 +452,10 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
     if eng.prefill_experts not in ("group", "rows"):
         raise ValueError(f"QWEN38_HY4_PREFILL_EXPERTS={eng.prefill_experts!r}: group or rows")
     eng.prefill_v2 = _S.get("HY4_PREFILL_V2") == "1"
+    # R83: every packed projection of the prompt pass checked in its prompt order once a shape, here: a shape whose
+    # kernels are not one order's bits fails the start (tools/exl3_rows.py `RowOrderError`), never a request
+    order = eng.bind_prompt_order() if eng.prefill_v2 else {"skipped": "QWEN38_HY4_PREFILL_V2=0: the pass before"}
+    log(f"[hy4] prompt order (R83): {order}")
     if kv_pool is not None:
         kv_pool()                           # ENG-485: the KV pool, before the state that pages through it
     srv = Hy4FlashServing(eng, max_len)
@@ -468,7 +472,8 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
         prompt = [int(text[i % len(text)]) for i in range(max(n, 8))]
         res = eng.self_check(prompt, widths=(2, 4, 6), log=log, graphs=srv.graphs is not None)
         srv.restart()
-    info = {"pack": path, "load": timing, "device": device, "self_check": res, "quant": pack.quant, "dfly": pack.has_dfly,
+    info = {"pack": path, "load": timing, "device": device, "self_check": res, "prompt_order": order, "quant": pack.quant,
+            "dfly": pack.has_dfly,
             "formats": timing.get("notes"), "tables": [t.report() for t in tables.values()]}
     return srv, info
 

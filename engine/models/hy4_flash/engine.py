@@ -334,6 +334,21 @@ class Hy4FlashEngine(Hy4FlashRef):
         n = self.cuts.get(id(w))
         return (y if n is None else y[:, :n]).view(*x.shape[:-1], -1)
 
+    def bind_prompt_order(self) -> dict:
+        """R83: every packed projection `lin_prompt` reads (the trunk's; not the experts' banks, not the head, not
+        kv_b_proj's packed value half), checked once a shape in the prompt order (tools/exl3_rows.py `bind`): a shape
+        whose kernels are not one order's bits raises `RowOrderError` here, at the load. Off the kernels nothing runs."""
+        from tools import exl3_rows as R
+        if not self.kernels:
+            return {"skipped": "off the kernels"}
+        n = 0
+        for name, w in self.W.items():
+            if (name.startswith("layers.") and hasattr(w, "bf16_cached") and ".experts." not in name
+                    and not name.endswith(".packed")):
+                R.bind(w)
+                n += 1
+        return {"weights": n, "shapes": len(R._BOUND), "cross": R.CROSS, "failed": len(R.FAILED)}
+
     def _dense_v2(self, x: torch.Tensor, p: str) -> torch.Tensor:
         """`dense` (the reference's SwiGLU MLP) on `lin_prompt`: the prompt pass's dense MLPs and shared experts."""
         g = F.silu(self.lin_prompt(x, self.w(p + "gate_proj.weight")))
