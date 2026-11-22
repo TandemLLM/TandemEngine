@@ -212,12 +212,17 @@ def run_cli(url, *args, stdin=None, env=None):
     return rc, json.loads(text) if text else None, err.getvalue()
 
 
-#: values of a moment, not of the answer: the uptime, the disk's free bytes as the tests write
-MOMENT = ("uptime_s", "loading_s", "free_gb", "since", "checked_at", "left_s")
+#: values of a moment, not of the answer: the uptime, the disk's free bytes as the tests write, the box's live
+#: MemAvailable (the estimate's `available_gb`, the device's `mem_available_gb`: read on each call, beside the estimate
+#: and never part of `fits`, server/setup/estimate.py)
+MOMENT = ("uptime_s", "loading_s", "free_gb", "since", "checked_at", "left_s", "available_gb", "mem_available_gb")
 #: the same moment in a sentence: a refusal's "the disk has 52 GB free, 40 GB too few" (server/setup/apply.py
 #: disk_full; doctor.py's disk lines), read on each call, so two calls of one plan a moment apart can word it 52 / 40
 #: and 51 / 41 (the 388840a3 box run, 11-19 before it). Only those two figures; every other word is compared
 FREE_WORDS = re.compile(r"\b\d+(?:\.\d+)? GB (free|too few)\b")
+#: the live memory in a refusal's sentence: "40.2 GiB are free now and the running engine gives back about 61.0"
+#: (server/setup/apply.py `preflight`). Only those two figures; "it needs 97 GiB free to start" is compared
+MEM_WORDS = re.compile(r"\b\d+(?:\.\d+)? GiB are free now and the running engine gives back about \d+(?:\.\d+)?")
 
 
 def norm(x):
@@ -226,7 +231,8 @@ def norm(x):
     if isinstance(x, list):
         return [norm(v) for v in x]
     if isinstance(x, str):
-        return FREE_WORDS.sub(r"N GB \1", x)
+        x = FREE_WORDS.sub(r"N GB \1", x)
+        return MEM_WORDS.sub("N GiB are free now and the running engine gives back about N", x)
     return x
 
 
@@ -637,6 +643,40 @@ def test_two_reads_of_one_plan_differ_only_in_the_disks_free_space():
             continue
         raise AssertionError(f"same() passed two plans that differ beyond the free space: {other['errors']}")
     return "52 then 51 GB free: the same plan; another figure or refusal: not the same"
+
+
+def test_two_reads_of_one_plan_differ_only_in_the_live_memory():
+    """The 34d5bac4 run on the Big PC (2026-11-22): test_nothing_answers failed on one field, the estimate's
+    `available_gb` 77.58 in the CLI's plan and 77.59 in the page's. The route passes the box's MemAvailable of the call
+    (server/setup_api.py), and it moved between the two calls. The same plan read with 77.58, then 77.59 GiB available:
+    `same` reads past the live memory, in the estimate and in preflight's refusal ("... GiB are free now and the running
+    engine gives back about ..."), and past nothing else."""
+    with SA.Box():
+        first = SA._plan(SA._sel(profile="exl3-3.0"), available_gb=77.58)
+        second = SA._plan(SA._sel(profile="exl3-3.0"), available_gb=77.59)   # MemAvailable moved between the calls
+    assert first["estimate"]["available_gb"] == 77.58 and second["estimate"]["available_gb"] == 77.59, \
+        (first["estimate"].get("available_gb"), second["estimate"].get("available_gb"))
+    assert first != second                                   # the two calls' own figures differ: the flake's shape
+    same({"result": first}, second, "a plan read twice while MemAvailable moved")
+
+    def short(free, back, need=97):
+        return (f"Not enough memory for exl3-3.0: it needs {need:g} GiB free to start; {free:.1f} GiB are free now "
+                f"and the running engine gives back about {back:.1f}. Stop other programs that use memory, then try "
+                f"again.")
+    a, b = dict(first, errors=[short(40.2, 61.0)]), dict(second, errors=[short(40.1, 61.2)])
+    same({"result": a}, b, "a memory refusal read twice while MemAvailable moved")
+    # a real difference still counts: the estimate's own figures, the memory the start needs, a refusal more or less
+    for other in ({**b, "estimate": dict(b["estimate"], total_gb=b["estimate"]["total_gb"] + 1)},
+                  {**b, "errors": [short(40.1, 61.2, need=98)]},
+                  {**b, "errors": b["errors"] + ["ops/serve.env on this box does not read run/setup.env."]}):
+        assert other != b
+        try:
+            same({"result": a}, other, "a plan that differs beyond the live memory")
+        except AssertionError:
+            continue
+        raise AssertionError(f"same() passed two plans that differ beyond the live memory: {other.get('errors')}")
+    return ("77.58 then 77.59 GiB available: the same plan; a refusal's live figures too; another total, need or "
+            "refusal: not the same")
 
 
 def test_nothing_answers():
