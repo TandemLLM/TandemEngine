@@ -313,6 +313,32 @@ def test_the_handler_refuses_what_it_cannot_serve():
     return f"{len(cases)} refusals by name; the impossible constraint on both transports; the flag off"
 
 
+def test_the_handler_refuses_a_schema_the_calls_cannot_read():
+    # ENG-581's review: `parameters.properties` a list passes compat.check, and every form's calls constraint
+    # stopped on it with a TypeError: a 500 `internal_error`. Now the 400 on `tools`, on both transports; the
+    # request without a constraint is served as before
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {"properties": ["a"]}}}]
+    seen = []
+    for fmt in ("xml", "argkey"):
+        for extra in ({"response_format": {"type": "json_object"}}, {"tool_choice": "required"}):
+            for stream in (False, True):
+                C.serve()
+                app.STATE["spec"] = ServeSpec(tool_format=fmt)
+                head, raw = C.Req("/v1/chat/completions", dict({"messages": [{"role": "user", "content": "x"}],
+                                                               "tools": tools, "max_tokens": 4,
+                                                               "stream": stream}, **extra)).response()
+                assert head.startswith("HTTP/1.1 400"), (fmt, extra, stream, head, raw[:200])
+                err = json.loads(raw)["error"]
+                assert err["param"] == "tools" and "parameters.properties must be an object" in err["message"], err
+                seen.append(fmt)
+        C.serve()
+        app.STATE["spec"] = ServeSpec(tool_format=fmt)
+        head, raw = C.Req("/v1/chat/completions", {"messages": [{"role": "user", "content": "x"}], "tools": tools,
+                                                  "max_tokens": 4}).response()
+        assert head.startswith("HTTP/1.1 200"), (fmt, head, raw[:200])
+    return f"{len(seen)} 400s on tools (xml, argkey; a document under auto and required; both transports); no constraint: 200"
+
+
 def test_an_unconstrained_request_never_builds_a_vocabulary():
     C.serve()
     C.chat()

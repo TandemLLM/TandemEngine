@@ -432,12 +432,35 @@ def tool_constraint(body: dict, fmt=None, allowed: list | None = None,
         mode = "SET_CONSTRAINT tool_args"
     try:
         from server.api import toolformats
+        _call_schemas(body["tools"], allowed, grammar)
         pat, typed = toolformats.resolve(fmt).forced_regex(body["tools"], allowed,
                                                            many=body.get("parallel_tool_calls") is True,
                                                            grammar=grammar)
     except grammar.GrammarError as exc:
         raise Refusal("tools", f"tool_choice {mode}: {exc}")
     return in_wrapper(pat, wrapper, grammar), typed
+
+
+def _call_schemas(tools: list, allowed: list, grammar) -> None:
+    """The schemas a call constraint reads (each form's `forced_regex`), in the shape it reads them: a function's
+    `parameters.properties` an object and, beside it, `required` a list of names. Anything else stopped
+    `forced_regex` with a TypeError, a 500 (ENG-581); now a GrammarError, the caller's 400 on `tools`. Only the
+    functions the calls may name are read, as there."""
+    for t in tools:
+        fn = t.get("function") if isinstance(t, dict) else None
+        if not isinstance(fn, dict) or fn.get("name") not in allowed or not isinstance(fn.get("parameters"), dict):
+            continue
+        params, name = fn["parameters"], fn["name"]
+        props = params.get("properties")
+        if not props:
+            continue
+        if not isinstance(props, dict):
+            raise grammar.GrammarError(f"function {name!r}: parameters.properties must be an object, "
+                                       f"got {type(props).__name__}")
+        req = params.get("required", [])
+        if not isinstance(req, list) or not all(isinstance(k, str) for k in req):
+            raise grammar.GrammarError(f"function {name!r}: parameters.required must be a list of "
+                                       f"parameter names")
 
 
 def in_wrapper(pattern: str, wrapper: tuple, grammar) -> str:
@@ -506,6 +529,7 @@ def answer_constraint(body: dict, chat: bool = True, xml_calls: bool | None = No
     fns = [t if "function" in t else {"type": "function", "function": t} for t in body["tools"]]
     names = [t["function"]["name"] for t in fns]
     try:
+        _call_schemas(fns, names, grammar)
         calls, typed = form.forced_regex(fns, names, many=body.get("parallel_tool_calls") is not False,
                                          grammar=grammar)
         calls = in_wrapper(calls, wrapper, grammar)
