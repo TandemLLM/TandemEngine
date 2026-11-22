@@ -1151,6 +1151,33 @@ def test_the_handler_serves_the_argkey_form():
     return f"the document (schema, json_object) and one call {seen}; none and required: no branch"
 
 
+def test_whitespace_stays_open_only_beside_a_json_document():
+    # ENG-581's review, docs/server.md's branch rule: a JSON document may open with whitespace (`WS`), so whitespace
+    # first leaves the branch open; a choice or a regex that cannot open with it does not, and the calls may (`_S`),
+    # so whitespace first is the calls' and the document is then out. The same on the XML form (SRV-619) and the
+    # arg-key form with Hy4-flash's wrapper; a regex that opens with whitespace stays open
+    vocab = G.Vocab.from_tokenizer(C.Tok(), 97)
+    docs = (("json_schema", {"response_format": JS}, G.BOTH), ("json_object", {"response_format": {
+        "type": "json_object"}}, G.BOTH), ("choice", {"structured_outputs": {"choice": ["yes", "no"]}}, G.FIRST),
+        ("regex", {"structured_outputs": {"regex": "[a-z]+"}}, G.FIRST),
+        ("regex opening with whitespace", {"structured_outputs": {"regex": "\\s*[a-z]+"}}, G.BOTH))
+    seen = 0
+    for fmt, wrapper in (("xml", ()), ("argkey", WRAP)):
+        for label, extra, want in docs:
+            a = C.compat.answer_constraint(dict({"messages": [], "tools": MARK}, **extra), fmt=fmt, wrapper=wrapper)
+            g = G.Grammar(a.pattern, vocab, a.parts)
+            d = g.dfa
+            for ws in ("\n", " ", "\n\n"):
+                assert g.side[d.walk(d.start, ws.encode())] == want, (fmt, label, ws)
+                seen += 1
+            if want == G.FIRST:
+                after = d.walk(d.start, b"\n")
+                assert d.walk(after, b"yes" if label == "choice" else b"abc") == d.dead, (fmt, label)
+                assert g.pick(d.start, 0) == "calls", (fmt, label)          # the toy's id 0 is a space
+    return (f"{seen} walks: whitespace open beside json_schema, json_object and a regex that takes it; "
+            f"the calls' beside a choice or a regex")
+
+
 #: Flint's tokenizer in the toy's ids: its `<think>` and `</think>` and the arg-key tags are added ids 97-104, text in
 #: the answer (tokenizer_config.json: all `special: false`), so a vocabulary gives `<think>` no bytes
 FLINT_ADDED = ("<think>", "</think>") + AK_TAGS
