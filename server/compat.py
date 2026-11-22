@@ -446,12 +446,16 @@ def _call_schemas(tools: list, allowed: list, grammar) -> None:
     500 (ENG-581): a function's `parameters.properties` that is not an object, or, beside it, a `required` that is
     no collection of names (null, a number, a list holding objects). Now a GrammarError, the caller's 400 on
     `tools`; every shape that was served (a `required` string or list of numbers among them) still is. Only the
-    functions the calls may name are read, as there."""
+    functions the calls may name are read, as there, and of two functions of one name the last, as there."""
+    by_name = {}
     for t in tools:
         fn = t.get("function") if isinstance(t, dict) else None
-        if not isinstance(fn, dict) or fn.get("name") not in allowed or not isinstance(fn.get("parameters"), dict):
+        if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+            by_name[fn["name"]] = fn.get("parameters") or {}
+    for name in allowed:
+        params = by_name.get(name) if isinstance(name, str) else None
+        if not isinstance(params, dict):
             continue
-        params, name = fn["parameters"], fn["name"]
         props = params.get("properties")
         if not props:
             continue

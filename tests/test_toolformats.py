@@ -279,8 +279,25 @@ def test_a_schema_the_calls_cannot_read_is_a_400():
                 if mode != "auto + document" or fmt.joins_documents:
                     got = compat.answer_constraint(dict(extra, messages=[], tools=tools), True, fmt=fmt)
                     assert got is not None, (name, params)
+        # two functions of one name: the constraint reads the last (each form's `by_name`), so an unreadable first
+        # copy is served, as it was before ENG-581, and an unreadable last copy is the 400
+        good = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+        for label, params in bad.items():
+            copies = [{"type": "function", "function": {"name": "f", "parameters": dict(params, type="object")}},
+                      {"type": "function", "function": {"name": "f", "parameters": good}}]
+            for mode, extra in bodies.items():
+                if mode == "auto + document" and not fmt.joins_documents:
+                    continue
+                got = compat.answer_constraint(dict(extra, messages=[], tools=copies), True, fmt=fmt)
+                assert got is not None, (name, label, mode)
+                try:
+                    compat.answer_constraint(dict(extra, messages=[], tools=copies[::-1]), True, fmt=fmt)
+                except compat.Refusal as exc:
+                    assert exc.param == "tools" and "function 'f'" in str(exc), (name, label, mode, str(exc))
+                else:
+                    raise AssertionError(f"{name} {label} {mode}: the unreadable last copy was served")
     return (f"{seen} 400s on tools over {len(fmts)} forms; a named call reads its own function only; "
-            f"{len(served)} odd shapes served as before")
+            f"{len(served)} odd shapes served as before; of two copies of a name, the last is read")
 
 
 if __name__ == "__main__":
