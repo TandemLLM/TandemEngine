@@ -98,7 +98,7 @@ Measured on one DGX Spark (2026-11-10, Flash-Next 3.05, 8 lanes, a synthetic cha
 
 ## How a round runs
 
-One thread runs every decoding lane's round (`QSE_ROUND_RUNNER=1`, SPD-201): the lanes' proposals, one packed draft, one joint verify pass, the walks and the tails (commits, penalties, stop strings, the stream). `/health` `parallel.round_runner` has its host and GPU milliseconds by phase. A lane of a family without a draft head joins the pass with its plain step as a one-row block (ENG-241). The 27B's joint pass runs from CUDA graphs once a pass shape has come `QWEN38_JOINT_GRAPHS_AFTER` times; a graphed pass gives each lane's logits, state and KV bit for bit what the eager pass gives (`tools/joint_graph_check.py`).
+One thread runs every decoding lane's round (`QSE_ROUND_RUNNER=1`, SPD-201): the lanes' proposals, one packed draft, one joint verify pass, the walks and the tails (commits, penalties, stop strings, the stream). `/health` `parallel.round_runner` has its host and GPU milliseconds by phase; its `taken_back` counts the tasks whose client left while the runner waited for the GPU turn, ended before their round (SRV-885). A lane of a family without a draft head joins the pass with its plain step as a one-row block (ENG-241). The 27B's joint pass runs from CUDA graphs once a pass shape has come `QWEN38_JOINT_GRAPHS_AFTER` times; a graphed pass gives each lane's logits, state and KV bit for bit what the eager pass gives (`tools/joint_graph_check.py`).
 
 | knob | default | what it does |
 |-|-|-|
