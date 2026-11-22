@@ -15646,6 +15646,34 @@ def _profile_max_window(name: str | None):
     return _MAX_WINDOW[name]
 
 
+def _handler_idle(frame) -> bool:
+    """A handler thread's top frame is the stdlib's read of its keep-alive connection's next request line
+    (`BaseHTTPRequestHandler.handle_one_request`, `rfile.readline` in `SocketIO.readinto`): its last request's
+    frames are gone, and a process that ends under it ends a thread blocked in `recv`."""
+    back = getattr(frame, "f_back", None)
+    return (back is not None and frame.f_code.co_name == "readinto"
+            and back.f_code.co_name == "handle_one_request"
+            and back.f_code.co_filename.endswith(os.path.join("http", "server.py")))
+
+
+def _handler_tails(httpd, timeout: float = 30.0) -> bool:
+    """SRV-911 (E28), the drain's last wait: until every thread ThreadingHTTPServer started for `httpd` (daemons,
+    which its `server_close` does not join) has ended or waits for its connection's next request
+    (`_handler_idle`). True when none is left busy within `timeout` seconds, inside stop.sh's grace period."""
+    me = threading.current_thread()
+    target = getattr(httpd, "process_request_thread", None)
+    threads = [t for t in threading.enumerate() if t is not me
+               and ((target is not None and getattr(t, "_target", None) == target)
+                    or t.name.endswith("(process_request_thread)"))]
+    t_end = time.monotonic() + float(timeout)
+    while True:
+        frames = sys._current_frames()
+        busy = [t for t in threads if t.is_alive() and not _handler_idle(frames.get(t.ident))]
+        if not busy or time.monotonic() >= t_end:
+            return not busy
+        time.sleep(0.02)
+
+
 def serve_until_drained(httpd) -> None:
     """Serve until SIGTERM/SIGINT, then drain: refuse new work, finish what is running, exit."""
 
@@ -15687,6 +15715,13 @@ def serve_until_drained(httpd) -> None:
             if not busy:
                 break
             time.sleep(0.2)
+        # SRV-911 (E28): those counts drop at the end of `_serve`, but its handler thread still unwinds
+        # the request: its frames and their tensors are freed, the usage row is handed over, the
+        # socket closed. A process that ended under that aborted ("terminate called without an active
+        # exception"): a tensor's free took the GIL back during the interpreter's finalization, and
+        # the thread's forced exit unwound through torch. So wait for those threads too.
+        if not _handler_tails(httpd):
+            print("[server] a request's handler thread still runs after 30 s; stopping anyway", flush=True)
         # The usage ledger is the one thing that does persist: what is queued is flushed now,
         # after the last request's row was handed over -- and the conductor's journal with it.
         # The live conversations to the NVMe, read back by the next start

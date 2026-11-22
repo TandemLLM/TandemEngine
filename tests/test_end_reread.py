@@ -1507,6 +1507,71 @@ def test_a_server_stopped_during_a_read_exits_cleanly():
     return f"rc 0; {m.group(0)[len('[cache] '):][:120]}; then the drain's [server] stopped; markers {got}"
 
 
+def test_the_drain_waits_for_a_handlers_tail_not_for_an_idle_connection():
+    """E28b: the drain's last wait (`_handler_tails`): a handler thread still in its request (the tail after
+    `_serve`'s counts drop: its frames freed, the usage row, the socket) is waited for; one that waits on its
+    keep-alive connection for the next request is not, so a client that keeps its connection open does not hold a
+    stop; a tail that outlives the timeout is reported (False), not waited for."""
+    import http.client
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from server import app
+    inside = threading.Event()
+    t_in: list = []
+
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        timeout = 60
+
+        def do_GET(self):
+            if self.path.startswith("/slow"):
+                t_in.append(time.monotonic())
+                inside.set()
+                time.sleep(float(self.path.split("=")[1]))
+            b = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+
+    def slow(port, s):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        c.request("GET", f"/slow?s={s}", headers={"Connection": "close"})
+        c.getresponse().read()
+
+    got = []
+    for s, limit in ((1.5, 5.0), (2.0, 0.2)):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        idle = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        idle.request("GET", "/")
+        idle.getresponse().read()                  # its thread now waits for the next request on this connection
+        inside.clear()
+        threading.Thread(target=slow, args=(port, s), daemon=True).start()
+        assert inside.wait(10)
+        httpd.shutdown()
+        t0 = time.monotonic()
+        ok = app._handler_tails(httpd, timeout=limit)
+        t1 = time.monotonic()
+        got.append((ok, t1 - t0, t1 - t_in[-1]))
+        idle.close()
+        httpd.server_close()
+        if not ok:
+            time.sleep(s)                          # the slow handler ends before the next case
+    (ok1, dt1, since1), (ok2, dt2, _) = got
+    # the wait ended after the slow tail's 1.5 s (`shutdown` itself takes up to its 0.5 s poll), not after the idle
+    # connection's 60 s timeout
+    assert ok1 and since1 >= 1.5 and dt1 < 4.0, got
+    assert not ok2 and dt2 < 1.0, got              # the cap holds
+    return (f"returned {since1:.2f} s after the slow request began (its tail 1.5 s; the idle keep-alive not waited "
+            f"for); a 2 s tail past a 0.2 s cap: False in {dt2:.2f} s")
+
+
 def test_the_real_template_decides_the_rows():
     """E25 (HY4_TOKENIZER: a directory with the pack's tokenizer.json, tokenizer_config.json and chat_template.jinja):
     `_next_rows` on Hy4-flash's own template and ids. Thinking on without tools: the next prompt parts at the prompt end
