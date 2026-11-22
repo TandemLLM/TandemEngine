@@ -16,9 +16,12 @@
     language, the call markers' own ids, the handler on both transports); tool_choice none is the
     document, required the calls; the model's own first answer token picks the branch (the
     product automaton's sides, the row's argmax, exact under speculation);
-  * ENG-581: the same in the arg-key form (Flint; Hy4-flash with its `<tool_calls>` wrapper): its
-    own calls beside the document, the sides, the pick with the form's tags and the wrapper as the
-    model's ids, exact under speculation, the handler on both transports; Pythonic keeps the 400.
+  * ENG-581: the same in the arg-key form (Flint with thinking off; Hy4-flash with its `<tool_calls>`
+    wrapper): its own calls beside the document, the sides, the pick with the form's tags and the
+    wrapper as the model's ids, exact under speculation, the handler on both transports; Pythonic
+    keeps the 400, and so does Flint with thinking on (its own `<think>` opener is in neither
+    branch); whitespace first stays open only beside a JSON document; a tool schema the calls
+    cannot read is a 400, not a 500.
 
 Run: python tests/test_grammar.py
 """
@@ -1120,8 +1123,9 @@ def test_a_picked_argkey_branch_is_exact_under_speculation():
 
 
 def test_the_handler_serves_the_argkey_form():
-    # STATE["spec"] in the arg-key form (Flint's; Hy4-flash's adds the wrapper, which the toy tokenizer cannot
-    # leave out of the text): the document or a call, read by the form's reader, on both transports
+    # STATE["spec"] in the bare arg-key form (no wrapper and no reasoning of its own; Flint's own spec is
+    # test_a_model_that_opens_its_own_reasoning_needs_thinking_off's, and Hy4-flash's wrapper the toy tokenizer
+    # cannot leave out of the text): the document or a call, read by the form's reader, on both transports
     spec = ServeSpec(tool_format="argkey")
     seen = {}
     for stream in (False, True):

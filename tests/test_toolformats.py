@@ -236,17 +236,22 @@ def test_a_form_with_its_own_calls_joins_a_document():
 
 
 def test_a_schema_the_calls_cannot_read_is_a_400():
-    """ENG-581's review: a function whose `parameters.properties` is not an object, or whose `required` is not a
-    list of names, stopped every form's `forced_regex` with a TypeError (a 500) under `tool_choice` required, a
-    named function and auto beside a document; now each is the 400 on `tools`. An empty list stands for no
-    properties as before, and only the functions the calls may name are read."""
+    """ENG-581's review: a function whose `parameters.properties` is not an object, or whose `required` is null, a
+    number, a bool or a list holding objects, stopped every form's `forced_regex` with a TypeError (a 500) under
+    `tool_choice` required, a named function and auto beside a document; now each is the 400 on `tools`. What was
+    served still is: an empty list for no properties, a `required` string, list of numbers or object. Only the
+    functions the calls may name are read."""
     from server import compat
     fmts = _formats()
     ok = {"type": "function", "function": {"name": "ok", "parameters": {"type": "object", "properties": {}}}}
     bad = {"props a list": {"properties": ["a"]}, "props a string": {"properties": "a"},
            "required null": {"properties": {"a": {"type": "string"}}, "required": None},
            "required a number": {"properties": {"a": {"type": "string"}}, "required": 1},
+           "required a bool": {"properties": {"a": {"type": "string"}}, "required": True},
            "required objects": {"properties": {"a": {"type": "string"}}, "required": [{"a": 1}]}}
+    served = [{"properties": []}, {"properties": {"a": {"type": "string"}}, "required": "a"},
+              {"properties": {"a": {"type": "string"}}, "required": [1]},
+              {"properties": {"a": {"type": "string"}}, "required": {"a": 1}}]
     bodies = {"required": {"tool_choice": "required"},
               "named": {"tool_choice": {"type": "function", "function": {"name": "f"}}},
               "auto + document": {"response_format": {"type": "json_object"}}}
@@ -268,10 +273,14 @@ def test_a_schema_the_calls_cannot_read_is_a_400():
             a = compat.answer_constraint({"messages": [], "tools": tools, "tool_choice": {
                 "type": "function", "function": {"name": "ok"}}}, True, fmt=fmt)
             assert a is not None and a.kind == "tool_choice", (name, label)
-        empty = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": []}}}]
-        assert compat.answer_constraint({"messages": [], "tools": empty, "tool_choice": "required"}, True,
-                                        fmt=fmt) is not None, name
-    return f"{seen} 400s on tools over {len(fmts)} forms; a named call reads its own function only; [] as before"
+        for params in served:
+            tools = [{"type": "function", "function": {"name": "f", "parameters": dict(params, type="object")}}]
+            for mode, extra in bodies.items():
+                if mode != "auto + document" or fmt.joins_documents:
+                    got = compat.answer_constraint(dict(extra, messages=[], tools=tools), True, fmt=fmt)
+                    assert got is not None, (name, params)
+    return (f"{seen} 400s on tools over {len(fmts)} forms; a named call reads its own function only; "
+            f"{len(served)} odd shapes served as before")
 
 
 if __name__ == "__main__":

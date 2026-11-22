@@ -442,9 +442,10 @@ def tool_constraint(body: dict, fmt=None, allowed: list | None = None,
 
 
 def _call_schemas(tools: list, allowed: list, grammar) -> None:
-    """The schemas a call constraint reads (each form's `forced_regex`), in the shape it reads them: a function's
-    `parameters.properties` an object and, beside it, `required` a list of names. Anything else stopped
-    `forced_regex` with a TypeError, a 500 (ENG-581); now a GrammarError, the caller's 400 on `tools`. Only the
+    """The schemas a call constraint reads (each form's `forced_regex`), where they stopped it with a TypeError, a
+    500 (ENG-581): a function's `parameters.properties` that is not an object, or, beside it, a `required` that is
+    no collection of names (null, a number, a list holding objects). Now a GrammarError, the caller's 400 on
+    `tools`; every shape that was served (a `required` string or list of numbers among them) still is. Only the
     functions the calls may name are read, as there."""
     for t in tools:
         fn = t.get("function") if isinstance(t, dict) else None
@@ -457,10 +458,11 @@ def _call_schemas(tools: list, allowed: list, grammar) -> None:
         if not isinstance(props, dict):
             raise grammar.GrammarError(f"function {name!r}: parameters.properties must be an object, "
                                        f"got {type(props).__name__}")
-        req = params.get("required", [])
-        if not isinstance(req, list) or not all(isinstance(k, str) for k in req):
+        try:
+            set(params.get("required", []))             # what forced_regex makes of it
+        except TypeError:
             raise grammar.GrammarError(f"function {name!r}: parameters.required must be a list of "
-                                       f"parameter names")
+                                       f"parameter names") from None
 
 
 def in_wrapper(pattern: str, wrapper: tuple, grammar) -> str:
