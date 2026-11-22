@@ -10,6 +10,6 @@
     "tools": true,
     "vision": false,
     "structured": false,
-    "parallel_tool_calls": false
+    "parallel_tool_calls": true
   }
 }
