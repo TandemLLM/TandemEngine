@@ -471,20 +471,21 @@ class Answer(NamedTuple):
     markers: tuple = ()
 
 
-def answer_constraint(body: dict, chat: bool = True, xml_calls: bool = True,
+def answer_constraint(body: dict, chat: bool = True, xml_calls: bool | None = None,
                       fmt=None, wrapper: tuple = ()) -> Answer | None:
     """The constraint on the answer (after the reasoning), or None.
 
     `tool_choice` required or named: the calls (`tool_constraint`), a document asked for beside
     them checked and left out (the turn calls). No tools, or `tool_choice` none: the document
     (`structured_pattern`). SRV-619: tools under auto with a document: either, as one
-    automaton -- the calls in the model's format (any offered function, more than one unless
+    automaton -- the calls in the model's own form (ENG-581: the form's `forced_regex`, the one
+    `required` uses, inside the family's call wrapper; any offered function, more than one unless
     `parallel_tool_calls` is false) or the document alone, the branch the model's own first answer
     token picks (a call's start: the calls; anything else: the document), so an agent loop that asks for its
-    final answer as JSON keeps its tools. `xml_calls` false (a model whose calls are not the XML
-    format, its `ToolFormat.joins_documents`): the 400 as before. `fmt`: the model's own form (a
-    `ToolFormat` or its name, server/api/toolformats), whose forced calls and markers tool_choice takes.
-    `wrapper`: the family's call wrapper (`ServeSpec.call_wrapper`, ENG-472) around the forced calls.
+    final answer as JSON keeps its tools. `xml_calls`: None reads the form's `joins_documents`;
+    false (a form without a call constraint of its own, Pythonic): the 400. `fmt`: the model's own form (a
+    `ToolFormat` or its name, server/api/toolformats), whose calls and markers both paths take.
+    `wrapper`: the family's call wrapper (`ServeSpec.call_wrapper`, ENG-472) around the calls.
     """
     from engine import grammar
     from server.api import toolformats
@@ -498,19 +499,22 @@ def answer_constraint(body: dict, chat: bool = True, xml_calls: bool = True,
         return None
     if not chat or not body.get("tools") or tool_choice(body)[0] == "none":
         return Answer(doc, "response_format", None, False)
-    if not xml_calls:
-        raise Refusal("tools", "structured outputs with tools need the XML tool-call format; "
-                               "send tool_choice none or no tools")
+    if not (form.joins_documents if xml_calls is None else xml_calls):
+        raise Refusal("tools", "structured outputs with tools are not served in this model's "
+                               "tool-call format; send tool_choice none or no tools")
     # the flat `{"name": ..., "parameters": ...}` form read as a function tool
     fns = [t if "function" in t else {"type": "function", "function": t} for t in body["tools"]]
     names = [t["function"]["name"] for t in fns]
     try:
-        calls, typed = grammar.tool_call_regex(fns, names,
-                                               many=body.get("parallel_tool_calls") is not False)
+        calls, typed = form.forced_regex(fns, names, many=body.get("parallel_tool_calls") is not False,
+                                         grammar=grammar)
+        calls = in_wrapper(calls, wrapper, grammar)
     except grammar.GrammarError as exc:
         raise Refusal("tools", f"structured outputs with tools: {exc}")
+    # the XML form has no tags of its own (`form.markers` empty): its call markers, as before ENG-581
+    markers = (tuple(form.markers) or grammar.CALL_MARKERS) + tuple(wrapper)
     return Answer(grammar.calls_or_document(calls, doc), "response_format", typed or None, True,
-                  (calls, doc), markers=grammar.CALL_MARKERS)
+                  (calls, doc), markers=markers)
 
 
 
@@ -639,8 +643,7 @@ def act_constraint(c: dict, body: dict, chat: bool, vocab: int, fmt=None, struct
                 raise ActRefused(f"kind {kind!r} is not one of regex, choice, json_schema, "
                                  f"logit_bias")
             same = {"structured_outputs": so}
-            answer = answer_constraint(dict(body, **same), chat, xml_calls=form.joins_documents,
-                                       fmt=form, wrapper=wrapper)
+            answer = answer_constraint(dict(body, **same), chat, fmt=form, wrapper=wrapper)
         gram = compile(answer) if compile is not None else None
     except ActRefused:
         raise

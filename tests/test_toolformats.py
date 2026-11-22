@@ -10,6 +10,8 @@ For every registered `ToolFormat` (server/api/toolformats) and every family's `S
      accepted where the two differ
   4  C4's line shows the offered tool and argument and no placeholder; a broken block's reason names none
   5  the argument loop guard reads the open call's name
+  6  ENG-581: the XML and arg-key forms join calls and a document (the request's or SET_CONSTRAINT's), the
+     Pythonic form answers 400
 
 CPU. Run: python tests/test_toolformats.py
 """
@@ -120,7 +122,9 @@ def test_the_loop_guard_reads_the_open_calls_name():
 
 
 # ENG-472: the forced calls and their vocabulary as every form had them before a family could name a call wrapper
-# (recorded on 7f2a41f5): a family without one (`ServeSpec.call_wrapper` empty) keeps them byte for byte
+# (recorded on 7f2a41f5): a family without one (`ServeSpec.call_wrapper` empty) keeps them byte for byte. ENG-581
+# re-records the arg-key form's on purpose (on 7ebed84e): its fourth body, the calls-or-document union, was the 400
+# and is now its own calls beside the document; the XML and Pythonic forms' stand
 FORCED_BODIES = (
     {"tools": TOOLS, "tool_choice": "required"},
     {"tools": TOOLS, "tool_choice": "required", "parallel_tool_calls": True},
@@ -128,7 +132,7 @@ FORCED_BODIES = (
     {"tools": TOOLS, "tool_choice": "auto", "response_format": {"type": "json_object"}},
 )
 FORCED_PIN = {"pythonic": "2ab9f22930de2d8ea1480e14d0c2c69b6227b639ced102615f5b55ad5ffd246d",
-              "argkey": "91f4714a8bce37987c65ac7a579e30058208785de7599f05369d8cc9bbbde8ad",
+              "argkey": "ec15c9eb244d3c285fa16f20c64f4c979f581ec2a244672b2c3a2bd19a592492",
               "xml": "52fcdc8c06cf05fde77f36a271af53d8296f6a82499cb7b5de0b4e10069cd8ea"}
 VOCAB_PIN = "7337e27bc882782fc16940104e0ad03c7c39a495c1915a2b2f13d264c894ece3"
 
@@ -167,7 +171,7 @@ def _forced_digest(fmt) -> str:
     rows = []
     for body in FORCED_BODIES:
         try:
-            a = compat.answer_constraint(dict(body, messages=[]), True, xml_calls=fmt.joins_documents, fmt=fmt)
+            a = compat.answer_constraint(dict(body, messages=[]), True, fmt=fmt)
             rows.append(None if a is None else [a.pattern, a.kind, sorted((k, sorted(v)) for k, v in (a.types or {}).items()),
                                                 a.calls, a.parts, list(a.markers)])
         except compat.Refusal as exc:
@@ -199,6 +203,36 @@ def test_a_form_without_a_wrapper_keeps_its_forced_calls():
     named = {n for n, a in REGISTRY.items() if getattr(a.spec, "call_wrapper", ())}
     assert named <= {"hy_v4_flash"}, named
     return f"{len(got)} forms x {len(FORCED_BODIES) + 1} constraints, one vocabulary per form's markers; wrappers: {sorted(named)}"
+
+
+def test_a_form_with_its_own_calls_joins_a_document():
+    """ENG-581: the XML and arg-key forms join calls and a document under auto (`joins_documents`), the Pythonic
+    form keeps the 400; the extension's SET_CONSTRAINT regex beside tools joins the same way on the arg-key form,
+    with the family's wrapper around the calls and the form's tags and the wrapper as markers."""
+    from server import compat
+    from server.api.toolformats import argkey
+    fmts = _formats()
+    assert {n for n, f in fmts.items() if f.joins_documents} == {"xml", "argkey"}, fmts
+    body = {"messages": [], "tools": TOOLS, "response_format": {"type": "json_object"}}
+    try:
+        compat.answer_constraint(body, True, fmt="pythonic")
+        raise AssertionError("the Pythonic form cannot join a document")
+    except compat.Refusal as exc:
+        assert exc.param == "tools" and "not served in this model's tool-call format" in str(exc), str(exc)
+    wrapper = ("<tool_calls>", "</tool_calls>")
+    for wrap in ((), wrapper):
+        act = compat.act_constraint({"kind": "regex", "value": "[a-z]{1,8}", "scope": None, "strict": False},
+                                    {"messages": [], "tools": TOOLS}, True, 265, fmt="argkey", wrapper=wrap)
+        a = act.answer
+        assert a.kind == "response_format" and a.calls and a.parts is not None, a
+        assert a.markers == argkey.MARKERS + wrap and act.same_as == {"structured_outputs": {"regex": "[a-z]{1,8}"}}
+        d = G.compile_regex(a.pattern)
+        for text, ok in (("abc", True), (fmts["argkey"].forced_render("write_file", {"path": "a", "content": "b"}), True),
+                         ("<tool_calls><tool_call>write_file<arg_key>path</arg_key><arg_value>a</arg_value><arg_key>"
+                          "content</arg_key><arg_value>b</arg_value></tool_call></tool_calls>", bool(wrap)),
+                         ("<tool_call>\n<function=write_file>\n</function>\n</tool_call>", False), ("", False)):
+            assert bool(d.accept[d.walk(d.start, text.encode())]) == ok, (wrap, text)
+    return "xml and argkey join, pythonic refuses; the act's regex joins the arg-key calls, with and without the wrapper"
 
 
 if __name__ == "__main__":

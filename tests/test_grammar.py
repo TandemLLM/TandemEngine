@@ -15,7 +15,10 @@
   * SRV-619, SRV-620: a document with tools under auto is the calls or the document alone (the
     language, the call markers' own ids, the handler on both transports); tool_choice none is the
     document, required the calls; the model's own first answer token picks the branch (the
-    product automaton's sides, the row's argmax, exact under speculation).
+    product automaton's sides, the row's argmax, exact under speculation);
+  * ENG-581: the same in the arg-key form (Flint; Hy4-flash with its `<tool_calls>` wrapper): its
+    own calls beside the document, the sides, the pick with the form's tags and the wrapper as the
+    model's ids, exact under speculation, the handler on both transports; Pythonic keeps the 400.
 
 Run: python tests/test_grammar.py
 """
@@ -288,13 +291,14 @@ def test_the_handler_refuses_what_it_cannot_serve():
             (extra, head, raw[:200])
     head, raw, _, _ = _ask(response_format={"type": "json_object"}, tools=tools, tool_choice="none")
     assert head.startswith("HTTP/1.1 200"), "tool_choice none takes the tools out of the request"
-    # SRV-619: a model whose calls are not the XML format keeps the 400 with tools
+    # SRV-619, ENG-581: a form without a call constraint of its own (Pythonic) keeps the 400 with tools
     C.serve()
     app.STATE["spec"] = ServeSpec(tool_format="pythonic")
     head, raw = C.Req("/v1/chat/completions", {"messages": [{"role": "user", "content": "x"}],
                                               "response_format": {"type": "json_object"},
                                               "tools": tools}).response()
     assert head.startswith("HTTP/1.1 400") and json.loads(raw)["error"]["param"] == "tools", raw
+    assert "not served in this model's tool-call format" in json.loads(raw)["error"]["message"], raw
     # a constraint the vocabulary cannot write: non-streamed, a 400 that names it; streamed, the
     # stream closes with finish_reason error and the reason
     head, raw, _, _ = _ask(structured_outputs={"regex": "é+"})
@@ -683,8 +687,10 @@ def test_the_call_markers_keep_their_own_ids():
 BRANCHES: list = []
 
 
-def _answer(stream, **extra):
+def _answer(stream, spec=None, **extra):
     C.serve()
+    if spec is not None:
+        app.STATE["spec"] = spec                 # the family's ServeSpec (serve() clears STATE)
     body = dict({"messages": [{"role": "user", "content": "hello there"}], "max_tokens": 120,
                  "stream": stream}, **extra)
     real = getattr(G.Grammar, "branch", None)
@@ -889,6 +895,233 @@ def test_the_handler_lets_the_model_pick():
         assert finish == "tool_calls" and len(names) == 1 and BRANCHES == [], (finish, names)
         seen[f"call/{tag}"] = "calls"
     return f"{seen}; json_object: the document; none and required: unchanged"
+
+
+# ------------------------------------------------------------------ ENG-581: the arg-key form's calls beside a document
+
+#: Hy4-flash's call wrapper (engine/models/hy4_flash, `ServeSpec.call_wrapper`); Flint names none
+WRAP = ("<tool_calls>", "</tool_calls>")
+AK_CALL = "<tool_call>read_file<arg_key>path</arg_key><arg_value>/etc/hosts</arg_value></tool_call>"
+AK_NOW = "<tool_call>now</tool_call>"
+DOC = '{"signal": "buy", "ok": true}'
+
+
+def _argkey_union(tools=TOOLS, rf=JS, wrapper=WRAP, **extra):
+    body = dict({"messages": [], "tools": tools}, **extra)
+    if rf is not None:
+        body["response_format"] = rf
+    a = C.compat.answer_constraint(body, fmt="argkey", wrapper=wrapper)
+    return a, G.compile_regex(a.pattern)
+
+
+def test_the_calls_or_the_document_in_the_argkey_form():
+    from server.api.toolformats import argkey
+    names = ["read_file", "set", "now"]
+    _, typed = argkey.forced_regex(TOOLS, names, grammar=G)
+    xml = "<tool_call>\n<function=now>\n</function>\n</tool_call>"
+    wrapped = WRAP[0] + AK_CALL + "\n" + AK_NOW + WRAP[1]
+    for wrapper in ((), WRAP):
+        a, d = _argkey_union(wrapper=wrapper)
+        assert a.kind == "response_format" and a.calls and a.parts is not None, a
+        assert a.types == typed == {"set": {"n", "tags"}} and a.markers == argkey.MARKERS + wrapper, a
+        ok = [AK_CALL, "\n\n" + AK_CALL + "\n" + AK_NOW, DOC, "\n\n" + DOC + "\n",
+              '{\n  "signal": "hold",\n  "ok": false\n}']
+        bad = [AK_CALL + "\n" + DOC, DOC + "\n" + AK_CALL, "```json\n" + DOC + "\n```", "Here it is: " + DOC, xml,
+               WRAP[1], WRAP[0] + WRAP[1], ""]
+        (ok if wrapper else bad).append(wrapped)
+        for t in ok:
+            assert _in(d, t), (wrapper, t)
+        for t in bad:
+            assert not _in(d, t), (wrapper, t)
+        # one copy of the call language for many calls, as for the XML form
+        one = C.compat.in_wrapper(argkey.forced_regex(TOOLS, names, many=False, grammar=G)[0], wrapper, G)
+        parts = G.compile_regex(one).states + G.compile_regex(G.WS + G.schema_regex(SIG) + G.WS).states
+        assert d.states <= parts + 16, (wrapper, d.states, parts)
+        _, d1 = _argkey_union(wrapper=wrapper, parallel_tool_calls=False)
+        assert _in(d1, AK_CALL) and _in(d1, DOC) and not _in(d1, AK_CALL + "\n" + AK_NOW)
+        jo, dj = _argkey_union(wrapper=wrapper, rf={"type": "json_object"})
+        assert jo.calls and _in(dj, AK_CALL) and _in(dj, '{"any": [1, {"x": null}]}')
+        assert not _in(dj, "[1, 2]") and not _in(dj, "```json\n{}\n```")
+        so, ds = _argkey_union(wrapper=wrapper, rf=None, structured_outputs={"choice": ["yes", "no"]})
+        assert so.calls and _in(ds, "yes") and _in(ds, AK_NOW) and not _in(ds, "yes" + AK_NOW)
+        flat, df = _argkey_union(tools=[{"name": "now"}], wrapper=wrapper)
+        assert flat.calls and _in(df, AK_NOW) and _in(df, DOC) and not _in(df, xml)
+    return (f"no wrapper and Hy4-flash's: {len(ok)} in (a call, two, the document compact and indented, the "
+            f"wrapped turn), {len(bad)} out (a call and the document, fences, prose, an XML-form call, a closer "
+            f"alone, empty); parallel false, json_object, choice, flat tools")
+
+
+def test_the_argkey_product_knows_its_branches():
+    pieces = [WRAP[0], WRAP[1], "<tool_call>", "</tool_call>", "pick", "mark", "<arg_key>", "</arg_key>",
+              "<arg_value>", "</arg_value>", "color", "level", "red", "hi", "{", "}", '"signal"', '"buy"', ":",
+              ",", '"ok"', "true", " ", "\n", "x"]
+    ids = (lambda text: [(ord(c) - 32) % 96 for c in text])
+    for wrapper in ((), WRAP):
+        a, ref = _argkey_union(tools=MARK, wrapper=wrapper)
+        g = G.Grammar(a.pattern, G.Vocab.from_tokenizer(C.Tok(), 97), a.parts)
+        d, side = g.dfa, g.side
+        assert side[d.start] == G.BOTH and g.open(d.start)
+        for text, want in (("  ", G.BOTH), ("<", G.FIRST), ("<tool_call>", G.FIRST),
+                           (WRAP[0], G.FIRST if wrapper else G.NEITHER), ("{", G.SECOND), (' {"sig', G.SECOND),
+                           ("```", G.NEITHER), ("Here", G.NEITHER)):
+            assert side[d.walk(d.start, text.encode())] == want, (wrapper, text)
+        rng = random.Random(11)
+        for _ in range(3000):
+            t = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 14)))
+            assert _in(ref, t) == bool(d.accept[d.walk(d.start, t.encode())]), (wrapper, t)
+        assert g.branch(ids(DOC)) == "document" and g.branch(ids("<tool_call>mark")) == "calls"
+    # a document that can open with `<`: open until the two part, as on the XML form
+    a, _ = _argkey_union(tools=MARK, rf=None, structured_outputs={"regex": "<b>[a-z]+</b>"})
+    g = G.Grammar(a.pattern, G.Vocab.from_tokenizer(C.Tok(), 97), a.parts)
+    for text, want in (("<", G.BOTH), ("<b", G.SECOND), ("<tool", G.FIRST)):
+        assert g.side[g.dfa.walk(g.dfa.start, text.encode())] == want, text
+    return (f"{d.states} states with the wrapper; the wrapper's opener a call only with it; 3,000 strings == the "
+            f"union; a regex document opening with `<` stays open until `<b` or `<tool`")
+
+
+#: the arg-key form's tags (argkey.MARKERS)
+AK_TAGS = ("<tool_call>", "</tool_call>", "<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>")
+
+
+class ArgKeyTok(C.Tok):
+    """The toy tokenizer with the arg-key form's tags as added ids 97-102, text in the answer, and Hy4-flash's
+    wrapper as 103 and 104, which the text leaves out (`silent_tags`, engine/models/hy4_flash/tokenizer.py)."""
+
+    added_tokens_decoder = {97 + k: t for k, t in enumerate(AK_TAGS + WRAP)}
+    silent_tags = {WRAP[0]: 103, WRAP[1]: 104}
+
+    def __len__(self):
+        return 105
+
+    def convert_tokens_to_ids(self, text):
+        return next((i for i, t in self.added_tokens_decoder.items() if t == text), -1)
+
+    def decode(self, seq, skip_special_tokens=True):
+        return "".join("" if int(t) in (103, 104) else self.added_tokens_decoder[int(t)]
+                       if int(t) in self.added_tokens_decoder
+                       else super(ArgKeyTok, self).decode([t], skip_special_tokens) for t in seq)
+
+
+def test_the_row_argmax_picks_the_argkey_branch():
+    # Hy4-flash's first call token is the wrapper's silent opener: with its bytes in the vocabulary it is a call;
+    # `<tool_call>` the same; a fence, prose and the end token the document; whitespace leaves it open
+    tok = ArgKeyTok()
+    a, _ = _argkey_union(tools=MARK)
+    v = G.Vocab.from_tokenizer(tok, 105, markers=a.markers)
+    assert v.bytes[103] == WRAP[0].encode() and v.bytes[97] == b"<tool_call>" and v.bytes[C.EOS] is None
+    g = G.Grammar(a.pattern, v, a.parts)
+    eos = frozenset({C.EOS})
+    tags = list(range(97, 105))
+    for top, second, want in ((103, LBRACE, "calls"), (97, LBRACE, "calls"), (LT, LBRACE, "calls"),
+                              (BACKTICK, 103, "document"), (H, 97, "document"), (C.EOS, 103, "document"),
+                              (LBRACE, 103, "document"), (0, 103, "all")):
+        row = torch.zeros(105)
+        row[second], row[top] = 5.0, 9.0
+        assert g.pick(g.dfa.start, top) == want, (top, want)
+        cons = G.Constraint(g, eos, "cpu")
+        cons.apply_single(row)
+        if want == "document":
+            assert not torch.isfinite(row[tags]).any() and torch.isfinite(row[LBRACE]), top
+        elif want == "calls":
+            assert int(row.argmax()) == top and not torch.isfinite(row[LBRACE]), top
+        else:
+            assert int(row.argmax()) == 0 and torch.isfinite(row[[97, 103, LBRACE]]).all()
+    # committed, the side is fixed: after `{` no tag; after the opener `<tool_call>` and no document
+    cons = G.Constraint(g, eos, "cpu")
+    cons.commit([LBRACE])
+    row = torch.zeros(105)
+    row[tags] = 9.0
+    cons.apply_single(row)
+    assert not torch.isfinite(row[tags]).any(), "after `{` no tag is legal"
+    cons = G.Constraint(g, eos, "cpu")
+    cons.commit([103])
+    m = g.mask(cons.state, eos, "cpu")
+    assert bool(m[97]) and not bool(m[LBRACE]) and not bool(m[C.EOS])
+    # the wrapped call as the model writes it walks to an accepting state on the calls side, its text without
+    # the wrapper
+    seq = ([103, 97] + [(ord(c) - 32) % 96 for c in "mark"] + [99] + [(ord(c) - 32) % 96 for c in "level"]
+           + [100, 101] + [(ord(c) - 32) % 96 for c in "hi"] + [102, 98, 104])
+    cons = G.Constraint(g, eos, "cpu")
+    cons.commit(seq)
+    assert g.dfa.accept[cons.state] and g.branch(seq) == "calls", seq
+    assert tok.decode(seq) == "<tool_call>mark<arg_key>level</arg_key><arg_value>hi</arg_value></tool_call>"
+    return "the wrapper's opener, <tool_call> or `<` -> the calls; fence, prose, the end, `{` -> the document"
+
+
+def test_a_picked_argkey_branch_is_exact_under_speculation():
+    # as test_a_picked_branch_is_exact_under_speculation, on Hy4-flash's union (the toy vocabulary spells the tags
+    # out): biased to a fence first the document, to `<` one call (parallel_tool_calls false, so the bias does not
+    # open call after call), which takes about 110 tokens
+    from engine.penalty import PenaltySpec, PenaltyState
+    took = {}
+    for label, bias, n, extra, want in (("document", {0: -50.0, BACKTICK: 50.0, LT: 20.0}, 60, {}, "document"),
+                                        ("calls", {0: -50.0, LT: 50.0, LBRACE: 30.0}, 140,
+                                         {"parallel_tool_calls": False}, "calls")):
+        a, _ = _argkey_union(tools=MARK, **extra)
+
+        def run(dr=None, tree=False):
+            C.serve(dr, tree=tree)
+            g = G.Grammar(a.pattern, G.Vocab.from_tokenizer(C.Tok(), 97), a.parts)
+            pen = G.LogitChain([PenaltyState(PenaltySpec(bias=bias), 97, "cpu"),
+                                G.Constraint(g, {C.EOS}, "cpu")])
+            return list(app.generate_stream(torch.tensor(C.PROMPT), n, {C.EOS}, pen=pen)), g
+
+        ref, g = run()
+        text = C.Tok().decode(ref)
+        assert ref[-1] == C.EOS and g.branch(ref) == want, (label, text)
+        if want == "document":
+            _valid(text)
+        else:
+            from server.api.toolcall import ToolCallBuffer
+            b = ToolCallBuffer(fmt="argkey")
+            b.feed(text.replace(WRAP[0], "").replace(WRAP[1], ""))
+            b.finish(eos=True)
+            assert len(b.calls) == 1 and b.calls[0]["function"]["name"] in ("pick", "mark"), (text, b.calls)
+        free = C._run(n=n)
+        bad = {}
+        for arm, dr, tree in (("chain, free drafts", C.Oracle(free), False),
+                              ("chain, constrained drafts", C.Oracle(ref), False),
+                              ("tree, free drafts", C.TreeOracle(free), True),
+                              ("tree, constrained drafts", C.TreeOracle(ref), True)):
+            got, _ = run(dr, tree)
+            took[f"{label}/{arm}"] = C._accepted()
+            if got != ref:
+                bad[arm] = got
+        assert not bad, f"{label}: differs from the drafter-less run: {bad}"
+        assert took[f"{label}/chain, constrained drafts"] and took[f"{label}/tree, constrained drafts"], took
+    return f"the document and one call: no drafter, chain and tree agree; drafts accepted {took}"
+
+
+def test_the_handler_serves_the_argkey_form():
+    # STATE["spec"] in the arg-key form (Flint's; Hy4-flash's adds the wrapper, which the toy tokenizer cannot
+    # leave out of the text): the document or a call, read by the form's reader, on both transports
+    spec = ServeSpec(tool_format="argkey")
+    seen = {}
+    for stream in (False, True):
+        tag = "stream" if stream else "json"
+        content, names, finish = _answer(stream, spec, tools=MARK, response_format=JS,
+                                         logit_bias={"0": -50, str(BACKTICK): 50, str(LT): 30})
+        assert finish == "stop" and names == [] and BRANCHES == ["document"], (stream, finish, names, BRANCHES)
+        _valid(content)
+        content, names, finish = _answer(stream, spec, tools=MARK, response_format={"type": "json_object"},
+                                         logit_bias={"0": -50, str(BACKTICK): 50, str(LT): 30,
+                                                     str(RBRACE): 40})
+        assert finish == "stop" and names == [] and json.loads(content) == {} and BRANCHES == ["document"]
+        content, names, finish = _answer(stream, spec, tools=MARK, response_format=JS,
+                                         logit_bias={"0": -50, str(LT): 50, str(LBRACE): 30},
+                                         parallel_tool_calls=False)
+        assert finish == "tool_calls" and len(names) == 1 and names[0] in ("pick", "mark"), (finish, names, content)
+        assert BRANCHES == ["calls"] and "<tool_call>" not in content and "{" not in content, (BRANCHES, content)
+        seen[f"calls/{tag}"] = names
+        # tool_choice none and required: one language, no branch to pick
+        content, names, finish = _answer(stream, spec, tools=MARK, response_format=JS,
+                                         logit_bias={"0": -50, str(LT): 50}, tool_choice="none")
+        assert finish == "stop" and names == [] and BRANCHES == [], (finish, BRANCHES)
+        _valid(content)
+        content, names, finish = _answer(stream, spec, tools=MARK, response_format=JS,
+                                         logit_bias={"0": -50, str(BACKTICK): 50}, tool_choice="required")
+        assert finish == "tool_calls" and len(names) == 1 and BRANCHES == [], (finish, names, BRANCHES)
+    return f"the document (schema, json_object) and one call {seen}; none and required: no branch"
 
 
 if __name__ == "__main__":

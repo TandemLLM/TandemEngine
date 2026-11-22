@@ -1,9 +1,10 @@
 """Hy4-flash's tags under the names the server's parsers read (engine/models/hy4_flash/tokenizer.py).
 
 Without the checkpoint's files: the renaming on a stand-in tokenizer, a call in the model's own form read by
-the arg-key parser whole and streamed, the effort words. With HY4_TOKENIZER (a directory with the checkpoint's
-tokenizer.json, tokenizer_config.json and chat_template.jinja): the real template and ids -- thinking on and
-off, the effort line, the tools prompt, an earlier turn's calls written back in the model's form.
+the arg-key parser whole and streamed, the effort words, a forced tool_choice and tools beside a JSON schema
+(ENG-472, ENG-581). With HY4_TOKENIZER (a directory with the checkpoint's tokenizer.json, tokenizer_config.json
+and chat_template.jinja): the real template and ids -- thinking on and off, the effort line, the tools prompt, an
+earlier turn's calls written back in the model's form, the two constraints on the model's own ids.
 """
 
 from __future__ import annotations
@@ -317,6 +318,66 @@ def test_the_real_tokenizer_under_a_forced_tool_choice():
         return SKIP
     tok = _real()
     return _forced(tok, tok._tok.convert_tokens_to_ids("<｜hy_end:opensource｜>"))
+
+
+#: a document beside the tools under tool_choice auto (tool-eval-bench's structured scenarios)
+ANSWER = {"type": "json_schema", "json_schema": {"name": "answer", "schema": {
+    "type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"],
+    "additionalProperties": False}}}
+
+
+def _joined(tok, eos: int) -> str:
+    """ENG-581: tools beside a JSON schema under auto in Hy4-flash's own spec: one automaton of the model's calls
+    in its arg-key form inside its wrapper, or the document. The model's first id picks the side: the wrapper's
+    opener and `<tool_call>` the calls, `{` the document. The template's calls, wrapped and alone, walk to an
+    accepting state on the calls side and their text reads as the calls; the document's ids walk to one on the
+    document side."""
+    from engine import grammar as G
+    from engine.models import REGISTRY
+    from server import compat
+    spec = REGISTRY["hy_v4_flash"].spec
+    fmt = toolformats.get(spec.tool_format)
+    a = compat.answer_constraint({"messages": [], "tools": TOOLS, "response_format": ANSWER}, True, fmt=fmt,
+                                 wrapper=spec.call_wrapper)
+    assert a.kind == "response_format" and a.calls and a.parts is not None, a
+    assert a.markers == tuple(fmt.markers) + tuple(spec.call_wrapper), a.markers
+    g = G.Grammar(a.pattern, G.Vocab.from_tokenizer(tok, len(tok), markers=a.markers), a.parts)
+    opener, closer = (tok.convert_tokens_to_ids(t) for t in spec.call_wrapper)
+    first = tok.convert_tokens_to_ids("<tool_call>")
+    lbrace, = tok._tok("{").input_ids
+    ends = frozenset({eos})
+    start = g.mask(g.dfa.start, ends, "cpu")
+    assert bool(start[opener]) and bool(start[first]) and bool(start[lbrace]) and not bool(start[eos])
+    assert (g.pick(g.dfa.start, opener), g.pick(g.dfa.start, first), g.pick(g.dfa.start, lbrace),
+            g.pick(g.dfa.start, eos)) == ("calls", "calls", "document", "document")
+    for text in (ONE, CALL):
+        ids = tok._tok(text).input_ids
+        assert ids[0] == opener and ids[-1] == closer, ids
+        for seq in (ids, ids[1:-1]):                     # with the wrapper as the model writes it, and the calls alone
+            cons = G.Constraint(g, ends, "cpu")
+            cons.commit(seq)
+            assert g.dfa.accept[cons.state] and g.branch(seq) == "calls", (text, len(seq))
+    doc = tok._tok('{"answer": "four"}').input_ids
+    cons = G.Constraint(g, ends, "cpu")
+    cons.commit(doc)
+    assert g.dfa.accept[cons.state] and g.branch(doc) == "document" and bool(g.mask(cons.state, ends, "cpu")[eos])
+    cons = G.Constraint(g, ends, "cpu")
+    cons.commit(doc[:1])
+    assert not bool(g.mask(cons.state, ends, "cpu")[opener]), "after `{` the wrapper's opener is not legal"
+    _read(tok, tok._tok(CALL).input_ids)
+    return (f"{g.dfa.states} states; the opener {opener} and <tool_call> {first} pick the calls, {{ {lbrace} the "
+            f"document; the template's calls and a document walk to their ends")
+
+
+def test_tools_beside_a_schema_let_the_model_pick_in_its_own_form():
+    return _joined(Hy4Tokenizer(_VocabStand()), 999)
+
+
+def test_the_real_tokenizer_with_tools_beside_a_schema():
+    if SKIP:
+        return SKIP
+    tok = _real()
+    return _joined(tok, tok._tok.convert_tokens_to_ids("<｜hy_end:opensource｜>"))
 
 
 #: the template's turn marks (its lines 3-5), by name

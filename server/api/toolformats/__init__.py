@@ -15,7 +15,11 @@ format through this interface and never names one. A format does what is particu
                             line C4's note shows, never a placeholder a model could copy
   forced_regex(...)         tool_choice required/named as a constraint in this form, and `markers`, the
                             form's tags the constraint lets the model write as its own token ids
-  joins_documents           whether calls and a document can share one constraint (SRV-619)
+  joins_documents           whether calls and a document can share one constraint (SRV-619, ENG-581): the
+                            form's `forced_regex` is the language its model writes calls in, its tags are
+                            text the vocabulary can write as the model's ids, and a call opens with a
+                            character no JSON document opens with (`<`). The XML and arg-key forms; not
+                            the Pythonic form, whose `forced_regex` is the XML form's
   open_call_name(text)      the tool an open block is calling (the argument loop guard's line)
 
 The default form is `xml.py`'s, the one the shared parser reads natively.

@@ -10709,9 +10709,9 @@ class Handler(BaseHTTPRequestHandler):
             # the document a request asks for (response_format, structured_outputs); tool_choice
             # required or named is enforced with the same machinery -- the answer as calls to the
             # allowed functions, their values typed by the schemas; SRV-619: tools under
-            # auto beside a document -- the calls or the document, one automaton
-            ac = (compat.answer_constraint(body, chat,
-                                           xml_calls=_tool_format().joins_documents, fmt=_tool_format(),
+            # auto beside a document -- the calls (in the model's own form, ENG-581) or the
+            # document, one automaton
+            ac = (compat.answer_constraint(body, chat, fmt=_tool_format(),
                                            wrapper=_spec().call_wrapper)
                   if structured else None)
             pattern = ac.pattern if ac is not None else None

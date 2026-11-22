@@ -285,7 +285,7 @@ def _value(schema: dict, text: str, grammar) -> tuple[str, bool]:
 class ArgKeyFormat(ToolFormat):
     name = "argkey"
     markers = MARKERS
-    joins_documents = False
+    joins_documents = True
 
     def rewrite(self, text: str, eos: bool = False) -> str:
         return rewrite_argkey(text, eos=eos)
