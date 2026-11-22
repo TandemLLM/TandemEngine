@@ -73,9 +73,26 @@ device.
   E28  the server stopped (SIGTERM) during a read, in its own process: the read stops at its next chunk, the drain
        waits for the close, exit 0, no core               test_a_server_stopped_during_a_read_exits_cleanly
 
+  SRV-947: a turn the plan served with thinking off (the router closes the open block at the prompt's tail, one id the
+  client never sent, the handler's `hid_tail`):
+  T1   `_next_rows` counts that tail: the next prompt holds the whole answer
+                                                     test_a_turn_the_plan_turned_thinking_off_holds_the_whole_answer
+  T2   through the close: read from the exact prompt end, the end kept; the next turn resumes there, equal to cold
+                                                     test_the_plans_thinking_off_is_read_and_kept_as_the_end
+  T3   with HY4_TOKENIZER, the pack's template and ids, both reasoning formats: the whole answer
+                                                     test_the_packs_template_with_thinking_off_by_the_plan
+  T4   a router's note inside the prompt as well: the whole answer
+                                                     test_off_by_the_plan_with_a_note_inside_holds_the_whole_answer
+  T4b  guards: a tail the next prompt does not start with, and no tail, decide as before
+                                                     test_a_tail_the_template_does_not_write_back_changes_nothing
+  P4   hold 1c's order (A, B over slot 0's guest limit, A2, B2) through the handler on two lanes: both closes read and
+       keep their ends, B takes the side slot, A2 and B2 resume at their ends and forward their new rows only
+                                                     test_p4_order_on_two_lanes_keeps_both_ends
+
 E1 and E6 pass before the fix and after; E2 to E18 fail before it. E19 to E25 fail on the tree before the rows the
 next prompt holds were asked (f8f6a4c1); E25 says "skipped" without HY4_TOKENIZER. E13 and E14 run the handler on the
-tiny Hy4-flash (tests/hy4_tiny.py), which sets the capability.
+tiny Hy4-flash (tests/hy4_tiny.py), which sets the capability. T1 to T4 and P4 fail on 83bbd78d (T3 says "skipped"
+without HY4_TOKENIZER); T4b passes before and after; P4 fails there on B's slot.
 
 Run: python tests/test_end_reread.py
 """
@@ -1136,13 +1153,15 @@ class _chat:
     def prompt(self, body) -> list[int]:
         return self.app.build_prompt(body, self.app.thinking_mod.read(body, strict=False), count="ids")
 
-    def turn(self, body, said: str) -> tuple[list[int], int, str]:
+    def turn(self, body, said: str, tail=None) -> tuple[list[int], int, str]:
         """One turn: the prompt read through the caches, `said` written by decode steps (its last token decided and not
-        forwarded, as the loop leaves it), the turn's close with this request. Returns (context, n, the close's line)."""
+        forwarded, as the loop leaves it), the turn's close with this request. Returns (context, n, the close's line).
+        `tail`: the ids the plan puts at the served prompt's end (the closed think block when it turns thinking off),
+        passed to the close as the handler passes them (`turn`'s fifth item, `hid_tail`)."""
         import contextlib
         import io
         app = self.app
-        prompt = self.prompt(body)
+        prompt = self.prompt(body) + list(tail or ())
         cache.prefill(self.eng, None, list(prompt), "cpu", chunk=CH, resident=self.res, conv_id="A")
         gen = self.tok.encode(said) + [self.tok.eos_token_id]
         n = len(prompt)
@@ -1151,6 +1170,8 @@ class _chat:
         ctx = list(prompt) + gen
         app.STATE.update(last_ctx=list(ctx), last_prompt_n=n)
         turn = (body, app.thinking_mod.read(body, strict=False), 0)
+        if tail is not None:
+            turn += ("reasoning_content", len(tail))
         kw = {"turn": turn} if "turn" in app._remember_turn.__code__.co_varnames else {}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -1538,6 +1559,338 @@ def test_the_real_template_decides_the_rows():
         app.STATE.clear()
         app.STATE.update(keep)
     return "; ".join(out)
+
+
+# ------------------------------------------------------------------ T1 to T4b: thinking off by the plan (SRV-947)
+
+SUMMARY = {"messages": [{"role": "user", "content": "SUMMARISE THE CHAT SO FAR"}]}
+SAID = "THE CHAT COVERS THREE POINTS: THE PLAN, THE COST AND THE DATES."
+
+
+def _by_plan(ch, body):
+    """The served prompt of a turn whose plan turned thinking off (the conductor's `summarize` class), as the router
+    splices it: the rendered prompt's open block closed at the tail (TandemApp `Plan._apply`, `<think>` ->
+    `<think></think>`), so the served prompt is the rendered one plus one closing id. Returns (rendered, served)."""
+    cur = ch.prompt(body)
+    tb, te = ch.tok.TAGS["<think>"], ch.tok.TAGS["</think>"]
+    assert cur[-1] == tb, "the client's thinking is on: the rendered prompt ends in an open block"
+    return cur, cur[:-1] + [tb, te]
+
+
+def test_a_turn_the_plan_turned_thinking_off_holds_the_whole_answer():
+    """T1 (SRV-947): the plan turned thinking off. The served prompt is the rendered one (an open block: the client's
+    thinking is on) plus the closed block's one id. The template writes the answer back after an empty block, so the
+    next prompt holds that close and then every answer row. `_next_rows` counts the served tail (`turn`'s fifth item,
+    the handler's `hid_tail`): the whole answer. Before, the close was compared with the answer's first token: "it
+    parts at the prompt end", and nothing was read."""
+    from server import app
+    with _chat(_prefix()) as ch:
+        client = app.thinking_mod.read(SUMMARY, strict=False)
+        cur, served = _by_plan(ch, SUMMARY)
+        gen = ch.tok.encode(SAID) + [ch.tok.eos_token_id]
+        got, why = app._next_rows((SUMMARY, client, 0, "reasoning_content", len(served) - len(cur)), served + gen,
+                                  len(served))
+    assert got == len(served) + len(gen) and why == "it holds the whole answer", (got - len(served), len(gen), why)
+    return f"{got - len(served)} of the answer's {len(gen)} rows ({why})"
+
+
+def test_the_plans_thinking_off_is_read_and_kept_as_the_end():
+    """T2: the same turn through the close (`_remember_turn`, `_close_read`): the answer's rows are read again from the
+    exact prompt end, the end is kept there, exact, and the next turn (the client's copy of the answer and a new
+    message) resumes at it, forwarding its new rows only, equal to a cold read. Before: skip, no end, and the next turn
+    read the answer again from the prompt end."""
+    res = _prefix()
+    with _chat(res) as ch:
+        cur, served = _by_plan(ch, SUMMARY)
+        ctx, n, line = ch.turn(SUMMARY, SAID, tail=served[len(cur):])
+        e = len(ctx) - 1
+        last = res.stats.get("end_reread_last") or {}
+        assert "end re-read: read," in line and "it holds the whole answer" in line and "end kept" in line, line
+        assert res.end is not None and res.end["at"] == e and res.end.get("exact"), (res.end, line)
+        assert last.get("from") == "pend" and last.get("at") == n and last.get("held") == e - n, last
+        nxt = ch.prompt({"messages": SUMMARY["messages"] + [{"role": "assistant", "content": SAID},
+                                                           {"role": "user", "content": "AND NOW"}]})
+        assert nxt[:e] == ctx[:e], "the next prompt holds the closed block and every answer row"
+        lg, got = ch.next_turn(nxt)
+    assert got["kind"] == "end" and got["reused"] == e and got["forwarded"] == len(nxt) - e, got
+    cold, ref_lg = _cold(nxt)
+    assert torch.equal(lg, ref_lg) and _same_state(ch.eng, cold, len(nxt)) == []
+    return f"{e - n} answer rows read from the prompt end {n}; the next turn resumed at the end {e}, equal to cold"
+
+
+def test_the_packs_template_with_thinking_off_by_the_plan():
+    """T3 (HY4_TOKENIZER, as E25): the pack's own template and ids. Thinking on by the client, off by the plan, the
+    served prompt spliced as the router splices it (`<think>` -> `<think></think>` through Hy4-flash's tokenizer: one
+    id more): the next prompt holds the whole answer, under `reasoning_content` and under `tags` (the box servers').
+    Before: none of it."""
+    d = os.environ.get("HY4_TOKENIZER")
+    if not d or not os.path.isfile(os.path.join(d, "tokenizer.json")):
+        return "skipped: HY4_TOKENIZER names no tokenizer"
+    from transformers import AutoTokenizer
+    from engine.models.hy4_flash.arch import ARCH
+    from engine.models.hy4_flash.tokenizer import Hy4Tokenizer
+    from server import app
+    tok = Hy4Tokenizer(AutoTokenizer.from_pretrained(d))
+    end = tok._tok.convert_tokens_to_ids("<｜hy_end:opensource｜>")
+    body = {"messages": [{"role": "user", "content": "Summarise the chat so far."}]}
+    keep = dict(app.STATE)
+    app.STATE.clear()
+    app.STATE.update(tok=tok, spec=ARCH.spec, cfg_eos=None, device="cpu", segments=None, reasoning_effort=None)
+    out = []
+    try:
+        client = app.thinking_mod.read(body, strict=False)
+        prompt = app.build_prompt(body, client, count="ids")
+        open_ = list(tok("<think>", add_special_tokens=False).input_ids)
+        closed = list(tok("<think></think>", add_special_tokens=False).input_ids)
+        assert prompt[-len(open_):] == open_, "the client's thinking is on: the prompt ends in an open block"
+        served = prompt[:-len(open_)] + closed
+        hid = len(served) - len(prompt)
+        gen = list(tok._tok("I cannot know it.", add_special_tokens=False).input_ids) + [end]
+        for fmt in ("reasoning_content", "tags"):
+            got, why = app._next_rows((body, client, 0, fmt, hid), served + gen, len(served))
+            held = got - len(served)
+            assert held == len(gen) and why == "it holds the whole answer", (fmt, held, len(gen), why)
+            out.append(f"{fmt}: {held} of {len(gen)}")
+    finally:
+        app.STATE.clear()
+        app.STATE.update(keep)
+    return f"{hid} id at the served tail; " + "; ".join(out)
+
+
+def test_off_by_the_plan_with_a_note_inside_holds_the_whole_answer():
+    """T4: the same turn with a router's note inside the prompt (before the last message's end, where the router puts
+    it). `_next_rows` renders the prompt and the next one without the note; the tail is read from the rows' end, so
+    the note's rows change nothing: the whole answer. The count is the handler's (`plan_hidden` less the notes'
+    spans). Before: none of it."""
+    from server import app
+    with _chat(_prefix()) as ch:
+        client = app.thinking_mod.read(SUMMARY, strict=False)
+        cur, plain = _by_plan(ch, SUMMARY)
+        at = len(cur) - 1 - cur[::-1].index(ch.tok.eos_token_id)       # the last message's end
+        note = ch.tok.encode("NOTE: THE USER PREFERS SHORT ANSWERS.")
+        served = plain[:at] + note + plain[at:]
+        hid_at = [(at, at + len(note))]
+        hid_tail = (len(served) - len(cur)) - sum(b - a for a, b in hid_at)      # the handler's arithmetic
+        gen = ch.tok.encode(SAID) + [ch.tok.eos_token_id]
+        got, why = app._next_rows((SUMMARY, client, 0, "reasoning_content", hid_tail), served + gen, len(served))
+    assert hid_tail == 1 and got == len(served) + len(gen) and why == "it holds the whole answer", \
+        (hid_tail, got - len(served), len(gen), why)
+    return f"a {len(note)}-token note at {at}, tail {hid_tail}: {got - len(served)} of {len(gen)}"
+
+
+def test_a_tail_the_template_does_not_write_back_changes_nothing():
+    """T4b (guards, pass before and after): a served tail the next prompt does not start with (another family's, or a
+    note at the very end) is not taken off, and a turn with no tail (`hid_tail` 0) is decided as with no fifth item:
+    thinking on (E19's skip), thinking off by the request (E20's whole answer), a tool chain's call (E21), each in
+    both reasoning formats."""
+    from server import app
+    call = {"id": "c1", "type": "function", "function": {"name": "get_time", "arguments": {"tz": "UTC"}}}
+    callsaid = "I SHOULD ASK FOR THE TIME</think><tool_calls><tool_call>get_time<arg_key>tz</arg_key><arg_value>UTC" \
+               "</arg_value></tool_call></tool_calls>"
+    user = {"role": "user", "content": "WHAT TIME IS IT"}
+    cases = [("on", {"messages": [user]}, "LET ME THINK</think>HI.", ()),
+             ("off by the request", {"messages": [user], "chat_template_kwargs": {"enable_thinking": False}},
+              "HI. IT IS NOON.", ()),
+             ("call", {"messages": [user], "tools": TOOLS}, callsaid, ()),
+             ("call, no reasoning back", {"messages": [user, {"role": "assistant", "content": "", "tool_calls": [call]},
+                                                      {"role": "tool", "tool_call_id": "c1", "content": "12:00"}],
+                                          "tools": TOOLS}, callsaid, ()),
+             ("a tail not written back", SUMMARY, SAID, ("!",))]
+    out = []
+    with _chat(_prefix()) as ch:
+        for name, body, said, tail in cases:
+            client = app.thinking_mod.read(body, strict=False)
+            served = ch.prompt(body) + [t for s in tail for t in ch.tok.encode(s)]
+            ctx = served + ch.tok.encode(said) + [ch.tok.eos_token_id]
+            for fmt in ("reasoning_content", "tags"):
+                before = app._next_rows((body, client, 0, fmt), ctx, len(served))
+                now = app._next_rows((body, client, 0, fmt, len(served) - len(ch.prompt(body))), ctx, len(served))
+                assert now == before, (name, fmt, before, now)
+            out.append(f"{name}: {before[0] - len(served)}")
+    return "; ".join(out)
+
+
+# ------------------------------------------------------------------ P4: hold 1c's order through the handler, 2 lanes
+
+class Tpl64(TplTok):
+    """`TplTok`'s template rule inside the tiny Hy4-flash's 64 ids: the five tags a turn needs at 58 to 62 (`<|e|>` the
+    end), every other id one character of `ALPHA`, so any answer the model writes comes back from the client as the
+    same ids."""
+
+    TAGS = {"<think>": 58, "</think>": 59, "<|s|>": 60, "<|m|>": 61, "<|e|>": 62}
+    SPECIAL = (60, 61, 62)
+    eos_token_id = 62
+    ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456"
+    PLAIN = list(range(58)) + [63]
+
+    def encode(self, text: str) -> list[int]:
+        out, i = [], 0
+        while i < len(text):
+            for tag, t in self.TAGS.items():
+                if text.startswith(tag, i):
+                    out.append(t)
+                    i += len(tag)
+                    break
+            else:
+                k = self.ALPHA.find(text[i])
+                out.append(self.PLAIN[k] if k >= 0 else 0)
+                i += 1
+        return out
+
+    def decode(self, seq, skip_special_tokens=True):
+        out = []
+        for t in seq:
+            t = int(t)
+            if t in self.names:
+                if not (skip_special_tokens and t in self.SPECIAL):
+                    out.append(self.names[t])
+            else:
+                out.append(self.ALPHA[self.PLAIN.index(t)])
+        return "".join(out)
+
+
+class _OffPlan:
+    """A plan as the request path reads one, for a turn the conductor serves with thinking off (its `summarize`
+    class): inactive (no class, no routing, no journal row), only its prompt step runs (`_OffRequest.prompt`)."""
+
+    active, side, row, context, ask, spans, changed = False, None, None, None, None, (), False
+    compaction, prompt_client, decides_effort, budget, thinking_off, transcript = False, False, False, None, True, None
+    res = types.SimpleNamespace(mode="raw", profile="")
+
+    def headers(self):
+        return ()
+
+
+def _off_ext():
+    """An extension (engine-ext-v1) whose plan turns thinking off: its `prompt` step closes the open block at the
+    prompt's tail as TandemApp's router splices it (`Plan._apply`: `<think>` -> `<think></think>`, one id more,
+    counted in `plan_hidden`); every other hook is the headless engine's."""
+    from server import ext as ext_mod
+
+    class Req(ext_mod.Request):
+        def __init__(self, request):
+            super().__init__(None, request)
+            self.raw = False
+
+        def begin(self):
+            self.plan = types.SimpleNamespace(routing=_OffPlan())
+            return self.plan
+
+        def prompt(self, ids, in_think=None, conv=None):
+            ids = list(ids)
+            if in_think and ids[-1:] == [Tpl64.TAGS["<think>"]]:
+                ids, in_think = ids + [Tpl64.TAGS["</think>"]], False
+            return ids if in_think is None else (ids, in_think, None)
+
+        def supervise(self, event):
+            return None
+
+        def extras(self, point, info):
+            return []
+
+        def follow_ups(self, outcome):
+            return []
+
+        def finish(self, row):
+            return None
+
+    class Ext(ext_mod.Null):
+        active, name = True, "p4-off"
+
+        def request(self, request):
+            return Req(request)
+    return Ext()
+
+
+def test_p4_order_on_two_lanes_keeps_both_ends():
+    """P4 (SRV-947; hold 1c's `srv885/replay.py` order, small): two lanes on the tiny Hy4-flash through the handler,
+    slot 0 and one side slot, every turn served with thinking off by the plan (`_off_ext`). A: a new chat on slot 0;
+    its close reads the answer ("it holds the whole answer") and keeps the end. B: a new chat over slot 0's guest
+    limit; SRV-773 sends it to the side slot with slot 0 free. A2 and B2 (each turn's answer as the client got it, a
+    new message) resume at their ends on their own slots and forward their new rows only. On the tree before, A's
+    close skipped the read, slot 0 kept no end, and B took slot 0."""
+    import contextlib
+    import io
+    from engine.penalty import PenaltySpec
+    from engine.spec import Relax
+    from server import app
+    from server import slots as S
+    from test_app_loop import Req
+    from test_hy4_serving import serving32
+    L = 256
+    saved = dict(app.STATE)
+    keep = {k: getattr(app, k) for k in ("EXT", "SIDE_MIN_ROOM", "_CONV_MARKS")}
+    keep_turn = app.LOCK.turn
+    srv = serving32(L)
+    side_eng, _ = srv.side_slot(L, None)
+
+    def prefix():
+        p = cache.ResidentPrefix(BIG, CH, stash_bytes=BIG, end=True, chat_first=True, guest_store=True, guest_max=48)
+        p.end_reread = True
+        return p
+    res0, res1 = prefix(), prefix()
+    vals = {k: None for k in S.OVERLAY}
+    vals.update(engine=side_eng, drafter=None, max_len=L, resident=res1)
+    turn = S.Turn(0.01)
+    pool = S.Pool([S.Slot(0, L, values=None, lock=app.LOCK), S.Slot(1, L, values=vals)], turn=turn)
+    ban = {str(t): -100 for t in (58, 59, 60, 61)}       # no tag in an answer: its text is its ids again
+    out: dict = {}
+    log = io.StringIO()
+
+    def chat(name, msgs):
+        body = {"messages": msgs, "max_tokens": 8, "temperature": 0, "logit_bias": ban}
+        with contextlib.redirect_stdout(log):
+            head, raw = Req("/v1/chat/completions", body).response()
+        assert head.startswith("HTTP/1.1 200"), (name, head, raw[:300])
+        text = json.loads(raw)["choices"][0]["message"]["content"] or ""
+        out[name] = text
+        return text
+    try:
+        app.STATE.clear()
+        app.STATE.update(engine=srv, drafter=None, k=4, tree=False, sampled_tree="det", relax=Relax(1.0, 1),
+                         verbose=True, state_store=cache.StateStore(BIG, chunk=CH), prefix_cache=True,
+                         prefix_chunk=CH, session_cache=True, tok=Tpl64(), device="cpu", max_len=L,
+                         default_max_tokens=64, pen_spec=PenaltySpec(), model="t", cfg_eos=None, think_budget=0,
+                         think_stall=False, reasoning_format="tags", request_timeout=0.0, max_queue=8,
+                         queue_timeout=30.0, pattern_stop=None, response_cache=None, suffix_store=None,
+                         resident=res0, pool=pool)
+        from engine.models.hy4_flash.arch import ARCH
+        app.STATE["spec"] = ARCH.spec
+        app.EXT, app.SIDE_MIN_ROOM, app._CONV_MARKS = _off_ext(), 16, None
+        app.LOCK.turn = turn
+        ua = {"role": "user", "content": "SummariseTheChatSoFarPlease"}
+        ub = {"role": "user", "content": "WriteTheNotesOfTheMeetingNow"}
+        a = chat("A", [ua])
+        a_rows, a_end = list(res0.tokens), (res0.end or {}).get("at")
+        b = chat("B", [ub])
+        b_rows, b_end = list(res1.tokens), (res1.end or {}).get("at")
+        slot0_kept = list(res0.tokens) == a_rows and (res0.end or {}).get("at") == a_end
+        chat("A2", [ua, {"role": "assistant", "content": a}, {"role": "user", "content": "More"}])
+        a2 = dict(app.STATE.get("last_prefill") or {}, n=app.STATE.get("last_prompt_n"))
+        chat("B2", [ub, {"role": "assistant", "content": b}, {"role": "user", "content": "More"}])
+        b2 = dict(pool.slots[1].values.get("last_prefill") or {}, n=pool.slots[1].values.get("last_prompt_n"))
+    finally:
+        app.STATE.clear()
+        app.STATE.update(saved)
+        for k, v in keep.items():
+            setattr(app, k, v)
+        app.LOCK.turn = keep_turn
+    lines = log.getvalue().splitlines()
+    closes = [ln for ln in lines if "end re-read:" in ln]
+    par = [ln for ln in lines if ln.startswith("[parallel]")]
+    assert slot0_kept and b_rows, ("B took slot 0: A's rows and end are gone", par, closes)
+    assert len(par) >= 1 and " slot 1 (" in par[0] and "prefer_side_end=" in par[0], par
+    assert len(closes) == 4 and all("end re-read: read," in ln and "it holds the whole answer" in ln
+                                    and "end kept" in ln for ln in closes), closes
+    assert a_end is not None and b_end is not None, (a_end, b_end, closes)
+    # the new rows: the answer's last token (decided, never forwarded), then the next message and the generation
+    # prompt with the plan's closed block
+    new = len(Tpl64().encode("<|e|><|s|>user<|m|>More<|e|><|s|>assistant<|m|><think></think>")) + 2
+    for name, got, end in (("A2", a2, a_end), ("B2", b2, b_end)):
+        assert got.get("kind") == "end" and got.get("reused") == end, (name, got, end, par)
+        assert got.get("forwarded") == int(got["n"]) - end <= new, (name, got, end, new)
+    return (f"A on slot 0, end {a_end}; B on slot 1, end {b_end}; A2 resumed at {a2['reused']} and forwarded "
+            f"{a2['forwarded']}, B2 at {b2['reused']} and {b2['forwarded']} (at most {new}); answers {out}")
 
 
 if __name__ == "__main__":

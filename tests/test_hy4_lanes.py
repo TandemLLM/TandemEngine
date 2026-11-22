@@ -40,6 +40,13 @@ of its own, paged through the KV pool when the server opened one; its lanes take
   * H10 (SRV-885): the round runner's proposal commits the rows its draft gathers before it launches it, as the
     engine's passes commit theirs: after a trim, a short lane's draft reads held rows only
                                                        test_a_runner_proposal_after_a_trim_reads_held_rows_only
+  * T5 (SRV-947): SRV-773 on a slot 0 whose close skipped the read (an exact prompt end, no end): a new prompt over
+    slot 0's guest limit prefers a free side slot with no wait, and the handler's branch takes it with slot 0 free
+                                                       test_srv773_a_skipped_closes_exact_prompt_end_keeps_slot_0
+  * T6: the same while the close's read runs and right after it returns; a family that keeps its end, without one:
+    no preference, as before                           test_srv773_holds_while_the_close_reads_and_right_after
+
+T5 and T6 fail on 83bbd78d (T6's last case passes there: it is the guard).
 
 Run: python tests/test_hy4_lanes.py
 """
@@ -552,6 +559,98 @@ def test_the_state_goes_through_the_pool_and_the_graph_set():
     assert s.drop_graphs() == 3 and sorted(log) == ["draft", "rows1", "rows32"]
     assert s.graphs == {} and s.heads["dfly"].graph is None and s.graph_count() == 0 and s.graph_set.dropped
     return "whole views; paged memory not counted; the pool first; captures on the slot's set; one drop"
+
+
+# ------------------------------------------------------------------ T5, T6: SRV-773 on an exact prompt end (SRV-947)
+
+N0 = 3 * CH                                   # slot 0's conversation: three chunks
+
+
+def _slot0_turn(end_reread: bool = True, n_answer: int = 24):
+    """Slot 0 on the tiny Hy4-flash after a turn: a 3-chunk prompt read through the caches (its prompt end kept;
+    exact on a prefix that reads its end again), then the answer by decode steps, its last token decided and not
+    forwarded. Returns (serving, prefix, context)."""
+    from engine import cache
+    s = serving()
+    res = cache.ResidentPrefix(1 << 30, CH, stash_bytes=1 << 30, end=True, chat_first=True, guest_store=True,
+                               guest_max=N0)
+    res.end_reread = end_reread
+    prompt = tokens(N0, 61)
+    keep, cache.PROMPT_END = cache.PROMPT_END, True
+    try:
+        lg, _, _ = cache.prefill(s, None, prompt, "cpu", chunk=CH, resident=res, conv_id="A")
+    finally:
+        cache.PROMPT_END = keep
+    out, pos = [int(lg.reshape(-1, lg.shape[-1])[-1].argmax())], N0
+    for _ in range(n_answer - 1):
+        lg = s.forward(torch.tensor([out[-1]]), start=pos)
+        pos += 1
+        out.append(int(lg.reshape(-1, lg.shape[-1])[-1].argmax()))
+    assert int(s.kv.length) == N0 + n_answer - 1
+    return s, res, prompt + out
+
+
+LONG_NEW = tokens(5 * CH, 62)                 # a new chat over slot 0's guest limit, nothing shared
+
+
+@torch.no_grad()
+def test_srv773_a_skipped_closes_exact_prompt_end_keeps_slot_0():
+    """T5 (SRV-947): slot 0 holds a 3-chunk conversation whose close skipped the read (thinking on: the template drops
+    the reasoning), so it has an exact prompt end and no end. A new prompt over slot 0's guest limit prefers a free side
+    slot with no wait (`prefer_side`, `prefer_side_end`), as beside a kept end, and the handler's branch takes side
+    slot 1 with slot 0 free. Before: no `prefer_side`, and the new chat took slot 0."""
+    from test_par_continue import _need, _restore, _setup
+    s, res, ctx = _slot0_turn()
+    assert res.reread_end(s, None, ctx, N0, device="cpu", upto=N0) == "skip"
+    assert res.keep_end(s, None, ctx, N0, reread=False) == "reread"
+    assert res.end is None and res.pend is not None and res.pend.get("exact") and res.valid == N0, (res.end, res.pend)
+    pool, saved = _setup(res)
+    try:
+        need, why = _need(LONG_NEW)
+        assert need is not None and "wait" not in why and "guest" not in why, why
+        assert why.get("prefer_side") == N0 and why.get("prefer_side_end") == N0, why
+        # the handler: `prefer_side` takes a side slot (`take_side`) before it asks for slot 0 (`_take`)
+        assert not pool.slots[0].busy
+        side = pool.take_side(need, owner="B")
+        assert side is not None and side.index == 1, side
+        pool.release_side(side)
+    finally:
+        _restore(saved)
+    return f"a skipped close's exact prompt end at {N0}: prefer_side={why['prefer_side']}, side slot {side.index}"
+
+
+@torch.no_grad()
+def test_srv773_holds_while_the_close_reads_and_right_after():
+    """T6: the same asked while the close's read runs (from the read's chunk hook, the GPU turn's place) and right
+    after the read returns, before `keep_end`: the prompt end is exact and the rows start with its tokens, so
+    `prefer_side` both times, and after the end is kept. A prefix of a family that keeps its end (no `end_reread`)
+    without an end: no `prefer_side`, as before."""
+    from test_par_continue import _need, _restore, _setup
+    s, res, ctx = _slot0_turn()
+    seen = []
+    pool, saved = _setup(res)
+    try:
+        def hook(done, total):
+            seen.append((f"during the read, row {done} of {total}", _need(LONG_NEW)[1]))
+        assert res.reread_end(s, None, ctx, N0, device="cpu", on_chunk=hook) == "read"
+        assert res.end is None
+        seen.append(("after the read, before keep_end", _need(LONG_NEW)[1]))
+        assert res.keep_end(s, None, ctx, N0, reread=True) == "kept" and res.end is not None
+        seen.append(("after keep_end", _need(LONG_NEW)[1]))
+    finally:
+        _restore(saved)
+    assert len(seen) == 3, [w for w, _ in seen]
+    for when, why in seen:
+        assert why.get("prefer_side") and why.get("prefer_side_end"), (when, why)
+    s2, res2, _ = _slot0_turn(end_reread=False)
+    assert res2.end is None and res2.pend is not None and "exact" not in res2.pend
+    pool, saved = _setup(res2)
+    try:
+        need, why = _need(LONG_NEW)
+    finally:
+        _restore(saved)
+    assert need is not None and "prefer_side" not in why and "prefer_side_end" not in why, why
+    return "; ".join(f"{w}: prefer_side={y['prefer_side']}" for w, y in seen) + "; no end_reread, no end: none"
 
 
 
