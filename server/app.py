@@ -1597,6 +1597,20 @@ def _mm_rows(n_text: int, images: list) -> int:
         return int(n_text)
 
 
+def _resumes_here(res) -> bool:
+    """SRV-773's test, "slot 0's conversation resumes here": it keeps an end, or (SRV-947), on a prefix that reads its
+    end again (`end_reread`), an exact prompt end its rows start with. That is a turn whose close skipped the read
+    (thinking on: the template drops the reasoning) or whose read runs now: the read starts at the prompt end and
+    never writes it, so this holds before, during and after it."""
+    if getattr(res, "end", None) is not None:
+        return True
+    p = getattr(res, "pend", None)
+    if not getattr(res, "end_reread", False) or p is None or not p.get("exact"):
+        return False
+    at, rows = int(p["at"]), res.tokens
+    return len(rows) >= at and rows[:at] == p["tokens"]
+
+
 def _par_side_need(body, client, left_out, max_new, plan, images, lane_kind,
                    why: dict | None = None, stay: bool = False,
                    parent: str | None = None, session: str | None = None,
@@ -1830,8 +1844,8 @@ def _par_side_need(body, client, left_out, max_new, plan, images, lane_kind,
             mine = stay and parent is not None and getattr(res, "owner", None) == parent
             # SRV-773: a homeless long prompt takes a free side slot before the slot whose conversation resumes
             # at a kept end (2026-11-02: an 85k turn sent a 62.9k conversation to the NVMe and was refused on
-            # the one closed slot)
-            kept_end = getattr(res, "end", None) is not None and valid >= 2 * chunk
+            # the one closed slot). SRV-947: or at an exact prompt end (`_resumes_here`)
+            kept_end = _resumes_here(res) and valid >= 2 * chunk
             long_end = kept_end and len(ids) > int(getattr(res, "guest_max", 0) or 0)
             stale = (_slot0_stale() if other and valid >= 2 * chunk and bound and not mine
                      else None)
