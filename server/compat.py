@@ -433,9 +433,8 @@ def tool_constraint(body: dict, fmt=None, allowed: list | None = None,
     try:
         from server.api import toolformats
         _call_schemas(body["tools"], allowed, grammar)
-        pat, typed = toolformats.resolve(fmt).forced_regex(body["tools"], allowed,
-                                                           many=body.get("parallel_tool_calls") is True,
-                                                           grammar=grammar)
+        pat, typed = _forced_regex(toolformats.resolve(fmt), body["tools"], allowed,
+                                   body.get("parallel_tool_calls") is True, grammar)
     except grammar.GrammarError as exc:
         raise Refusal("tools", f"tool_choice {mode}: {exc}")
     return in_wrapper(pat, wrapper, grammar), typed
@@ -467,6 +466,30 @@ def _call_schemas(tools: list, allowed: list, grammar) -> None:
         except TypeError:
             raise grammar.GrammarError(f"function {name!r}: parameters.required must be a list of "
                                        f"parameter names") from None
+
+
+#: what a form's `forced_regex` raised on a parameter's value schema that schema_regex cannot read (a nested
+#: `properties` list, a nested `required` null, `minItems` a word), below the level `_call_schemas` checks
+_UNREADABLE = (TypeError, AttributeError, KeyError, IndexError, ValueError)
+
+
+def _forced_regex(form, tools: list, allowed: list, many: bool, grammar) -> tuple[str, dict]:
+    """`form.forced_regex`, with a schema it cannot read as a GrammarError that names the function, the caller's 400
+    on `tools` where it was a 500 (ENG-581). Only that failure is read again, one function at a time."""
+    try:
+        return form.forced_regex(tools, allowed, many=many, grammar=grammar)
+    except grammar.GrammarError:
+        raise
+    except _UNREADABLE as exc:
+        for name in allowed:
+            try:
+                form.forced_regex(tools, [name], many=False, grammar=grammar)
+            except grammar.GrammarError:
+                raise
+            except _UNREADABLE as one:
+                raise grammar.GrammarError(f"function {name!r}: a parameter's schema cannot be read "
+                                           f"({type(one).__name__}: {one})") from None
+        raise grammar.GrammarError(f"a tool's parameters cannot be read ({type(exc).__name__}: {exc})") from None
 
 
 def in_wrapper(pattern: str, wrapper: tuple, grammar) -> str:
@@ -544,8 +567,7 @@ def answer_constraint(body: dict, chat: bool = True, xml_calls: bool | None = No
     names = [t["function"]["name"] for t in fns]
     try:
         _call_schemas(fns, names, grammar)
-        calls, typed = form.forced_regex(fns, names, many=body.get("parallel_tool_calls") is not False,
-                                         grammar=grammar)
+        calls, typed = _forced_regex(form, fns, names, body.get("parallel_tool_calls") is not False, grammar)
         calls = in_wrapper(calls, wrapper, grammar)
     except grammar.GrammarError as exc:
         raise Refusal("tools", f"structured outputs with tools: {exc}")

@@ -52,6 +52,9 @@ constraint; a constraint beside response_format) and the contract's cases:
  13  ENG-581: on a model that opens its own reasoning (Flint's spec) with thinking on, an act beside
      tools under auto is refused open and counted, a strict one is the 400; with thinking off, or
      without tools, it is applied      test_an_act_beside_tools_needs_thinking_off_on_flint
+ 14  ENG-581: a tool whose parameter schema the calls constraint cannot read (a nested `properties`
+     list): an act beside it under auto is refused open on the XML and arg-key forms, a strict one
+     is the 400                        test_an_act_beside_an_unreadable_tool_is_refused_open
 
 Run: python tests/test_set_constraint.py   (1-3 standard library; 4, 5, 12 numpy; 6-11 CPU torch)
 """
@@ -683,6 +686,30 @@ def test_an_act_beside_tools_needs_thinking_off_on_flint():
             assert o["applied"], (label, o)
             seen[f"{label}/{'stream' if stream else 'json'}"] = got[2]
     return f"thinking on: refused open (the unconstrained tokens), strict 400; applied {seen}"
+
+
+def test_an_act_beside_an_unreadable_tool_is_refused_open():
+    # ENG-581's review: the calls constraint's build stopped on a parameter's value schema schema_regex cannot read
+    # with a TypeError, which _set_constraints does not catch: a 500, where the arg-key form had refused the act
+    # open. Now a refusal on tools, so the act is refused open and the request runs with its tools unconstrained
+    from engine.models.adapter import ServeSpec
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": {
+        "u": {"type": "object", "properties": [1]}}}}}]
+    c = {"kind": "regex", "value": "[a-z]{1,8}"}
+    seen = 0
+    for fmt in ("xml", "argkey"):
+        spec = ServeSpec(tool_format=fmt)
+        for stream in (False, True):
+            got = _ask([c], stream=stream, spec=spec, tools=tools)
+            bare = _ask(stream=stream, ext=False, spec=spec, tools=tools)
+            assert got[0].startswith("HTTP/1.1 200") and got[1:4] == bare[1:4], (fmt, stream, got[:2], bare[1:4])
+            o = got[4].outcomes[0][0]
+            assert not o["applied"] and "function 'f'" in o["why"], (fmt, o)
+            head, raw, *_ = _ask([dict(c, strict=True)], stream=stream, spec=spec, tools=tools)
+            assert head.startswith("HTTP/1.1 400") and json.loads(raw)["error"]["param"] == "SET_CONSTRAINT", \
+                (fmt, stream, head, raw[:200])
+            seen += 1
+    return f"{seen} requests (xml, argkey; both transports): refused open as the bare request, strict 400"
 
 
 # ---------------------------------------------------------------------------- 12

@@ -320,26 +320,33 @@ def test_the_handler_refuses_a_schema_the_calls_cannot_read():
     # ENG-581's review: `parameters.properties` a list passes compat.check, and every form's calls constraint
     # stopped on it with a TypeError: a 500 `internal_error`. Now the 400 on `tools`, on both transports; the
     # request without a constraint is served as before
-    tools = [{"type": "function", "function": {"name": "f", "parameters": {"properties": ["a"]}}}]
+    # A parameter's own value schema that schema_regex cannot read (a nested `properties` list) was a TypeError deep
+    # in the build, a 500 on both forms; the arg-key form beside a document had answered the form's 400 before
+    # ENG-581. Now the same 400 on `tools`, naming the function
+    flat = [{"type": "function", "function": {"name": "f", "parameters": {"properties": ["a"]}}}]
+    nested = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": {
+        "u": {"type": "object", "properties": [1]}}}}}]
     seen = []
-    for fmt in ("xml", "argkey"):
-        for extra in ({"response_format": {"type": "json_object"}}, {"tool_choice": "required"}):
-            for stream in (False, True):
-                C.serve()
-                app.STATE["spec"] = ServeSpec(tool_format=fmt)
-                head, raw = C.Req("/v1/chat/completions", dict({"messages": [{"role": "user", "content": "x"}],
-                                                               "tools": tools, "max_tokens": 4,
-                                                               "stream": stream}, **extra)).response()
-                assert head.startswith("HTTP/1.1 400"), (fmt, extra, stream, head, raw[:200])
-                err = json.loads(raw)["error"]
-                assert err["param"] == "tools" and "parameters.properties must be an object" in err["message"], err
-                seen.append(fmt)
-        C.serve()
-        app.STATE["spec"] = ServeSpec(tool_format=fmt)
-        head, raw = C.Req("/v1/chat/completions", {"messages": [{"role": "user", "content": "x"}], "tools": tools,
-                                                  "max_tokens": 4}).response()
-        assert head.startswith("HTTP/1.1 200"), (fmt, head, raw[:200])
-    return f"{len(seen)} 400s on tools (xml, argkey; auto beside a document, required; both transports); else 200"
+    for tools, says in ((flat, "parameters.properties must be an object"), (nested, "function 'f'")):
+        for fmt in ("xml", "argkey"):
+            for extra in ({"response_format": {"type": "json_object"}}, {"tool_choice": "required"}):
+                for stream in (False, True):
+                    C.serve()
+                    app.STATE["spec"] = ServeSpec(tool_format=fmt)
+                    head, raw = C.Req("/v1/chat/completions", dict({"messages": [{"role": "user", "content": "x"}],
+                                                                   "tools": tools, "max_tokens": 4,
+                                                                   "stream": stream}, **extra)).response()
+                    assert head.startswith("HTTP/1.1 400"), (fmt, extra, stream, head, raw[:200])
+                    err = json.loads(raw)["error"]
+                    assert err["param"] == "tools" and says in err["message"], err
+                    seen.append(fmt)
+            C.serve()
+            app.STATE["spec"] = ServeSpec(tool_format=fmt)
+            head, raw = C.Req("/v1/chat/completions", {"messages": [{"role": "user", "content": "x"}],
+                                                      "tools": tools, "max_tokens": 4}).response()
+            assert head.startswith("HTTP/1.1 200"), (fmt, head, raw[:200])
+    return (f"{len(seen)} 400s on tools (a top-level and a nested schema; xml, argkey; auto beside a document, "
+            f"required; both transports); else 200")
 
 
 def test_an_unconstrained_request_never_builds_a_vocabulary():

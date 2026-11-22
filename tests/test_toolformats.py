@@ -238,7 +238,9 @@ def test_a_form_with_its_own_calls_joins_a_document():
 def test_a_schema_the_calls_cannot_read_is_a_400():
     """ENG-581's review: a function whose `parameters.properties` is not an object, or whose `required` is null, a
     number, a bool or a list holding objects, stopped every form's `forced_regex` with a TypeError (a 500) under
-    `tool_choice` required, a named function and auto beside a document; now each is the 400 on `tools`. What was
+    `tool_choice` required, a named function and auto beside a document; so did a parameter's value schema that
+    schema_regex cannot read (a nested `properties` list, `required` null, `minItems` a word). Now each is the 400
+    on `tools`. What was
     served still is: an empty list for no properties, a `required` string, list of numbers or object. Only the
     functions the calls may name are read."""
     from server import compat
@@ -248,10 +250,17 @@ def test_a_schema_the_calls_cannot_read_is_a_400():
            "required null": {"properties": {"a": {"type": "string"}}, "required": None},
            "required a number": {"properties": {"a": {"type": "string"}}, "required": 1},
            "required a bool": {"properties": {"a": {"type": "string"}}, "required": True},
-           "required objects": {"properties": {"a": {"type": "string"}}, "required": [{"a": 1}]}}
+           "required objects": {"properties": {"a": {"type": "string"}}, "required": [{"a": 1}]},
+           # a parameter's own value schema, read by schema_regex: a TypeError or a ValueError there was a 500 too
+           "nested props a list": {"properties": {"u": {"type": "object", "properties": [1]}}},
+           "nested props of strings": {"properties": {"u": {"type": "object", "properties": ["x"]}}, "required": ["u"]},
+           "nested required null": {"properties": {"u": {"type": "object", "properties": {"x": {"type": "string"}},
+                                                         "required": None}}},
+           "nested minItems a word": {"properties": {"u": {"type": "array", "minItems": "x"}}}}
     served = [{"properties": []}, {"properties": {"a": {"type": "string"}}, "required": "a"},
               {"properties": {"a": {"type": "string"}}, "required": [1]},
-              {"properties": {"a": {"type": "string"}}, "required": {"a": 1}}]
+              {"properties": {"a": {"type": "string"}}, "required": {"a": 1}},
+              {"properties": {"u": {"type": "object", "properties": []}}}]
     bodies = {"required": {"tool_choice": "required"},
               "named": {"tool_choice": {"type": "function", "function": {"name": "f"}}},
               "auto + document": {"response_format": {"type": "json_object"}}}
