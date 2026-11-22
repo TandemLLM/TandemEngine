@@ -4446,7 +4446,10 @@ def _next_rows(turn, committed: list[int], n_p: int) -> tuple[int | None, str]:
     from the prompt's end on (the
     answer's region; the served prompt may hold spans the client never sent), as the end anchor's own test compares a
     copy (`_shared_head`, the "re-read ahead ... parts from the end anchor's rows" line). `(position, why)`; None: the
-    next prompt holds the whole answer (a completion's text, a continued answer, no request to render).
+    next prompt holds the whole answer (a completion's text, a continued answer, no request to render). `turn` is
+    `(body, thinking, left-out images, reasoning format, hidden tail)`, the last two optional: the hidden tail is how
+    many ids the plan put at the served prompt's end (the closed think block of a turn it served with thinking off),
+    which the next prompt holds before the answer when the template writes them back.
 
     Hy4-flash's template drops an earlier answer's reasoning unless `preserved_thinking` (on by default when tools are
     passed) and the client sends it back, and keeps the reasoning of the answers after the last user message (a tool
@@ -4492,7 +4495,16 @@ def _next_rows(turn, committed: list[int], n_p: int) -> tuple[int | None, str]:
     k = _shared_head(nxt, cur)
     if k < len(cur):
         return n_p, f"the next prompt parts inside this one (token {k} of {len(cur)})"
-    g = _shared_head(nxt[len(cur):], gen)
+    rest = nxt[len(cur):]
+    # SRV-947: the served prompt's hidden tail (`turn`'s fifth item, the handler's `hid_tail`): the closed think block
+    # the plan puts at the end when it turns thinking off. The template writes it back before this answer (an earlier
+    # answer's empty block), so the next prompt holds it first. Read from the rows' end, so the router's notes inside
+    # the prompt do not move it
+    t = int(more[1] or 0) if len(more) > 1 else 0
+    tail = [int(x) for x in committed[n_p - t:n_p]] if 0 < t <= n_p else []
+    if tail and rest[:t] == tail:
+        rest = rest[t:]
+    g = _shared_head(rest, gen)
     why = ("it holds the whole answer" if g >= len(gen) else "it parts at the prompt end" if g == 0 else
            f"it parts {g} tokens into the answer")
     return n_p + g, why + ("" if echo or not reasoning else "; the client sends no reasoning back")
@@ -4611,8 +4623,8 @@ def _remember_turn(prompt_ids: list[int], out_ids: list[int], conv_id: str | Non
     snapshot and the end anchor are kept after the answer's rows were read again on the prompt pass
     (`_close_read`). `defer` (the handler's call): that close waits for the response to be out
     (`_turn_close`, in the handler's `finally`); without it, it runs here. `cid`: the request's id, for its line.
-    `turn`: `(body, thinking, left-out images)`, for where the next prompt parts from the rows (`_next_rows`).
-    Every other family keeps what it kept before, here, whatever `defer` says.
+    `turn`: `(body, thinking, left-out images, reasoning format, hidden tail)`, for where the next prompt parts from
+    the rows (`_next_rows`). Every other family keeps what it kept before, here, whatever `defer` says.
     """
     eng, drafter = STATE["engine"], STATE["drafter"]
     if cold:
@@ -12182,7 +12194,7 @@ class Handler(BaseHTTPRequestHandler):
                                   served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
                                   learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")),
-                                  defer=True, cid=cid, turn=(body, client, left_out, fmt))
+                                  defer=True, cid=cid, turn=(body, client, left_out, fmt, hid_tail))
                         if rkey is not None and not ci and not (sup is not None and sup.acted) \
                                 and not mem_taken[0]:
                             rcache.put(rkey, ids, prompt_ids)
@@ -12832,7 +12844,7 @@ class Handler(BaseHTTPRequestHandler):
                           served_hidden=(rec.hidden_at if rec.hidden_at is not None
                                                  else getattr(rec, "note_at", None)), cold=cold,
                                   learn=getattr(rec, "learn_suffix", True), own=bool(me.get("own")),
-                                  defer=True, cid=cid, turn=(body, client, left_out, fmt))
+                                  defer=True, cid=cid, turn=(body, client, left_out, fmt, hid_tail))
                 if rkey is not None and not (sup is not None and sup.acted) and \
                         not mem_taken[0]:
                     rcache.put(rkey, ids, prompt_ids)
