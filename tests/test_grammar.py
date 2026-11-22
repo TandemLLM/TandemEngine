@@ -336,7 +336,7 @@ def test_the_handler_refuses_a_schema_the_calls_cannot_read():
         head, raw = C.Req("/v1/chat/completions", {"messages": [{"role": "user", "content": "x"}], "tools": tools,
                                                   "max_tokens": 4}).response()
         assert head.startswith("HTTP/1.1 200"), (fmt, head, raw[:200])
-    return f"{len(seen)} 400s on tools (xml, argkey; a document under auto and required; both transports); no constraint: 200"
+    return f"{len(seen)} 400s on tools (xml, argkey; auto beside a document, required; both transports); else 200"
 
 
 def test_an_unconstrained_request_never_builds_a_vocabulary():
@@ -713,10 +713,11 @@ def test_the_call_markers_keep_their_own_ids():
 BRANCHES: list = []
 
 
-def _answer(stream, spec=None, **extra):
+def _answer(stream, spec=None, state=None, **extra):
     C.serve()
     if spec is not None:
         app.STATE["spec"] = spec                 # the family's ServeSpec (serve() clears STATE)
+    app.STATE.update(state or {})
     body = dict({"messages": [{"role": "user", "content": "hello there"}], "max_tokens": 120,
                  "stream": stream}, **extra)
     real = getattr(G.Grammar, "branch", None)
@@ -1148,6 +1149,104 @@ def test_the_handler_serves_the_argkey_form():
                                          logit_bias={"0": -50, str(BACKTICK): 50}, tool_choice="required")
         assert finish == "tool_calls" and len(names) == 1 and BRANCHES == [], (finish, names, BRANCHES)
     return f"the document (schema, json_object) and one call {seen}; none and required: no branch"
+
+
+#: Flint's tokenizer in the toy's ids: its `<think>` and `</think>` and the arg-key tags are added ids 97-104, text in
+#: the answer (tokenizer_config.json: all `special: false`), so a vocabulary gives `<think>` no bytes
+FLINT_ADDED = ("<think>", "</think>") + AK_TAGS
+
+
+class FlintTok(C.Tok):
+    added_tokens_decoder = {97 + k: t for k, t in enumerate(FLINT_ADDED)}
+
+    def __len__(self):
+        return 105
+
+    def convert_tokens_to_ids(self, text):
+        return next((i for i, t in self.added_tokens_decoder.items() if t == text), -1)
+
+    def decode(self, seq, skip_special_tokens=True):
+        return "".join(self.added_tokens_decoder[int(t)] if int(t) in self.added_tokens_decoder
+                       else super(FlintTok, self).decode([t], skip_special_tokens) for t in seq)
+
+
+def test_the_think_opener_is_in_neither_branch():
+    # why a model that opens its own reasoning keeps the 400 with thinking on (ENG-581's review): Flint's template
+    # opens no block, so the constraint starts at the model's first token, and its `<think>` id has no bytes. A
+    # row whose argmax it is picks the document, and every call token is masked, though the model would call next.
+    # This pins the grammar the gate stands on; a grammar that lets the opener through lifts it
+    from engine.models import REGISTRY
+    from server import compat
+    assert REGISTRY["flint"].spec.reasoning.opens_itself and REGISTRY["flint"].spec.tool_format == "argkey"
+    assert not any(a.spec.reasoning.opens_itself for n, a in REGISTRY.items() if n != "flint"), \
+        "Hy4-flash and the XML families keep the joined constraint with thinking on"
+    tok = FlintTok()
+    think, call = tok.convert_tokens_to_ids("<think>"), tok.convert_tokens_to_ids("<tool_call>")
+    a, _ = _argkey_union(tools=MARK, wrapper=())
+    v = G.Vocab.from_tokenizer(tok, 105, markers=a.markers)
+    g = G.Grammar(a.pattern, v, a.parts)
+    assert v.bytes[think] is None and v.bytes[call] == b"<tool_call>"
+    assert g.pick(g.dfa.start, think) == "document" and g.pick(g.dfa.start, call) == "calls"
+    cons = G.Constraint(g, frozenset({C.EOS}), "cpu", think_end=tok.convert_tokens_to_ids("</think>"),
+                        in_think=False)
+    row = torch.zeros(105)
+    row[think], row[call], row[LBRACE] = 9.0, 8.0, 1.0
+    cons.apply_single(row)
+    assert not torch.isfinite(row[[think, call]]).any() and int(row.argmax()) == LBRACE
+    # the request path: the joined automaton is the 400 under self_think; the calls alone, the document alone and
+    # tool_choice none are built as before
+    body = {"messages": [], "tools": MARK, "response_format": JS}
+    try:
+        compat.answer_constraint(body, fmt="argkey", self_think=True)
+        raise AssertionError("served")
+    except compat.Refusal as exc:
+        assert exc.param == "tools" and "thinking off" in str(exc), str(exc)
+    for extra, kind in (({"tool_choice": "required"}, "tool_choice"), ({"tool_choice": "none"}, "response_format"),
+                        ({"tools": None}, "response_format")):
+        got = compat.answer_constraint(dict(body, **extra), fmt="argkey", self_think=True)
+        assert got.kind == kind and got.parts is None, (extra, got)
+    return "Flint's <think> has no bytes: pick -> document, <tool_call> masked; self_think: the union a 400"
+
+
+def test_a_model_that_opens_its_own_reasoning_needs_thinking_off():
+    # Flint's own spec (REGISTRY: argkey, opens_itself) through the handler: tools beside a document under auto is
+    # the 400 that says thinking off while thinking is on; with the client's thinking off, or the server's
+    # (--reasoning-effort none), the joined constraint serves the calls or the document; required, none and the
+    # document alone are served with thinking on as before
+    from engine.models import REGISTRY
+    spec = REGISTRY["flint"].spec
+    for stream in (False, True):
+        C.serve()
+        app.STATE["spec"] = spec
+        head, raw = C.Req("/v1/chat/completions", {"messages": [{"role": "user", "content": "x"}], "tools": MARK,
+                                                  "response_format": JS, "stream": stream}).response()
+        assert head.startswith("HTTP/1.1 400"), (stream, head, raw[:200])
+        err = json.loads(raw)["error"]
+        assert err["param"] == "tools" and "thinking off" in err["message"], err
+    off = {"chat_template_kwargs": {"enable_thinking": False}}
+    seen = {}
+    for stream in (False, True):
+        tag = "stream" if stream else "json"
+        for how, extra, state in (("client", off, None), ("server", {}, {"thinking_default": "off"})):
+            content, names, finish = _answer(stream, spec, state, tools=MARK, response_format=JS,
+                                             logit_bias={"0": -50, str(BACKTICK): 50, str(LT): 30}, **extra)
+            assert finish == "stop" and names == [] and BRANCHES == ["document"], (how, stream, finish, BRANCHES)
+            _valid(content)
+            content, names, finish = _answer(stream, spec, state, tools=MARK, response_format=JS,
+                                             logit_bias={"0": -50, str(LT): 50, str(LBRACE): 30},
+                                             parallel_tool_calls=False, **extra)
+            assert finish == "tool_calls" and len(names) == 1 and BRANCHES == ["calls"], (how, stream, finish, names)
+            seen[f"{how}/{tag}"] = names
+        content, names, finish = _answer(stream, spec, tools=MARK, response_format=JS,
+                                         logit_bias={"0": -50, str(BACKTICK): 50}, tool_choice="required")
+        assert finish == "tool_calls" and len(names) == 1 and BRANCHES == [], (finish, names, BRANCHES)
+        for extra in ({"tools": MARK, "tool_choice": "none"}, {}):
+            content, names, finish = _answer(stream, spec, response_format=JS,
+                                             logit_bias={"0": -50, str(BACKTICK): 50, str(LT): 30}, **extra)
+            assert finish == "stop" and names == [] and BRANCHES == [], (extra, finish, BRANCHES)
+            _valid(content)
+    return (f"thinking on: 400 on both transports; off (client, server): the document or a call {seen}; "
+            f"required, none, alone: served")
 
 
 if __name__ == "__main__":

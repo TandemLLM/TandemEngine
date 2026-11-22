@@ -49,6 +49,9 @@ constraint; a constraint beside response_format) and the contract's cases:
      same as its field and the two requests differ only there; the precedence and invalid pairs
      give way and are refused; its verdicts tell a log-probability apart
                                                                   test_the_window_tool
+ 13  ENG-581: on a model that opens its own reasoning (Flint's spec) with thinking on, an act beside
+     tools under auto is refused open and counted, a strict one is the 400; with thinking off, or
+     without tools, it is applied      test_an_act_beside_tools_needs_thinking_off_on_flint
 
 Run: python tests/test_set_constraint.py   (1-3 standard library; 4, 5, 12 numpy; 6-11 CPU torch)
 """
@@ -439,11 +442,14 @@ class _Drafter:
 
 
 def _ask(constraints=None, stream=False, act=None, drafter=None, tree=False, path="/v1/chat/completions",
-         sup=None, ext=True, **extra):
+         sup=None, ext=True, spec=None, **extra):
     """One request on the CPU model; `ext`: fake_ext.py loaded (its args: the constraints, `act`),
-    else the headless engine. (head, content, finish, names, the ext object, log lines, usage)."""
+    else the headless engine; `spec`: the family's ServeSpec. (head, content, finish, names, the ext
+    object, log lines, usage)."""
     C, app = _cpu()
     C.serve(drafter, tree=tree)
+    if spec is not None:
+        app.STATE["spec"] = spec
     lines, obj = [], None
     if ext:
         X = _load("fake_ext")
@@ -651,6 +657,32 @@ def test_tool_args_and_the_other_acts():
     got = _ask([c], sup=Splices)
     assert asked == [] and re.fullmatch("[0-9]{3}", got[1]), (asked, got[1])
     return f"tool_args calls {seen}; apply_request got the note alone, and nothing for a constraint alone"
+
+
+def test_an_act_beside_tools_needs_thinking_off_on_flint():
+    # ENG-581's review: Flint's `<think>` opener is in neither part of the calls-or-document automaton, so with
+    # thinking on the act beside tools is refused open, as the arg-key form's act was before ENG-581, and the
+    # request runs with its tools unconstrained
+    from engine.models import REGISTRY
+    spec = REGISTRY["flint"].spec
+    c = {"kind": "regex", "value": "[a-z]{1,8}"}
+    off = {"chat_template_kwargs": {"enable_thinking": False}}
+    seen = {}
+    for stream in (False, True):
+        got = _ask([c], stream=stream, spec=spec, tools=TOOLS)
+        bare = _ask(stream=stream, ext=False, spec=spec, tools=TOOLS)
+        assert got[0].startswith("HTTP/1.1 200") and got[1:4] == bare[1:4], (stream, got[1:4], bare[1:4])
+        o = got[4].outcomes[0][0]
+        assert not o["applied"] and "thinking off" in o["why"], o
+        assert any("at_request failed" in ln and "SET_CONSTRAINT" in ln for ln in got[5]), got[5]
+        head, raw, *_ = _ask([dict(c, strict=True)], stream=stream, spec=spec, tools=TOOLS)
+        assert head.startswith("HTTP/1.1 400") and json.loads(raw)["error"]["param"] == "SET_CONSTRAINT", raw[:200]
+        for label, extra in (("thinking off", dict(off, tools=TOOLS)), ("no tools", {})):
+            got = _ask([c], stream=stream, spec=spec, **extra)
+            o = got[4].outcomes[0][0]
+            assert o["applied"], (label, o)
+            seen[f"{label}/{'stream' if stream else 'json'}"] = got[2]
+    return f"thinking on: refused open (the unconstrained tokens), strict 400; applied {seen}"
 
 
 # ---------------------------------------------------------------------------- 12

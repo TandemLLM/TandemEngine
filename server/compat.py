@@ -495,7 +495,7 @@ class Answer(NamedTuple):
 
 
 def answer_constraint(body: dict, chat: bool = True, xml_calls: bool | None = None,
-                      fmt=None, wrapper: tuple = ()) -> Answer | None:
+                      fmt=None, wrapper: tuple = (), self_think: bool = False) -> Answer | None:
     """The constraint on the answer (after the reasoning), or None.
 
     `tool_choice` required or named: the calls (`tool_constraint`), a document asked for beside
@@ -509,6 +509,10 @@ def answer_constraint(body: dict, chat: bool = True, xml_calls: bool | None = No
     false (a form without a call constraint of its own, Pythonic): the 400. `fmt`: the model's own form (a
     `ToolFormat` or its name, server/api/toolformats), whose calls and markers both paths take.
     `wrapper`: the family's call wrapper (`ServeSpec.call_wrapper`, ENG-472) around the calls.
+    `self_think`: the model may open its own reasoning block with its first answer token
+    (`ReasoningSpec.opens_itself` with thinking not off: Flint). That `<think>` id is in neither
+    language, so a row whose argmax it is picks the document and masks every call: the joined
+    request is the 400 (ENG-581). The calls alone and the document alone are unchanged.
     """
     from engine import grammar
     from server.api import toolformats
@@ -525,6 +529,10 @@ def answer_constraint(body: dict, chat: bool = True, xml_calls: bool | None = No
     if not (form.joins_documents if xml_calls is None else xml_calls):
         raise Refusal("tools", "structured outputs with tools are not served in this model's "
                                "tool-call format; send tool_choice none or no tools")
+    if self_think:
+        raise Refusal("tools", "structured outputs with tools need thinking off on this model, which "
+                               "opens its own reasoning block; turn thinking off, or send tool_choice "
+                               "none or no tools")
     # the flat `{"name": ..., "parameters": ...}` form read as a function tool
     fns = [t if "function" in t else {"type": "function", "function": t} for t in body["tools"]]
     names = [t["function"]["name"] for t in fns]
@@ -576,7 +584,8 @@ class ActConstraint(NamedTuple):
 
 
 def act_constraint(c: dict, body: dict, chat: bool, vocab: int, fmt=None, structured: bool = True,
-                   own: str | None = None, taken=(), compile=None, wrapper: tuple = ()) -> ActConstraint:
+                   own: str | None = None, taken=(), compile=None, wrapper: tuple = (),
+                   self_think: bool = False) -> ActConstraint:
     """SET_CONSTRAINT (`c`: kind, value, scope, strict, the act's shape checked by server/ext.py)
     through the request path's own functions, as if the request had sent `same_as`: a regex, a
     choice list or a JSON schema is `structured_outputs` (`answer_constraint`, the calls beside it
@@ -586,6 +595,7 @@ def act_constraint(c: dict, body: dict, chat: bool, vocab: int, fmt=None, struct
     logit_bias of the request's own wins over the act's. `taken`: the families ("grammar",
     "bias") an earlier act of this request set. `compile(answer)` builds the grammar (a
     GrammarError is a refusal). `wrapper`: the family's call wrapper around forced calls (ENG-472).
+    `self_think`: `answer_constraint`'s (ENG-581): beside tools under auto the act is refused.
     Raises ActRefused."""
     from engine import grammar
     kind, value, scope = c.get("kind"), c.get("value"), c.get("scope")
@@ -667,7 +677,8 @@ def act_constraint(c: dict, body: dict, chat: bool, vocab: int, fmt=None, struct
                 raise ActRefused(f"kind {kind!r} is not one of regex, choice, json_schema, "
                                  f"logit_bias")
             same = {"structured_outputs": so}
-            answer = answer_constraint(dict(body, **same), chat, fmt=form, wrapper=wrapper)
+            answer = answer_constraint(dict(body, **same), chat, fmt=form, wrapper=wrapper,
+                                       self_think=self_think)
         gram = compile(answer) if compile is not None else None
     except ActRefused:
         raise

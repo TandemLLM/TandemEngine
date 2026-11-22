@@ -38,7 +38,7 @@ The EXL3 packs store every routed expert's up projection divided by 128, and `qu
 
 Flint decides on each turn whether to reason, and opens its own `<think>` block as its first token; its template has no thinking switch. Thinking off puts an empty block after the generation prompt, so the answer starts at once (SRV-685); on a hard ask the model may still work through it in the visible answer. An effort level or a token budget closes the block at its cap with the closing phrase; on the server, effort `low` closed a hard ask's block at 1,045 tokens and a 64-token budget at 89, both counted from the model's own `<think>`.
 
-Tool calls come in Flint's own form, `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>` (`tool_format` argkey, SRV-683). The server types each value by the tool's schema and writes the calls back the same way, so a turn after a tool call resumes from the end anchor.
+Tool calls come in Flint's own form, `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>` (`tool_format` argkey, SRV-683). The server types each value by the tool's schema and writes the calls back the same way, so a turn after a tool call resumes from the end anchor. Tools beside a `response_format` or `structured_outputs` document under `tool_choice: auto` are served with thinking off (ENG-581): the answer is the calls or the document. With thinking on that request is a 400 that says to turn thinking off, since the model's own `<think>` at the answer's start would pick the document and mask the calls. This is checked on the CPU only.
 
 ## How the engine runs it
 
