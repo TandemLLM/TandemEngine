@@ -57,6 +57,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -213,6 +214,10 @@ def run_cli(url, *args, stdin=None, env=None):
 
 #: values of a moment, not of the answer: the uptime, the disk's free bytes as the tests write
 MOMENT = ("uptime_s", "loading_s", "free_gb", "since", "checked_at", "left_s")
+#: the same moment in a sentence: a refusal's "the disk has 52 GB free, 40 GB too few" (server/setup/apply.py
+#: disk_full; doctor.py's disk lines), read on each call, so two calls of one plan a moment apart can word it 52 / 40
+#: and 51 / 41 (the 388840a3 box run, 11-19 before it). Only those two figures; every other word is compared
+FREE_WORDS = re.compile(r"\b\d+(?:\.\d+)? GB (free|too few)\b")
 
 
 def norm(x):
@@ -220,6 +225,8 @@ def norm(x):
         return {k: norm(v) for k, v in x.items() if k not in MOMENT}
     if isinstance(x, list):
         return [norm(v) for v in x]
+    if isinstance(x, str):
+        return FREE_WORDS.sub(r"N GB \1", x)
     return x
 
 
@@ -592,6 +599,44 @@ kill -9 "$pid" 2>/dev/null; exit 0
 
 def _marks(path):
     return open(path).read().splitlines() if os.path.exists(path) else []
+
+
+def test_two_reads_of_one_plan_differ_only_in_the_disks_free_space():
+    """The 388840a3 box run (2026-11-22, and 11-19 before it): test_nothing_answers compares the page's plan with the
+    CLI's, two live calls a moment apart, and the disk gave up a GB between them: "the disk has 52 GB free, 40 GB too
+    few" in one, 51 and 41 in the other. The same plan read twice with the disk's free space moving between the reads
+    (shutil.disk_usage faked: 52, then 51 GB): `same` reads past a refusal's free-space figures, and nothing else, so a
+    plan that differs in any other word is still not the same."""
+    free = {"gb": 52}
+    real = shutil.disk_usage
+
+    def fake(path):                                          # every read of the disk during one plan: one figure
+        u = real(path)
+        return type(u)(u.total, u.used, int(free["gb"] * 1e9))
+    with SA.Box():
+        margin, apply.DISK_MARGIN_GB = apply.DISK_MARGIN_GB, 10 ** 3   # this disk is too small for any download
+        shutil.disk_usage = fake
+        try:
+            first = SA._plan(SA._sel(profile="exl3-3.0"))
+            free["gb"] = 51                                  # the disk gives up a GB between the two calls
+            second = SA._plan(SA._sel(profile="exl3-3.0"))
+        finally:
+            shutil.disk_usage, apply.DISK_MARGIN_GB = real, margin
+    assert first["error_codes"] == second["error_codes"] == ["disk_full"], (first["errors"], second["errors"])
+    assert "the disk has 52 GB free" in first["errors"][0] and "the disk has 51 GB free" in second["errors"][0], \
+        (first["errors"], second["errors"])
+    assert first != second                                   # the two calls' own words differ: the flake's shape
+    same({"result": first}, second, "a plan read twice while the disk's free space moved")
+    # a real difference still counts: the download's own figure, a refusal more or less
+    for other in ({**second, "errors": [second["errors"][0].replace("needs 13.5 GB", "needs 14 GB")]},
+                  {**second, "errors": second["errors"] + ["ops/serve.env on this box does not read run/setup.env."]}):
+        assert other != second
+        try:
+            same({"result": first}, other, "a plan with another refusal")
+        except AssertionError:
+            continue
+        raise AssertionError(f"same() passed two plans that differ beyond the free space: {other['errors']}")
+    return "52 then 51 GB free: the same plan; another figure or refusal: not the same"
 
 
 def test_nothing_answers():
