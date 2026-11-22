@@ -1220,19 +1220,19 @@ def test_the_think_opener_is_in_neither_branch():
     row[think], row[call], row[LBRACE] = 9.0, 8.0, 1.0
     cons.apply_single(row)
     assert not torch.isfinite(row[[think, call]]).any() and int(row.argmax()) == LBRACE
-    # the request path: the joined automaton is the 400 under self_think; the calls alone, the document alone and
+    # the request path: the joined automaton is the 400 under opens_reasoning; the calls alone, the document alone and
     # tool_choice none are built as before
     body = {"messages": [], "tools": MARK, "response_format": JS}
     try:
-        compat.answer_constraint(body, fmt="argkey", self_think=True)
+        compat.answer_constraint(body, fmt="argkey", opens_reasoning=True)
         raise AssertionError("served")
     except compat.Refusal as exc:
         assert exc.param == "tools" and "thinking off" in str(exc), str(exc)
     for extra, kind in (({"tool_choice": "required"}, "tool_choice"), ({"tool_choice": "none"}, "response_format"),
                         ({"tools": None}, "response_format")):
-        got = compat.answer_constraint(dict(body, **extra), fmt="argkey", self_think=True)
+        got = compat.answer_constraint(dict(body, **extra), fmt="argkey", opens_reasoning=True)
         assert got.kind == kind and got.parts is None, (extra, got)
-    return "Flint's <think> has no bytes: pick -> document, <tool_call> masked; self_think: the union a 400"
+    return "Flint's <think> has no bytes: pick -> document, <tool_call> masked; opens_reasoning: the union a 400"
 
 
 def test_a_model_that_opens_its_own_reasoning_needs_thinking_off():

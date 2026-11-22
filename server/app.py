@@ -4313,9 +4313,10 @@ def _spec() -> ServeSpec:
     return STATE.get("spec") or DEFAULT_SPEC
 
 
-def _self_think(client) -> bool:
+def _opens_reasoning(client) -> bool:
     """ENG-581: the model may open its own reasoning block with its first answer token (`ReasoningSpec.opens_itself`,
-    thinking not off: Flint), where the calls-or-document automaton starts (compat.answer_constraint `self_think`)."""
+    thinking not off: Flint), where the calls-or-document automaton starts (compat.answer_constraint's
+    `opens_reasoning`)."""
     return bool(_spec().reasoning.opens_itself and not client.off)
 
 
@@ -8612,7 +8613,7 @@ def _grammar_vocab(markers: tuple = ()) -> "grammar_mod.Vocab":
 
 
 def _set_constraints(sets: list, body: dict, chat: bool, own, structured: bool, req_x, plan,
-                     sup, cid: str, self_think: bool = False) -> tuple:
+                     sup, cid: str, opens_reasoning: bool = False) -> tuple:
     """engine-ext-v1 3.2 (ENG-458): SP4's SET_CONSTRAINT acts, carried out by the engine's own
     grammar as the request's own fields would be (server/compat.py `act_constraint`): `(the
     grammar's ActConstraint or None, the logit bias's or None, a strict act's refusal or None)`.
@@ -8620,7 +8621,7 @@ def _set_constraints(sets: list, body: dict, chat: bool, own, structured: bool, 
     carry out is refused open: the request runs without it, the refusal is logged and, when the
     constraint is wrong in itself, counted as an error of at_request (qse_ext_errors_total); a
     strict act's refusal is the client's 400. What became of each act goes to the routing row's
-    extra (`set_constraint`) and to the supervisor's `constraint_outcomes`. `self_think`: `_self_think`'s
+    extra (`set_constraint`) and to the supervisor's `constraint_outcomes`. `opens_reasoning`: `_opens_reasoning`'s
     (ENG-581), the request's."""
     own_field = None if own is None else (compat.constraint_field(body)
                                           if own.kind == "response_format" else "tool_choice")
@@ -8632,7 +8633,8 @@ def _set_constraints(sets: list, body: dict, chat: bool, own, structured: bool, 
             k = compat.act_constraint(
                 c, body, chat, STATE["engine"].cfg.vocab_size, fmt=_tool_format(),
                 structured=structured, own=own_field, wrapper=_spec().call_wrapper,
-                self_think=self_think, taken=tuple(f for f, v in got.items() if v is not None),
+                opens_reasoning=opens_reasoning,
+                taken=tuple(f for f, v in got.items() if v is not None),
                 compile=lambda a: grammar_mod.grammar_for(a.pattern, _grammar_vocab(a.markers),
                                                           parts=a.parts))
         except compat.ActRefused as exc:
@@ -10718,8 +10720,8 @@ class Handler(BaseHTTPRequestHandler):
             # allowed functions, their values typed by the schemas; SRV-619: tools under
             # auto beside a document -- the calls (in the model's own form, ENG-581) or the
             # document, one automaton
-            ac = (compat.answer_constraint(body, chat, fmt=_tool_format(),
-                                           wrapper=_spec().call_wrapper, self_think=_self_think(client))
+            ac = (compat.answer_constraint(body, chat, fmt=_tool_format(), wrapper=_spec().call_wrapper,
+                                           opens_reasoning=_opens_reasoning(client))
                   if structured else None)
             pattern = ac.pattern if ac is not None else None
             rec.constrained = ac.kind if ac is not None else None
@@ -11688,7 +11690,8 @@ class Handler(BaseHTTPRequestHandler):
                     # splices the other acts
                     a_gram, a_bias, refused = _set_constraints(
                         [a for a in acts if ext_mod.act_kind(a) == ext_mod.SET_CONSTRAINT], body,
-                        chat, ac, structured, req_x, plan, sup, cid, self_think=_self_think(client))
+                        chat, ac, structured, req_x, plan, sup, cid,
+                        opens_reasoning=_opens_reasoning(client))
                     acts = [a for a in acts if ext_mod.act_kind(a) != ext_mod.SET_CONSTRAINT]
                     if refused is not None:
                         return self._json(400, refused.body())
