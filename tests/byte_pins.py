@@ -29,8 +29,10 @@ def digest(t: torch.Tensor) -> str:
 
 
 def host_key(device: str | None = None) -> str:
-    """The machine, the torch build, and for a device pin the device's name."""
-    key = f"{platform.machine()}-{sys.platform}-torch{torch.__version__.split('+')[0]}"
+    """The machine, the torch build with its local version, and for a device pin the device's name. Two builds of
+    one torch version write different bytes: the DGX Spark has 2.13.0+cpu (OpenBLAS) and 2.13.0+cu130 (NVPL), whose
+    one-row fp32 products differ (ENG-585), so each keeps its own table."""
+    key = f"{platform.machine()}-{sys.platform}-torch{torch.__version__}"
     if device is not None and str(device).startswith("cuda"):
         key += "-" + torch.cuda.get_device_name(torch.device(device)).replace(" ", "_")
     return key

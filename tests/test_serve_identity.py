@@ -147,6 +147,7 @@ def test_the_raw_loop_writes_what_the_release_wrote():
         if got.get(k) != v:
             bad[k] = (got.get(k), v)
     assert not bad, f"the raw loop no longer writes what the release wrote: {bad}"
+    print(f"  {len(want)} cases reproduce ({key})")
 
 
 if __name__ == "__main__":

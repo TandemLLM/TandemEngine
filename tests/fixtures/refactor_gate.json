@@ -1,5 +1,33 @@
 {
- "aarch64-linux-torch2.13.0": {
+ "aarch64-linux-torch2.13.0+cpu": {
+  "bf16": {
+   "S": "977d39ee103965b73ab8a655",
+   "after_commit": "563275ff019ac826449aae91",
+   "block": "3af7673ecd416e5faa790915",
+   "conv": "b663ef0003944edfb0674182",
+   "decode0": "e424097ea33f8ca34d7203dd",
+   "decode1": "c8ab88a4043072d0ae1bb93c",
+   "decode2": "1c963b2f5c4f61cb9ff7bfdf",
+   "kv_k": "7b9a0f722c9144ced8365200",
+   "kv_v": "8b2eac41cc9d8d53297b9dc9",
+   "prefill": "6cf044fd20f827eeb5143495",
+   "tree": "41908a68a45e78c8bd18daeb"
+  },
+  "fp8": {
+   "S": "bc359130b0638e24ff735294",
+   "after_commit": "1e9b74306267efb67a6702b8",
+   "block": "4ecc35990682e4f3b6956396",
+   "conv": "d207489111ce768be2fadb4f",
+   "decode0": "6cfb2c608eae27c30e53dfbe",
+   "decode1": "59561d24c3f114ca3fc4a2b1",
+   "decode2": "96919f7896c266761df828eb",
+   "kv_k": "54bd22e042d6fbc61ccf201d",
+   "kv_v": "c6034f088d873215ec6ade25",
+   "prefill": "3f33b7f22e5872b11ec597ae",
+   "tree": "42e3a70ed790541d9631f3c7"
+  }
+ },
+ "aarch64-linux-torch2.13.0+cu130": {
   "bf16": {
    "S": "f6f3a981f5eb452662570315",
    "after_commit": "eb3e942aa9f4e5cca5eb48cf",

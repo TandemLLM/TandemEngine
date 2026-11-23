@@ -188,7 +188,7 @@ def run(kind: str, perturb: str | None = None) -> dict[str, str]:
 
 
 def host_key() -> str:
-    return f"{platform.machine()}-{sys.platform}-torch{torch.__version__.split('+')[0]}"
+    return f"{platform.machine()}-{sys.platform}-torch{torch.__version__}"   # the build too, as tests/byte_pins.py
 
 
 def _load() -> dict:

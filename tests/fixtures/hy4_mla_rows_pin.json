@@ -1,5 +1,5 @@
 {
- "aarch64-linux-torch2.13.0-NVIDIA_GB10": {
+ "aarch64-linux-torch2.13.0+cu130-NVIDIA_GB10": {
   "mla_rows": {
    "heads32": "870ab5fc2408fc6a46eb215154bb6481a0264a07b0bd3faeb62ec9f132492d6f",
    "heads64": "3138022180dfa1cfc8f1e78409a1502225ff58136ef9e029cadc527022dc6e72"

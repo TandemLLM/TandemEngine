@@ -1,5 +1,5 @@
 {
- "aarch64-linux-torch2.13.0-NVIDIA_GB10": {
+ "aarch64-linux-torch2.13.0+cu130-NVIDIA_GB10": {
   "flashnext": {
    "rows17_items32_combined": "1afcb6fc2c216389b0d318be3b57c6023c03673947bc33c17815b7cbabbb3d6b",
    "rows17_items32_yd": "e7d488640c5fb2bf625089ce1b71f287ded42cd2a88114f671ba0d905d31542d",

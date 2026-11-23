@@ -213,7 +213,7 @@ def play(make, ch: int, max_len: int, own: bool = False) -> list[dict]:
 
 
 def host_key() -> str:
-    return f"{platform.machine()}-{sys.platform}-torch{torch.__version__.split('+')[0]}"
+    return f"{platform.machine()}-{sys.platform}-torch{torch.__version__}"   # the build too, as tests/byte_pins.py
 
 
 def _load() -> dict:
@@ -242,8 +242,10 @@ def _check(kind: str, run) -> str:
     assert len(want) == len(got), (kind, len(want), len(got))
     bad = [(w["step"], sorted(f for f in w if w[f] != g.get(f))) for w, g in zip(want, got) if w != g]
     assert not bad, f"{kind}: the caching moved at {bad} (host {key})"
-    return f"{len(want)} steps reproduce ({key}): " + ", ".join(f"{r.get('kind') or 'cold'} {r.get('reused')}"
-                                                              for r in got)
+    line = f"{len(want)} steps reproduce ({key}): " + ", ".join(f"{r.get('kind') or 'cold'} {r.get('reused')}"
+                                                                for r in got)
+    print(f"    {kind}: {line}", flush=True)                # scriptmode prints only ok: the compare line is shown here
+    return line
 
 
 def _27b():

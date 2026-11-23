@@ -81,7 +81,7 @@ def digest(t: torch.Tensor) -> str:
 
 
 def host_key() -> str:
-    return f"{platform.machine()}-{sys.platform}-torch{torch.__version__.split('+')[0]}"
+    return f"{platform.machine()}-{sys.platform}-torch{torch.__version__}"   # the build too, as tests/byte_pins.py
 
 
 def tokens(n: int, seed: int) -> list[int]:

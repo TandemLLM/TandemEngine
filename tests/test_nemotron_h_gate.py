@@ -85,7 +85,7 @@ def host_key(kind: str) -> str:
     dev = "cuda" if torch.cuda.is_available() and not os.environ.get("TRITON_INTERPRET") and kind == "engine" else "cpu"
     if dev == "cpu" and kind == "engine":
         dev = "interp"
-    return f"{platform.machine()}-{sys.platform}-{dev}-torch{torch.__version__.split('+')[0]}"
+    return f"{platform.machine()}-{sys.platform}-{dev}-torch{torch.__version__}"   # the build too, as tests/byte_pins.py
 
 
 def _check(kind: str):

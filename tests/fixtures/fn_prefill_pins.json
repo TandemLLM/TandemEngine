@@ -1,7 +1,12 @@
 {
- "aarch64-linux-torch2.13.0": {
+ "aarch64-linux-torch2.13.0+cpu": {
   "moe_grouped_reference": {
    "yd": "cbde75874d7e56e10c9887c6db073f56478d92e004039a5313176cdaf8b26a0f"
+  }
+ },
+ "aarch64-linux-torch2.13.0+cu130": {
+  "moe_grouped_reference": {
+   "yd": "152bffa4fdc2ae96f64a53afac88895e3b2b8f53969dc293a3f4f33dc57c7ab9"
   }
  }
 }
