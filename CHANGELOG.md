@@ -6,7 +6,7 @@ Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; 
 
 ### Fixes
 
-- The Setup Guide no longer refuses a model switch after a long session (SRV-953): its memory check counts everything a stop frees (the allocator's reserve, the KV pool's pages, the process's memory; `/health` `memory.stop_frees_gb`), where it took only the largest of them. An apply sent while requests run now waits for them (10 minutes at most) in place of a 409 `busy`.
+- The Setup Guide no longer refuses a model switch after a long session (SRV-953): its memory check adds up the three parts a stop frees (the allocator's reserve, the KV pool's pages and the process's memory; `/health` `memory.stop_frees_gb`), where it took only the largest of them. A stop can free a little more than that sum. An apply sent while requests run now waits for them (10 minutes at most) in place of a 409 `busy`.
 
 ## 0.17.0, 2026-11-23
 
