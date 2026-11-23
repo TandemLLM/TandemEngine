@@ -49,6 +49,9 @@ The test matrix:
      not owner/name are refused                             test_every_pack_names_its_maker
  16  app/dashboard/mock/setup/community-qwen3.8-flash-next.json is the API's list of turboderp's
      packs                                                  test_the_builtin_community_mock
+ 17  every published profile is public (OPS-95), Hy4-flash's two packs too since 2026-11-22: hf_private
+     false, so the Setup Guide downloads it without a Hugging Face token, and no note says it is private
+     or needs a token                                       test_every_published_pack_is_public
 
 Run: python tests/test_setup_registry.py
 """
@@ -337,6 +340,23 @@ def test_every_pack_names_its_maker():
             else:
                 assert mb.get("repo") is None, p["id"]
     assert seen == {"ours", "vendor", "community"}
+
+
+def test_every_published_pack_is_public():
+    """OPS-95: every published profile is public, so the Setup Guide's plan asks for no Hugging Face token
+    (server/setup/apply.py refuses a private profile without one: missing_token). Hy4-flash's two packs went
+    public on 2026-11-22; before, both entries said hf_private true and their notes said a download needed a
+    token, so the Setup Guide refused them on a box without one."""
+    models = registry.load_all()[0]
+    for m in models.values():
+        for p in m["profiles"]:
+            assert p["hf_private"] is False, p["id"]
+            note = p.get("note") or ""
+            assert not re.search(r"\bprivate\b", note, re.I), (p["id"], note)
+            assert not re.search(r"\bneeds?\b(?! no token)[^.]*\btoken\b", note), (p["id"], note)
+    hy4 = {p["id"]: p for p in models["hy4-flash"]["profiles"]}
+    assert hy4["hy4-3.56"]["hf_repo"] == "0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5"
+    assert hy4["hy4-3.08"]["hf_repo"] == "0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0"
 
 
 def test_the_validator_rules():

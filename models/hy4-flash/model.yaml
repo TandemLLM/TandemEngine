@@ -88,7 +88,7 @@ profiles:
   weights_gib: 58.52
   drafters_gib: 0.08
   hf_repo: 0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0
-  hf_private: true
+  hf_private: false
   made_by: {kind: ours, name: 0xBakeer, github: 0xBakeer}
   recommended: false
   badges:
@@ -110,8 +110,7 @@ profiles:
     drafted (DFly2 + lookup + StairCut over the pack''s price file) 32.08 and 33.02, 237 rounds for 599 tokens; the
     drafted text equals the plain text. First token after 23.6 to 29.6 s on that prompt. Load 86.8 to 93.4 s, 138 to
     144 s from start to healthy. After the load 63.9 to 64.0 GiB allocated, 73.4 to 73.8 reserved; the start took
-    the pack''s limits, ceiling 77 GiB and peak 84. Not in the measured table''s shape. The Hugging Face repository
-    is private for now: a download needs a token with access.'
+    the pack''s limits, ceiling 77 GiB and peak 84. Not in the measured table''s shape.'
   hf_revision: main
   max_window: 262144
   table:
@@ -126,7 +125,7 @@ profiles:
   weights_gib: 67.17
   drafters_gib: 0.08
   hf_repo: 0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5
-  hf_private: true
+  hf_private: false
   made_by: {kind: ours, name: 0xBakeer, github: 0xBakeer}
   recommended: true
   badges:
@@ -147,8 +146,7 @@ profiles:
     plain 22.63 and 23.00 tok/s, drafted (DFly2 + lookup + StairCut over the pack''s price file) 27.81 and 28.37, 265
     rounds for 599 tokens; the drafted text equals the plain text. First token after 27.0 to 31.5 s on that prompt.
     Load 95.1 to 105.0 s, 147 to 165 s from start to healthy. After the load 72.5 to 72.7 GiB allocated, 73.4 to 73.8
-    reserved; the start took the pack''s limits, ceiling 85 GiB and peak 92. Not in the measured table''s shape. The
-    Hugging Face repository is private for now: a download needs a token with access.'
+    reserved; the start took the pack''s limits, ceiling 85 GiB and peak 92. Not in the measured table''s shape.'
   hf_revision: main
   max_window: 262144
   table:
