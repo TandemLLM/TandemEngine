@@ -57,7 +57,9 @@ set -euo pipefail
 # Pinned versions
 # ---------------------------------------------------------------------------------------------
 
-# The engine release. v0.16.0 is the engine on its own (TandemApp has its own repository and
+# The engine release. v0.17.0 adds Hy4-flash (the hy4-3.56 and hy4-3.08 profiles, up to 8 chats at
+# once on lanes that take turns) and structured outputs beside tools in the arg-key call form;
+# v0.16.0 is the engine on its own (TandemApp has its own repository and
 # releases; the chat mode loads its conductor as an extension) and adds tandem remote; v0.15.4 charges a turn the rows its prefill forwards (slot 0, a regenerate or an
 # edit too) and raises a short reserve at the first forward, and adds the log's Export button;
 # v0.15.3 drops Flash-Next's idle CUDA graphs when memory runs short, lets a
@@ -101,7 +103,7 @@ set -euo pipefail
 # engines. The raw path (X-Tandem: raw) decodes as in v0.3.0; v0.2.0-staircut is the StairCut paper's
 # version (merge c111fa7).
 # Any tag, branch or commit of the repository works here (TANDEM_REF=main for the newest code).
-TANDEM_REF="${TANDEM_REF:-v0.16.0}"
+TANDEM_REF="${TANDEM_REF:-v0.17.0}"
 TANDEM_REPO="${TANDEM_REPO:-https://github.com/TandemLLM/TandemEngine.git}"
 
 # The weights. The base checkpoint gives every tensor the NVFP4 overlays do not replace
