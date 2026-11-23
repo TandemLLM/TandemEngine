@@ -1248,6 +1248,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hy4-flash/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1934,7 +1955,7 @@
 <p>A hand-back that frees nothing during a wait prints its line once, then a count once a minute, and the count again when the wait ends (<code>--verbose</code> only). Before, every one-second retry printed eight lines.</p>
 <p>Measured on one DGX Spark (2026-11-10, Flash-Next 3.05, 8 lanes, a synthetic chat of about 203,000 tokens through the chat endpoint, then short turns): every request line of the build had <code>ws_rows</code> equal to <code>fwd</code>. Follow-ups forwarded 931 to 1,059 rows, a regenerate 7,281 and an edit 2,737. No turn waited in that run, so a wait at the new price is not measured yet. Known gap (SRV-805, open): a cold read took more host memory than its reserve, 0.37 GiB more for a 3,412-row prompt and 0.44 GiB for a 203,415-row one. The cause is not known.</p>
 <h2 id="how-a-round-runs">How a round runs<a class="headerlink" href="#how-a-round-runs" title="Permanent link">&para;</a></h2>
-<p>One thread runs every decoding lane's round (<code>QSE_ROUND_RUNNER=1</code>, SPD-201): the lanes' proposals, one packed draft, one joint verify pass, the walks and the tails (commits, penalties, stop strings, the stream). <code>/health</code> <code>parallel.round_runner</code> has its host and GPU milliseconds by phase. A lane of a family without a draft head joins the pass with its plain step as a one-row block (ENG-241). The 27B's joint pass runs from CUDA graphs once a pass shape has come <code>QWEN38_JOINT_GRAPHS_AFTER</code> times; a graphed pass gives each lane's logits, state and KV bit for bit what the eager pass gives (<code>tools/joint_graph_check.py</code>).</p>
+<p>One thread runs every decoding lane's round (<code>QSE_ROUND_RUNNER=1</code>, SPD-201): the lanes' proposals, one packed draft, one joint verify pass, the walks and the tails (commits, penalties, stop strings, the stream). <code>/health</code> <code>parallel.round_runner</code> has its host and GPU milliseconds by phase; its <code>taken_back</code> counts the tasks whose client left while the runner waited for the GPU turn, ended before their round (SRV-885). A lane of a family without a draft head joins the pass with its plain step as a one-row block (ENG-241). The 27B's joint pass runs from CUDA graphs once a pass shape has come <code>QWEN38_JOINT_GRAPHS_AFTER</code> times; a graphed pass gives each lane's logits, state and KV bit for bit what the eager pass gives (<code>tools/joint_graph_check.py</code>).</p>
 <table>
 <thead>
 <tr>

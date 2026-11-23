@@ -16,7 +16,7 @@
         <link rel="prev" href="../ornith/">
       
       
-        <link rel="next" href="../reference/commands/">
+        <link rel="next" href="../hy4-flash/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -1170,6 +1170,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hy4-flash/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1706,7 +1727,7 @@
 <p>The EXL3 packs store every routed expert's up projection divided by 128, and <code>quantization_config.expert_interm_div</code> says so: the experts' |silu(gate) x up| reaches 260,000 in the top layers, past fp16. The engine multiplies the routing weights back.</p>
 <h2 id="reasoning-effort-and-tools">Reasoning, effort and tools<a class="headerlink" href="#reasoning-effort-and-tools" title="Permanent link">&para;</a></h2>
 <p>Flint decides on each turn whether to reason, and opens its own <code>&lt;think&gt;</code> block as its first token; its template has no thinking switch. Thinking off puts an empty block after the generation prompt, so the answer starts at once (SRV-685); on a hard ask the model may still work through it in the visible answer. An effort level or a token budget closes the block at its cap with the closing phrase; on the server, effort <code>low</code> closed a hard ask's block at 1,045 tokens and a 64-token budget at 89, both counted from the model's own <code>&lt;think&gt;</code>.</p>
-<p>Tool calls come in Flint's own form, <code>&lt;tool_call&gt;NAME&lt;arg_key&gt;K&lt;/arg_key&gt;&lt;arg_value&gt;V&lt;/arg_value&gt;&lt;/tool_call&gt;</code> (<code>tool_format</code> argkey, SRV-683). The server types each value by the tool's schema and writes the calls back the same way, so a turn after a tool call resumes from the end anchor.</p>
+<p>Tool calls come in Flint's own form, <code>&lt;tool_call&gt;NAME&lt;arg_key&gt;K&lt;/arg_key&gt;&lt;arg_value&gt;V&lt;/arg_value&gt;&lt;/tool_call&gt;</code> (<code>tool_format</code> argkey, SRV-683). The server types each value by the tool's schema and writes the calls back the same way, so a turn after a tool call resumes from the end anchor. Tools beside a <code>response_format</code> or <code>structured_outputs</code> document under <code>tool_choice: auto</code> are served with thinking off (ENG-581): the answer is the calls or the document. With thinking on that request is a 400 that says to turn thinking off, since the model's own <code>&lt;think&gt;</code> at the answer's start would pick the document and mask the calls. This is checked by CPU tests only, not on a device.</p>
 <h2 id="how-the-engine-runs-it">How the engine runs it<a class="headerlink" href="#how-the-engine-runs-it" title="Permanent link">&para;</a></h2>
 <ul>
 <li>The row kernels compute each row on its own, so a verify block's rows equal the decode step's bit for bit; the load-time self-check compares 24 rows.</li>
@@ -2049,13 +2070,13 @@
         
         
           
-          <a href="../reference/commands/" class="md-footer__link md-footer__link--next" aria-label="Next: Reference: commands">
+          <a href="../hy4-flash/" class="md-footer__link md-footer__link--next" aria-label="Next: Hy4-flash">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Reference: commands
+                Hy4-flash
               </div>
             </div>
             <div class="md-footer__button md-icon">

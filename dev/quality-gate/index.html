@@ -1134,6 +1134,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hy4-flash/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1547,7 +1568,7 @@ python -m tools.gate run                  # base origin/main, head HEAD, level f
 <p>Run it with the engine's Python, from a checkout with <code>origin/main</code> fetched, on a box with the weights of the profile's reference pack and a free GPU. The gate never starts a server below port 8100 and never touches one it did not start; on a GPU that shares memory with the host it refuses to start while another engine holds that memory. It writes <code>results/gate/&lt;head&gt;-&lt;time&gt;/gate-report.md</code> and <code>gate-report.json</code>. Paste the Markdown file into the pull request's description. Editing the description runs the check again; a report posted in a comment counts from the next run.</p>
 <p>Options: <code>--suite quick|quick+long|full</code> (default: what the diff needs), <code>--base</code>, <code>--head</code>, <code>--pack ID</code>, <code>--hw auto|gb10|ada|generic</code>, <code>--python</code> (the engine's interpreter, for the hardware fingerprint), <code>--port</code> (the first port tried), <code>--pairs N</code> (servers a side), <code>--site FILE</code> (see below), <code>--lock FILE</code> (a lock file held for the GPU part).</p>
 <p>How it runs: the gate copies both commits with <code>git archive</code>. The head's GPU tests run first, with no server up. Then each side gets a fresh server on a free port, with its own config copy and state directory, the conductor raw, and the suffix store, the response cache, the usage ledger and the disk tier off. The suites run against each server, and each server stops before the next starts. The head without speculation and, at quick+long, both sides with the wide prefill chunk get servers of their own. The measuring code is the checkout's own, so one instrument measures both sides.</p>
-<p>A box whose layout differs from a plain checkout (its own <code>ops/serve.env</code>, a <code>run/setup.env</code>, files linked beside the tree) names it in a site file: <code>serve_env</code>, <code>setup_env</code>, <code>local_env</code>, and <code>links</code> / <code>copies</code> maps of tree path to box path. Without one, the gate reads an install's <code>run/local.env</code>.</p>
+<p>A box whose layout differs from a plain checkout (its own <code>ops/serve.env</code>, a <code>run/setup.env</code>, files linked beside the tree) names it in a site file: <code>serve_env</code>, <code>setup_env</code>, <code>local_env</code>, and <code>links</code> / <code>copies</code> maps of tree path to box path. Without one, the gate reads an install's <code>run/local.env</code>. A <code>local_env</code> in an install's <code>run/</code> folder brings the serve.env install.sh generated beside it (<code>run/ops/serve.env</code>) unless <code>serve_env</code> names one: that file holds the install's interpreter and paths and reads the <code>local.env</code> before its mode block, as the install's own start does. The repository's template reads no <code>local.env</code>, so one outside an install changes nothing.</p>
 <p>Every gate run also writes its arms' measurements as <a href="../measurement/#one-measuring-method">tools/measure</a> records, in <code>OUT/records/base</code> and <code>OUT/records/head</code>. <code>python -m tools.measure render gate --base OUT/records/base --head OUT/records/head</code> prints the verdict table from them with the same rules, and a release page imports the head's records instead of measuring them again.</p>
 <h2 id="what-a-diff-needs">What a diff needs<a class="headerlink" href="#what-a-diff-needs" title="Permanent link">&para;</a></h2>
 <p><code>tools/gate/map.yaml</code> maps each changed path to a level. Every file takes the highest level of the rules it matches, and the pull request takes the highest of its files. A path no rule names takes <code>quick</code>.</p>
@@ -1720,6 +1741,7 @@ python -m tools.gate run                  # base origin/main, head HEAD, level f
 </tbody>
 </table>
 <p>The Ada sizes are a starting point; no Ada card has run the gate yet.</p>
+<p>A pack's entry in <code>tools/gate/packs.yaml</code> can change three things (OPS-314). The hardware profile's memory ceiling and peak are written after the pack's weight profile and win over it. With <code>limits: profile</code> (OPS-308) both sides' arms get the ceiling and peak the pack's weight profile serves it with instead, read from this checkout's <code>ops/profiles/&lt;profile&gt;.env</code>. The Hy4-flash packs need this: the hardware profile's 66 and 77 GiB would run them under what their load reserves, and their base side's tree names no figures of its own. The other packs' arms run the hardware profile's figures, which only the reference pack is served with. <code>at_once: N</code> plans no row with more than N requests at once (the Hy4-flash packs: 1, until two clients at once are proved on that family). <code>base: REF</code> is the base side when <code>--base</code> is not given, for a family that is not on main yet; a report on such a base fails the CI check until the family merges. The run prints a line for each of these, and the knobs in the report show which limits each server ran with.</p>
 
 
 

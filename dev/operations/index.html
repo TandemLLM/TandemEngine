@@ -1251,6 +1251,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hy4-flash/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2110,6 +2131,7 @@ python -m tools.release_report render &lt;dir&gt;/data.json
 <li>An answer stops in the middle. Find the request's log line. <code>finish=length</code> hit the token limit, <code>timeout</code> the wall clock, <code>error</code> an exception (its traceback is in the log), and <code>abandoned</code> means the client hung up.</li>
 <li>An agent turn waits minutes before the first token. Check <code>cached_tokens</code> for that request in the usage ledger. On a growing conversation it should be close to the previous turn's prompt. If it is not, read the <code>resident</code> block of <code>/v1/cache/stats</code>.</li>
 <li>The server answers 503 or 429 while it looks idle. Read <code>inflight</code> in <code>/health</code>. A 503 means a full queue, and a 429 a request without a stream that waited longer than the queue timeout (a streamed chat request waits up to the request timeout and gets <code>: waiting</code> comments; docs/server.md). A high <code>waiting</code> count with nothing running is a bug.</li>
+<li>Who waits, in <code>/health</code>. <code>inflight.waiting</code> counts every request waiting for a lane or the engine: slot 0's line and the side slots' are one wait (SRV-903). <code>parallel.admission.waiting_memory</code> counts the ones that hold a lane and wait for memory before their prefill. <code>/health</code> has no <code>queue</code> object. <code>queue.waiting</code> is the dashboard's system view (<code>/v1/dashboard/system</code>), the same count as <code>inflight.waiting</code>.</li>
 <li>The port answers but nothing generates. The watchdog handles three failed checks. By hand: <code>bash ops/stop.sh 30 &amp;&amp; bash ops/start.sh</code>.</li>
 </ul>
 

@@ -1185,6 +1185,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hy4-flash/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1658,7 +1679,7 @@
 <h3 id="prefill-kernels-flash-next-eng-225">Prefill kernels (Flash-Next, ENG-225)<a class="headerlink" href="#prefill-kernels-flash-next-eng-225" title="Permanent link">&para;</a></h3>
 <p>A prompt chunk is not verified against anything, so its kernels have no twin contract: they share work across rows and are checked by next-token agreement (<code>tools/fn_prefill_check.py</code>): the kernel path against the decode path at least as close as the decode path is to the reference forward (within one point), no disagreement where both paths are sure (margins above 5), greedy continuations equal or first differing at a near tie. It is reported as agreement and margins, never as lossless. <code>tools/fn_prefill_kernels.py</code>:</p>
 <ul>
-<li><code>moe_grouped</code>: a chunk's (row, expert) pairs sorted by expert, each pair's input rotated with its expert's factors into the mma A-fragment order (an expert's rows padded to 16, one 16-byte load a lane and row tile), one GEMM over the experts' row groups that decodes each expert's trellis tiles once for up to 32 rows. The CTAs of one item (its matrix and column blocks) are adjacent on the grid, so its rows stream from memory once.</li>
+<li><code>moe_grouped</code>: a chunk's (row, expert) pairs sorted by expert, each pair's input rotated with its expert's factors into the mma A-fragment order (an expert's rows padded to 16, one 16-byte load a lane and row tile), one GEMM over the experts' row groups that decodes each expert's trellis tiles once for up to 32 rows. The CTAs of one item (its matrix and column blocks) are adjacent on the grid, so its rows stream from memory once. An optional <code>clamp</code> (a SwiGLU limit) clamps the gate|up products in place between the two GEMMs, the gate to at most the limit and the up to [-limit, limit]. Hy4-flash's prompt pass passes its limit (SPD-321); no other caller passes one, and without it the function runs as before. Hy4-flash's row kernels split K over the same 4 warps, so on the GB10 its prompt pass may pick between them by row count (<code>EXPERTS_MIN</code>); on another split every row count takes <code>moe_grouped</code>.</li>
 <li><code>mm_rows</code>: the mixers, the router, PLE and GDN a/b on the library GEMM with the weights exact in fp32 (<code>QWEN38_FN_PREFILL_MM=fp32</code>; fp16 weights failed the agreement gate at 3k). <code>tc</code> and <code>tcn</code> put the int8 weights on the tensor cores with nothing rounded (bf16 inputs, fp32 sums a scale group, the group's sum times its scale): <code>tc</code> a Triton kernel, <code>tcn</code> the native <code>mix_gemm_kernel</code>, which also applies the mixer's tail to its up products and writes x in bf16. Both are off by default, and neither gives <code>fp32</code>'s bits.</li>
 <li><code>qsa_scores_rows</code>: a chunk's QSA block scores as one GEMM, the reference's arithmetic.</li>
 <li>Attention, the GDN conv and gates, the PLE gate and conv reuse the decode path's sequence kernels with M rows (<code>attn_rows</code>, <code>gdn_pre</code>, <code>ple_gate</code>, <code>ple_conv</code>); the delta rule is <code>tools/gdn_prefill_kernels.py</code> with the key heads as they are.</li>

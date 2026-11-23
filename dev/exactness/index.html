@@ -1152,6 +1152,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hy4-flash/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1652,7 +1673,7 @@
 <p>A sampled request (temperature above 0) is exact in distribution. At each verified node the engine draws the target's own token, and a drafted token survives exactly while the draw lands on it. When the draw lands elsewhere, that draw is the token. For a drafter that proposes one fixed token this is the standard rejection sampler, <code>accept with min(1, p/q)</code>, with no second draw. The output therefore follows the target's own sampled distribution. A drafter that samples its own proposal carries its proposal distribution, and the accept uses it.</p>
 <p>All sampling filters (<code>temperature</code>, <code>top_p</code>, <code>top_k</code>, <code>min_p</code>) run after the penalties, through one function in <code>engine/sample.py</code>. Drafted rows and plain rows see the same distribution.</p>
 <p>A sampled request that names none of <code>top_p</code>, <code>top_k</code> and <code>min_p</code> takes the model card's filters (SPD-245, <code>server/sampling_defaults.py</code>): the first of these that says is the request's own fields, then <code>--top-p</code> / <code>--top-k</code> given at start (<code>TOP_P</code>, <code>TOP_K</code>), then the checkpoint's <code>generation_config.json</code> (Qwen3.8-27B and its fine-tunes: top_k 20, top_p 0.95, min_p 0), then the whole vocabulary. Before 0.15.0 a request that sent <code>temperature</code> alone sampled the whole vocabulary. Only the filters move: the temperature is the request's, a greedy request is untouched and the logits are not touched. <code>/health</code> <code>sampling.unnamed_filters</code> shows what an unnamed request runs with.</p>
-<p>A request with a <code>seed</code> draws with noise keyed by its position in the sequence: the token at index t is the argmax of <code>log p_t + G_t</code>, where <code>G_t</code> is Gumbel noise from a generator seeded by <code>(seed, t)</code>. That is an exact sample from <code>p_t</code>, and it does not depend on how many draws the drafters made before. The same seed therefore gives the same text whatever the drafters proposed.</p>
+<p>A request with a <code>seed</code> draws with noise keyed by its position in the sequence: the token at index t is the argmax of <code>log p_t + G_t</code>, where <code>G_t</code> is Gumbel noise from a generator seeded by <code>(seed, t)</code>. That is an exact sample from <code>p_t</code>, and it does not depend on how many draws the drafters made before. The same seed therefore gives the same text whatever the drafters proposed. On the 27B a seeded drafted answer can still differ from one send to the next and from the plain answer: 3 texts in 6 sends of one request, 2 in 6 with <code>--no-learn-cost</code>, and 2 in 4 sends at a 160-token limit on the code before this release (87137125). With StairCut's length switch off and a fixed length of 16 (<code>QWEN38_LEN_SWITCH=0</code>, <code>LEN_FIXED=16</code>) all 6 sends wrote the plain text. The likely cause, not confirmed: the length router keeps its acceptance rates from one request to the next, so two sends verify trees of different shapes, and the verify's logits move with the tree's shape (near ties, above). A seeded request that pins the length is the planned fix (ENG-573).</p>
 <p>A sampled request without a <code>seed</code> draws its own at admission (SPD-245, 63 bits of OS entropy) and takes the same keyed walk. The distribution is the same: Gumbel-max over <code>_filter</code>'s kept set is a draw from the filtered <code>p_t</code>, the draw the unseeded multinomial took. Only the noise differs, and two requests get two seeds, so a regenerate of the same prompt still differs. Under an active plan the seed is in the decision row (<code>extra.seed_drawn</code>). The response has no seed field, as for a client's seed. <code>QWEN38_FRESH_SEED</code>: <code>auto</code> (default) draws where the sampled verify carries no q (<code>--sampled-tree det</code>), <code>on</code> draws everywhere (the q-aware <code>min(1, p/q)</code> accept of a sampling drafter gives way to the keyed walk), <code>off</code> never draws. <code>/health</code> <code>sampling.unseeded</code> says which applies.</p>
 <p><code>tests/test_sample.py</code> checks the samplers statistically on the CPU, and <code>tools/sampled_dist.py</code> checks the served engine's sampled answers against the target sampled alone.</p>
 <h2 id="caches">Caches<a class="headerlink" href="#caches" title="Permanent link">&para;</a></h2>
@@ -1660,6 +1681,7 @@
 <p>The paper's long-context check sent a long prose prompt twice, cold and then resumed from the anchors. The two 256-token outputs were identical at 32k and 128k tokens and different at 64k, and that difference is not explained.</p>
 <p>Session resumes are one step weaker. A session resume continues a conversation from the state its last turn ended in, which verify rounds wrote rather than prefill chunks. That state produced the previous answer, but it is not the state a cold re-read would compute. It is held to the engine's greedy gate (same tokens) and not to bit equality. <a href="../caches/">caches.md</a> has the details.</p>
 <p>The resident prefix's end anchor (0.3.14-test, <code>--end-anchor</code>, on) is a session resume of the same kind: the recurrent state at the end of the last generation, which verify rounds wrote, with the rows in place, and the next turn forwards only its new messages from there. It is held to the greedy gate, as the session cache is, and so is every anchor a prefill that resumed there takes (the rows from the resident prefix's <code>taint</code> up). Two things keep the rest of the caches exact: the disk tier writes nothing of such a prompt and reads over those rows, and the state store takes no prefix snapshot of it; a grid anchor at or below <code>taint</code>, or a cold prefill, resumes bit for bit as before. The tokens the session monitor hid are put back into the client's copy where the rows hold them, so the prompt the engine continues is the context it really had, the hidden phrase included, as a router note is replayed; whitespace the re-rendered copy holds differently right next to a hidden span is the rows' own there too (0.3.15-test), and any other difference serves the copy as sent. <code>tests/test_end_anchor.py</code> checks, on the random model, that the turn after a generation resumed at its end writes the same greedy tokens as the same turn resumed at the prompt's last anchor (no drafter, wrong and right chains and trees), that a pending commit cut back is the shorter commit's state bit for bit, and that <code>--end-anchor off</code> leaves every prefill bit for bit as before. <a href="../caches/#after-a-long-generation">caches.md</a> has the details.</p>
+<p>Hy4-flash reads every prompt row in one summation order, whatever chunk holds it (R83, <a href="../hy4-flash/">hy4-flash.md</a>). Each packed projection of its prompt pass runs one order a weight at every row count (<code>tools/exl3_rows.py</code>). A one-row prompt chunk runs the prompt pass, not a decode step (<code>Capabilities.prompt_rows</code>). On that model the grid tiers give back a cold read's bits, and so does a turn that resumes at the end of the last prompt, at any row and with a one-row tail. Verify blocks and decode steps write an answer's rows with other arithmetic than the prompt pass, so at the end of every turn the engine reads the answer's rows again on the prompt pass and keeps only that state as the end anchor and the session snapshot (<code>Capabilities.reread_end</code>, <code>QWEN38_END_REREAD</code>): a turn that resumes at the end of the last answer or from a session snapshot gets a cold read's bits as well, and nothing a decode step or a verify block wrote is resumed from. The read covers the rows the next prompt will hold as the template renders it (an answer whose reasoning the template drops is not read), and an end it kept is served only to a copy that holds its rows, never through the end alignment. Where that read does not run, no end is kept and the next turn resumes at the end of the last prompt. Checked on the CPU (<code>tests/test_end_reread.py</code>); not run on the device yet. On the other models the greedy gate still holds a turn that resumes at the end of the last answer or from a session snapshot, and a turn that resumes off the grid: their prompt products switch kernels, and with them summation orders, with the chunk's rows.</p>
 <p>An opt-in response cache (<code>--response-cache</code>) answers an identical greedy request from memory. It is off by default, so a benchmark can never be pointed at a dictionary.</p>
 <h2 id="what-changes-output-on-purpose">What changes output on purpose<a class="headerlink" href="#what-changes-output-on-purpose" title="Permanent link">&para;</a></h2>
 <p>Some features change the text because the client asked for it. They are not exceptions to the promise. Plain decoding with the same setting writes the same text.</p>
@@ -1713,6 +1735,18 @@
 <tr>
 <td><code>tests/test_end_anchor.py</code></td>
 <td>a resume at the end of the last generation writes the same greedy tokens as one at the prompt's line; off, every prefill as before</td>
+</tr>
+<tr>
+<td><code>tests/test_linear_order.py</code>, <code>tests/test_exl3_rows.py</code></td>
+<td>on the CPU, Hy4-flash's prompt products launch one order at every row count from 1 to 4,097, and every other family's switch is the one recorded</td>
+</tr>
+<tr>
+<td><code>tests/gpu/test_linear_rowinv_gpu.py</code></td>
+<td>on the device, every row of a prompt-pass product equals the same row in a one-row call, across 32 and 128 rows, on both Hy4-flash packs</td>
+</tr>
+<tr>
+<td><code>tools/resume_split.py</code>, <code>tests/test_prompt_rows.py</code></td>
+<td>a prompt read cold equals the same prompt read as two pieces at any cut, through the engine's prefill and through the server's <code>forward</code>; a family without <code>Capabilities.prompt_rows</code> gets the call it got before</td>
 </tr>
 <tr>
 <td><code>tests/test_sample.py</code>, <code>tools/sampled_dist.py</code></td>

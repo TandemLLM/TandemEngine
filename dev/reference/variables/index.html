@@ -1038,6 +1038,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../hy4-flash/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2605,6 +2626,11 @@
 <td><code>server/endalign.py</code></td>
 </tr>
 <tr>
+<td><code>QWEN38_END_REREAD</code></td>
+<td><code>1</code></td>
+<td><code>engine/cache.py</code></td>
+</tr>
+<tr>
 <td><code>QWEN38_END_RESERVE</code></td>
 <td><code>on</code></td>
 <td><code>server/app.py</code></td>
@@ -3353,6 +3379,56 @@
 <td><code>QWEN38_HOST_WALK</code></td>
 <td><code>0</code></td>
 <td><code>1</code> · <code>engine/drafters/dflash2.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_DFLY</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_DFLY_SIBLINGS</code></td>
+<td><code>0</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_DRAFT_FREEZE</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_GRAPHS</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_PREFILL_EXPERTS</code></td>
+<td><code>group</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_PREFILL_GROUPED</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_PREFILL_V2</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_ROW_TORCH</code></td>
+<td><code>0</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_TABLE</code></td>
+<td><code>cold</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_TABLE_CACHE_GB</code></td>
+<td><code>2</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
 </tr>
 <tr>
 <td><code>QWEN38_JOINT_ATTN_GROUP</code></td>
@@ -4118,7 +4194,7 @@
 </tr>
 <tr>
 <td><code>QSE_ASSETS</code></td>
-<td><code>engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env</code> and 16 more</td>
+<td><code>engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env</code> and 17 more</td>
 </tr>
 <tr>
 <td><code>QSE_BACKENDS</code></td>
@@ -4222,7 +4298,7 @@
 </tr>
 <tr>
 <td><code>QSE_DISK_CACHE</code></td>
-<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh</code> and 11 more</td>
+<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh</code> and 12 more</td>
 </tr>
 <tr>
 <td><code>QSE_ENGINE_ALLOC_CONF</code></td>
@@ -4230,7 +4306,7 @@
 </tr>
 <tr>
 <td><code>QSE_ENGINE_FLAGS</code></td>
-<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh</code> and 10 more</td>
+<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh</code> and 11 more</td>
 </tr>
 <tr>
 <td><code>QSE_ENGINE_PORT</code></td>
@@ -4309,6 +4385,10 @@
 <td><code>ops/profiles/_flashnext.env, server/app.py, server/health_cache.py</code></td>
 </tr>
 <tr>
+<td><code>QSE_HY4_BPW</code></td>
+<td><code>ops/profiles/_hy4.env, ops/profiles/hy4-3.08.env, ops/profiles/hy4-3.56.env</code></td>
+</tr>
+<tr>
 <td><code>QSE_IMAGE_BACKEND</code></td>
 <td><code>server/app.py</code></td>
 </tr>
@@ -4326,7 +4406,7 @@
 </tr>
 <tr>
 <td><code>QSE_KV_POOL</code></td>
-<td><code>engine/kvpool.py, ops/engines.sh, ops/profiles/_flashnext.env</code> and 7 more</td>
+<td><code>engine/kvpool.py, ops/engines.sh, ops/profiles/_flashnext.env</code> and 8 more</td>
 </tr>
 <tr>
 <td><code>QSE_KV_POOL_MIN_ROWS</code></td>
@@ -4386,7 +4466,7 @@
 </tr>
 <tr>
 <td><code>QSE_MEM_NEED_GIB</code></td>
-<td><code>ops/profiles/flashnext-2.05.env, ops/profiles/flashnext-3.05.env, ops/profiles/flashnext-4.05.env</code> and 27 more</td>
+<td><code>ops/profiles/flashnext-2.05.env, ops/profiles/flashnext-3.05.env, ops/profiles/flashnext-4.05.env</code> and 29 more</td>
 </tr>
 <tr>
 <td><code>QSE_MEM_WAIT_S</code></td>
@@ -4474,7 +4554,7 @@
 </tr>
 <tr>
 <td><code>QSE_PAGE_CACHE_DROP</code></td>
-<td><code>engine/models/nemotron_h/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env</code> and 6 more</td>
+<td><code>engine/models/nemotron_h/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env</code> and 7 more</td>
 </tr>
 <tr>
 <td><code>QSE_PAGE_CACHE_KEEP</code></td>
@@ -4482,7 +4562,7 @@
 </tr>
 <tr>
 <td><code>QSE_PARALLEL</code></td>
-<td><code>ops/engines.sh, ops/profiles/_flashnext.env, ops/profiles/_flint.env</code> and 6 more</td>
+<td><code>ops/engines.sh, ops/profiles/_flashnext.env, ops/profiles/_flint.env</code> and 7 more</td>
 </tr>
 <tr>
 <td><code>QSE_PARALLEL_AUTO_N</code></td>
@@ -4690,7 +4770,7 @@
 </tr>
 <tr>
 <td><code>QSE_RUNNER_PIPE</code></td>
-<td><code>engine/models/flashnext/engine.py, server/round_runner.py</code></td>
+<td><code>engine/models/flashnext/engine.py, ops/profiles/_hy4.env, server/round_runner.py</code></td>
 </tr>
 <tr>
 <td><code>QSE_RUNNER_PRICED_CUT</code></td>
@@ -4742,7 +4822,7 @@
 </tr>
 <tr>
 <td><code>QSE_SIDE_MAX_LEN</code></td>
-<td><code>ops/profiles/_flashnext.env, ops/serve.env, server/app.py</code> and 2 more</td>
+<td><code>ops/profiles/_flashnext.env, ops/profiles/_hy4.env, ops/serve.env</code> and 3 more</td>
 </tr>
 <tr>
 <td><code>QSE_SIDE_RESIDENT_GB</code></td>
@@ -4810,31 +4890,31 @@
 </tr>
 <tr>
 <td><code>QSE_WEIGHTS</code></td>
-<td><code>engine/models/flashnext/corrector.py, engine/models/flashnext/coupled.py, engine/models/flashnext/serving.py</code> and 20 more</td>
+<td><code>engine/models/flashnext/corrector.py, engine/models/flashnext/coupled.py, engine/models/flashnext/serving.py</code> and 22 more</td>
 </tr>
 <tr>
 <td><code>QSE_WEIGHTS_ALSO</code></td>
-<td><code>ops/profiles/_flashnext.env, ops/use-profile.sh</code></td>
+<td><code>ops/profiles/_flashnext.env, ops/profiles/_hy4.env, ops/use-profile.sh</code></td>
 </tr>
 <tr>
 <td><code>QSE_WEIGHTS_DIR</code></td>
-<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env</code> and 12 more</td>
+<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env</code> and 13 more</td>
 </tr>
 <tr>
 <td><code>QSE_WEIGHTS_FILES</code></td>
-<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env</code> and 9 more</td>
+<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env</code> and 10 more</td>
 </tr>
 <tr>
 <td><code>QSE_WEIGHTS_GB</code></td>
-<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/exl3-2.5.env</code> and 35 more</td>
+<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/exl3-2.5.env</code> and 37 more</td>
 </tr>
 <tr>
 <td><code>QSE_WEIGHTS_HF</code></td>
-<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env</code> and 27 more</td>
+<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_exl3.env</code> and 29 more</td>
 </tr>
 <tr>
 <td><code>QSE_WEIGHTS_REVISION</code></td>
-<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env</code> and 30 more</td>
+<td><code>engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env</code> and 32 more</td>
 </tr>
 <tr>
 <td><code>QSE_WREN_MODEL</code></td>
