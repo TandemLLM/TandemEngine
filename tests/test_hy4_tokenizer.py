@@ -202,6 +202,40 @@ def test_a_forced_close_ends_the_reasoning_where_the_answer_starts():
     return f"the forced close is {forced} ({tok._tok.convert_ids_to_tokens(end)}); the next text is the answer"
 
 
+def test_a_close_as_the_first_token_with_the_packs_ids():
+    """SRV-955 with the pack's tokenizer, the ids of the Chat turn of 2026-11-23: `</think:opensource>` as the model's
+    first token, then "ready", then the turn end. The thinking-on prompt leaves the block open; that close is the id the
+    served loop's first-token rule observes in an open block (server/app.py, `closes_in`), "ready" is not (a block the
+    prompt opened counts from its second token, as before); observed, the block is done with nothing counted, and the
+    split hands out "ready" as the content and no reasoning. The served loop with these tags, failing before the fix:
+    tests/test_app_loop.py and tests/test_empty_turn.py (a stand-in for the ids under the same tags)."""
+    if SKIP:
+        return SKIP
+    from engine.models import REGISTRY
+    from engine.spec import ThinkBudget
+    from server.stream import Detokenizer, Reasoning
+    tok = _real()
+    prompt = tok.apply_chat_template([{"role": "user", "content": "Reply with the single word: ready"}],
+                                     add_generation_prompt=True, enable_thinking=True)
+    prompt = list(prompt["input_ids"] if hasattr(prompt, "keys") else prompt)
+    close, ready, end = 120030, tok("ready", add_special_tokens=False).input_ids, 120025
+    assert tok.convert_tokens_to_ids("</think>") == close and ready == [4012], ready
+    tb = ThinkBudget(tok, 1, phrase=REGISTRY["hy_v4_flash"].spec.reasoning.close).start(prompt)
+    assert tb.inside and tb.closes_in([close]) and not tb.closes_in(ready), prompt[-3:]
+    tb.observe([close])
+    tb.observe(ready + [end])
+    assert tb.done and not tb.inside and tb.n == 0 and not tb.hit, "the answer was counted as reasoning"
+    split, det = Reasoning("reasoning_content", in_think=True), Detokenizer(lambda s: tok.decode(s, skip_special_tokens=True))
+    ids, out = [], []
+    for t in [close] + ready + [end]:
+        ids.append(t)
+        out += split.push(det.push(ids))
+    out += split.push(det.flush(ids)) + split.finish()
+    got = {f: "".join(t for k, t in out if k == f) for f in ("reasoning", "content")}
+    assert got == {"reasoning": "", "content": "ready"}, got
+    return f"the prompt ends {prompt[-1]}; {close} closes it as the first token, nothing counted; content 'ready'"
+
+
 def test_the_real_template_tools_and_a_call_round_trip():
     if SKIP:
         return SKIP

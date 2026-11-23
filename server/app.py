@@ -3266,10 +3266,12 @@ def _generate_stream(prompt: torch.Tensor, max_new: int, eos: set[int], think=No
                 pen.commit([tok])
             if drafter is not None:
                 drafter.observe([tok])
-            if think is not None and not think.inside:
-                # a model that opens its own reasoning block (Flint) writes `<think>` as its first token:
-                # unobserved, the budget never saw the block open and never closed it (a block the prompt
-                # opened counts from the second token, as before)
+            if think is not None and (not think.inside or think.closes_in([tok])):
+                # a model that opens its own reasoning block (Flint) writes `<think>` as its first token, and a
+                # model whose prompt opened the block may close it at once (Hy4-flash on a short turn, SRV-955):
+                # unobserved, the budget never saw the block open or close, and SP2 and the budget read the answer
+                # as reasoning (E1's close in the answer). Any other first token of a block the prompt opened is
+                # not observed: it counts from the second token, as before
                 think.observe([tok])
             yield tok
             if tok in eos:

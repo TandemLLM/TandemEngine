@@ -7,6 +7,7 @@ Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; 
 ### Fixes
 
 - The Setup Guide no longer refuses a model switch after a long session (SRV-953): its memory check adds up the three parts a stop frees (the allocator's reserve, the KV pool's pages and the process's memory; `/health` `memory.stop_frees_gb`), where it took only the largest of them. A stop can free a little more than that sum. An apply sent while requests run now waits for them (10 minutes at most) in place of a 409 `busy`.
+- A reasoning close that the model writes as its very first token now ends the block the prompt opened (SRV-955). The loop showed the first token to the reasoning budget only while no block was open, so that close went unseen and the answer after it read as reasoning. Hy4-flash's prompt opens the block, and on a short turn the model closes it at once. In TandemApp's Chat the session monitor then closed the block again inside the answer, and `ready` reached the client as `ready</think>\n\nready`. A reasoning budget could close inside such an answer the same way. Any other first token is handled as before, so every other turn's text is unchanged.
 
 ## 0.17.0, 2026-11-23
 

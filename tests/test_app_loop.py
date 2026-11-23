@@ -10,6 +10,8 @@ reaches the socket the moment it is accepted -- and the gate tools never run it:
     instead, since its headers left before the guard fired;
   * the single-token step closes the reasoning block like the verified ones, and brings
     the drafter current like engine/spec.py's does;
+  * a close the model writes as its first token ends the block the prompt opened (SRV-955), with
+    Hy4-flash's own tags: nothing is forced into the answer;
   * a seed reproduces a sampled request whatever the drafter and the width choices do;
   * a graceful stop lets the generation in flight finish;
   * a failed non-streamed request is logged and counted like a streamed one;
@@ -147,6 +149,60 @@ def test_the_reasoning_close_fires_on_the_single_token_path():
     assert len(out) > i + len(CLOSING), "the answer follows the phrase"
     eng, out, ctx, guard = _forced_close_with_guard(None, False)
     assert guard.hit and out[-len(CLOSING):] == CLOSING and eng.kv.length == len(ctx), out
+
+
+class Hy4Tags:
+    """Hy4-flash's checkpoint tokenizer as the reasoning budget reads it, for the real `Hy4Tokenizer` to wrap
+    (engine/models/hy4_flash/tokenizer.py): the model's tags as one id each under their own names,
+    `<think:opensource>` at OPEN and `</think:opensource>` at `close`; any other text an id a character."""
+
+    unk_token_id = -1
+
+    def __init__(self, close: int):
+        from engine.models.hy4_flash.tokenizer import TAGS, WRAPPERS
+        spare = [i for i in (94, 95, 96, 86, 87, 88, 89, 0, 92) if i != close]
+        self.ids = {TAGS["<think>"]: OPEN, TAGS["</think>"]: close}
+        for name in [n for n in list(TAGS.values()) + list(WRAPPERS) if n not in self.ids]:
+            self.ids[name] = spare.pop(0)
+
+    def convert_tokens_to_ids(self, text):
+        return self.ids.get(text, -1)
+
+    def __call__(self, text, add_special_tokens=False, return_tensors=None):
+        ids, i = [], 0
+        while i < len(text):
+            tag = next((t for t in self.ids if text.startswith(t, i)), None)
+            ids.append(self.ids[tag] if tag else 1 + ord(text[i]) % 50)
+            i += len(tag) if tag else 1
+        return type("R", (), {"input_ids": ids})()
+
+
+def test_a_close_as_the_first_token_ends_the_block_the_prompt_opened():
+    """SRV-955: Hy4-flash's prompt opens its reasoning block (`<think:opensource>`, nothing after it), and on a short
+    turn the model may close the block as the very first token it writes. The loop showed the first token to the
+    budget only while no block was open (a model that opens its own, ENG-399), so that close was never seen: the
+    budget took the answer for reasoning and forced its close into it, a second `</think>` in the text (the
+    conductor's E1 closed it the same way, tests/test_empty_turn.py). With Hy4-flash's tags through its own
+    tokenizer and its close (`ReasoningSpec.close`), the model's own first token the close, on the single-token
+    step, the chain and the tree: the block closes there, nothing is counted or forced, the turn is the model's.
+    A first token that is not the close still counts from the second token, as before
+    (test_the_reasoning_close_fires_on_the_single_token_path)."""
+    from engine.models.hy4_flash.arch import ARCH
+    from engine.models.hy4_flash.tokenizer import Hy4Tokenizer
+    prompt = [5, 6, 7, 8, OPEN]
+    for label, drafter, tree in (("step", None, False), ("chain", FixedDrafter(97, 5, tree_mode=False), False),
+                                 ("tree", FixedDrafter(97, 5, tree_mode=True), True)):
+        serve(drafter, tree=tree)
+        own = list(app.generate_stream(torch.tensor(prompt), 30, set()))      # no budget: the model's tokens
+        close = own[0]                                 # the model's first token is its close
+        assert close not in prompt and close not in own[1:5], (label, own)
+        tok = Hy4Tokenizer(Hy4Tags(close))
+        assert tok.convert_tokens_to_ids("</think>") == close and tok("</think>").input_ids == [close]
+        serve(drafter, tree=tree)
+        think = ThinkBudget(tok, budget=3, phrase=ARCH.spec.reasoning.close)
+        out = list(app.generate_stream(torch.tensor(prompt), 30, set(), think))
+        assert out == own, f"{label}: a close forced into the answer: {own} -> {out}"
+        assert think.done and not think.inside and think.n == 0 and think.t_forced is None, label
 
 
 class Cursor:
