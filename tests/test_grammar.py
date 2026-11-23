@@ -1189,6 +1189,34 @@ def test_whitespace_stays_open_only_beside_a_json_document():
             f"the calls' beside a choice or a regex")
 
 
+def test_the_wrapper_spelled_out_stays_in_the_content():
+    # ENG-581's review, a known limit (CHANGELOG): the call wrapper written out byte by byte is in the calls'
+    # language, forced (ENG-472, as at 7ebed84e) and beside a document, and both readers leave its bytes in the
+    # content beside the calls. The model writes the wrapper as its own token, which the text leaves out
+    from server.api.toolcall import ToolCallBuffer, parse_tool_calls
+    from server.api import toolformats
+    text = "<tool_calls>" + AK_CALL + "</tool_calls>"
+    fmt = toolformats.resolve("argkey")
+    seen = []
+    for label, extra in (("required", {"tool_choice": "required"}), ("beside a document", {"response_format": JS})):
+        a = C.compat.answer_constraint(dict({"messages": [], "tools": TOOLS}, **extra), fmt="argkey", wrapper=WRAP)
+        if a.parts is None:
+            d = G.compile_regex(a.pattern)
+            assert d.accept[d.walk(d.start, text.encode())], label
+        else:
+            d, side = G.product_dfa(*(G.compile_regex(p) for p in a.parts))
+            end = d.walk(d.start, text.encode())
+            assert d.accept[end] and side[end] == G.FIRST, label
+        content, calls = parse_tool_calls(fmt.rewrite(text, eos=True), names=["read_file"], eos=True, types=a.types)
+        b = ToolCallBuffer(names=["read_file"], fmt="argkey", types=a.types)
+        out = "".join("".join(b.feed(text[i:i + 3])) for i in range(0, len(text), 3))
+        tail, _ = b.finish(eos=True)
+        for got, n in ((content, len(calls)), (out + tail, len(b.calls))):
+            assert n == 1 and got == "<tool_calls></tool_calls>", (label, got, n)
+        seen.append(label)
+    return f"{seen}: one call, the spelled-out wrapper left in the content (the known limit)"
+
+
 #: Flint's tokenizer in the toy's ids: its `<think>` and `</think>` and the arg-key tags are added ids 97-104, text in
 #: the answer (tokenizer_config.json: all `special: false`), so a vocabulary gives `<think>` no bytes
 FLINT_ADDED = ("<think>", "</think>") + AK_TAGS
