@@ -2,7 +2,7 @@
 
 Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; TandemApp's releases are in its own repository). Speed numbers are the benchmark row `serve-single-i256-o256-v1` (one request at a time, 256 prompt tokens, 256 generated, thinking off, greedy), mean tok/s with the lookup store off unless noted. [docs/measurement.md](docs/measurement.md) explains the row. Every release produces the same text as the one before it, except where an entry says otherwise.
 
-## Unreleased
+## 0.17.1, 2026-11-24
 
 ### Fixes
 
