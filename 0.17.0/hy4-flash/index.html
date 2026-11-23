@@ -1,0 +1,1921 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="An inference engine for one GPU box: fast, exact, measured.">
+      
+      
+      
+        <link rel="canonical" href="https://tandemengine.0xbakeer.com/0.17.0/hy4-flash/">
+      
+      
+        <link rel="prev" href="../flint/">
+      
+      
+        <link rel="next" href="../reference/commands/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.49">
+    
+    
+      
+        <title>Hy4-flash - TandemEngine</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.6f8fc17f.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#hy4-flash" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+        <aside class="md-banner">
+          <div class="md-banner__inner md-grid md-typeset">
+            
+            
+<div class="tl-support" data-support>
+  <span class="tl-support__text">TandemLLM is free and open source. If it helps you, help keep it going:</span>
+  <span class="tl-support__kofi"><script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script><script type='text/javascript'>kofiwidget2.init('Support me on Ko-fi', '#72a4f2', 'W8N326FMEQ');kofiwidget2.draw();</script></span>
+  <a class="tl-support__link" href="https://github.com/sponsors/0xBakeer">GitHub Sponsors</a>
+  <a class="tl-support__link" href="https://x.com/TandemLLM">@TandemLLM on X</a>
+  <a class="tl-support__link" href="https://x.com/0xBakeer">@0xBakeer on X</a>
+</div>
+
+          </div>
+          
+        </aside>
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="TandemEngine" class="md-header__button md-logo" aria-label="TandemEngine" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            TandemEngine
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Hy4-flash
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/TandemLLM/TandemEngine" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    TandemLLM/TandemEngine
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="TandemEngine" class="md-nav__button md-logo" aria-label="TandemEngine" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    TandemEngine
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/TandemLLM/TandemEngine" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    TandemLLM/TandemEngine
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  <span class="md-ellipsis">
+    Start here
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Start here
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Overview: what TandemEngine is
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installing TandemEngine
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Questions and answers
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  <span class="md-ellipsis">
+    Installing and running
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Installing and running
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    The setup guide
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Operations
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../community-weights/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Community weights
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../remote-control/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Remote control
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pairing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Pairing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../design-simple-setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Design: Simple mode for the Setup Guide
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  <span class="md-ellipsis">
+    How the engine works
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            How the engine works
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Architecture
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quantisation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quantisation and profiles
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../kernels/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Kernels
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../speculative-decoding/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Drafters and tree verify
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../exactness/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Exactness
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caches/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Caches
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../server/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Server and API
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../parallel-requests/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Parallel requests
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../measurement/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Measurement
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark-report/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    The benchmark report
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quality-gate/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quality gate
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adding-a-model/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Adding a model
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../shadow-reader/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    The shadow reader
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  <span class="md-ellipsis">
+    The models
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            The models
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../flash-next/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Qwen3.8-Flash-Next
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lfm2.5-24b-a2b/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    LFM2.5-24B-A2B
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../nemotron-h/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    NemotronH (Nemotron 3.5 Lightning, Bolt, Super VL)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ornith/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Ornith-1.5-122B
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../flint/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Flint
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  <span class="md-ellipsis">
+    Hy4-flash
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      The model
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-packs" class="md-nav__link">
+    <span class="md-ellipsis">
+      The packs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      Limits
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speed" class="md-nav__link">
+    <span class="md-ellipsis">
+      Speed
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#license" class="md-nav__link">
+    <span class="md-ellipsis">
+      License
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-not-measured" class="md-nav__link">
+    <span class="md-ellipsis">
+      What is not measured
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  <span class="md-ellipsis">
+    Reference
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/commands/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reference: commands
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/variables/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reference: environment and configuration
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/http/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reference: HTTP
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reference: metrics and the usage ledger
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../glossary/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Glossary
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Benchmarks with tool-eval-bench
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-eval-bench/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    tool-eval-bench results
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Roadmap
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../threat-model/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Threat model
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../labels/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Labels
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/TandemLLM/TandemEngine/blob/v0.17.0/CHANGELOG.md" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CHANGELOG
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      The model
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-packs" class="md-nav__link">
+    <span class="md-ellipsis">
+      The packs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      Limits
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speed" class="md-nav__link">
+    <span class="md-ellipsis">
+      Speed
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#license" class="md-nav__link">
+    <span class="md-ellipsis">
+      License
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-not-measured" class="md-nav__link">
+    <span class="md-ellipsis">
+      What is not measured
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+  
+
+
+<h1 id="hy4-flash">Hy4-flash<a class="headerlink" href="#hy4-flash" title="Permanent link">&para;</a></h1>
+<p>Tencent's Hy4-flash has about 220B parameters, and 64B of them are Engram n-gram tables. About 11B run for each token. The engine serves it from two of our EXL3 packs on one DGX Spark, up to 8 chats at once on lanes that take turns, text only. This page lists what the engine does with it, the limits a user meets, and what is not measured yet.</p>
+<h2 id="the-model">The model<a class="headerlink" href="#the-model" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>part</th>
+<th>Hy4-flash</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>layers</td>
+<td>42 with latent attention: 30 on a sliding window, 12 sparse (an indexer picks the key groups a token reads)</td>
+</tr>
+<tr>
+<td>MLP</td>
+<td>a dense first layer, then 512 experts a layer, 16 routed and 1 shared</td>
+</tr>
+<tr>
+<td>residual stream</td>
+<td>hyper-connection streams</td>
+</tr>
+<tr>
+<td>Engram</td>
+<td>n-gram tables at four layers, 38.11 GiB in the packs, read from the SSD a row at a time</td>
+</tr>
+<tr>
+<td>state a token</td>
+<td>16,896 bytes (the 12 sparse layers' latents and indexer keys); the window layers keep rings of 17.7 MB a sequence</td>
+</tr>
+<tr>
+<td>context</td>
+<td>1,048,576 tokens in the checkpoint; the engine serves 262,144</td>
+</tr>
+<tr>
+<td>draft layers</td>
+<td>five DFly2 layers in the checkpoint</td>
+</tr>
+<tr>
+<td>images</td>
+<td>a vision tower in the pack, not served</td>
+</tr>
+</tbody>
+</table>
+<p><em>Hy4-flash as the engine runs it (<code>engine/models/hy4_flash</code>).</em></p>
+<p>Its reference forward (<code>ref.py</code>) follows transformers operation for operation and matches it on tiny random models. The row path takes a block's rows together on the family's own kernels, and the load-time self-check proves on the device that a block's rows equal the decode steps bit for bit.</p>
+<h2 id="the-packs">The packs<a class="headerlink" href="#the-packs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>profile</th>
+<th>repository</th>
+<th>download</th>
+<th>weights at load</th>
+<th>chat2048 KL / top-1</th>
+<th>conv2048 KL / top-1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hy4-3.56</code> (default)</td>
+<td><code>0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5</code></td>
+<td>112.38 GB</td>
+<td>67.17 GiB</td>
+<td>0.0653 / 90.54 %</td>
+<td>0.0729 / 93.75 %</td>
+</tr>
+<tr>
+<td><code>hy4-3.08</code></td>
+<td><code>0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0</code></td>
+<td>103.1 GB</td>
+<td>58.52 GiB</td>
+<td>0.0989 / 88.52 %</td>
+<td>0.1113 / 92.11 %</td>
+</tr>
+</tbody>
+</table>
+<p>Both packs keep attention, the shared experts, the head and the Engram tables at 5 bits. Routed experts are at 3 bits in <code>hy4-3.08</code> and 3.5 bits in <code>hy4-3.56</code>, which was also calibrated on templated chat. Both packs carry the same four table files, 40.92 GB of each download. With both packs under <code>~/models</code>, <code>ops/fetch_weights.py</code> links the tables from the first pack instead of fetching them twice.</p>
+<p>Both repositories are public since 2026-11-22, so a download needs no Hugging Face token: <a href="https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5"><code>0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5</code></a> and <a href="https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0"><code>0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0</code></a>. The Setup Guide and <code>ops/use-profile.sh hy4-3.56</code> read the weights from <code>~/models/hy4-flash-exl3-3.56</code> (and <code>-3.08</code>), and skip the download when the folder holds every file.</p>
+<p>Each KL column compares a pack with the unquantized BF16 checkpoint (revision <code>d88c9dfd</code>). Both sides ran through exllamav3's cache-less forward with our converter patch for this model. The reference is our forward of the BF16 weights, not Tencent's own stack, and the logits are stored in fp16. chat2048 is 16 rows of 2,048 tokens of wikitext-2 inside a templated turn with thinking off. conv2048 is 16 held-out conversations of 2,048 tokens from ultrachat. Two correct forwards of the same weights already differ by about KL 0.003 to 0.005 on such rows. On <code>hy4-3.08</code> this engine's own prompt pass scores KL 0.1009 and top-1 88.49 % on the chat2048 rows, so the engine adds nothing to the quantization there.</p>
+<h2 id="limits">Limits<a class="headerlink" href="#limits" title="Permanent link">&para;</a></h2>
+<p>Up to 8 chats at once (ENG-485). Each lane is a side slot with the whole 262,144-token window on the shared KV pool: a lane's latents and indexer keys take pages only for the rows it holds, and an idle conversation goes to the park and the NVMe spill under memory pressure. The lanes take turns, a whole round each, with no joint pass yet, so two chats at once share the decode rate. The profiles run the round runner without its pipe (<code>QSE_RUNNER_PIPE=0</code>): with the pipe the drafter accepted fewer tokens a round on this family and one chat decoded 5.6 to 6.6 % slower on <code>hy4-3.56</code>, with the same text.</p>
+<p>The window is 262,144 tokens. Both packs ran at it through the server, and a run filled <code>hy4-3.08</code> to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.</p>
+<p>The prompt pass runs on fixed-order kernels by default (<code>QWEN38_HY4_PREFILL_V2=1</code>, SPD-327; <code>0</code> keeps the pass before). With <code>0</code> the prompt pass's rows depend on how the prompt is chunked, so prompt-end resumes are not row-invariant: they are held to the greedy-token test only, like end-anchor resumes. One request at a time on an idle box, a fresh server, the first request of each kind, no drafter, the experts on the shared prefill kernel in both arms. The pass before was measured on 2026-11-20; the fixed-order pass on 2026-11-21 with every knob at its default (prefill tok/s is the prompt's tokens over the time to the first token):</p>
+<table>
+<thead>
+<tr>
+<th>pack</th>
+<th>prompt</th>
+<th>first token, pass before</th>
+<th>first token, fixed-order</th>
+<th>prefill tok/s, before</th>
+<th>prefill tok/s, fixed-order</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hy4-3.56</code></td>
+<td>chat, 3,565 tokens</td>
+<td>13.71 s</td>
+<td>5.90 s</td>
+<td>260</td>
+<td>604</td>
+</tr>
+<tr>
+<td><code>hy4-3.56</code></td>
+<td>docs, 31,852 tokens</td>
+<td>120.57 s</td>
+<td>46.31 s</td>
+<td>264</td>
+<td>688</td>
+</tr>
+<tr>
+<td><code>hy4-3.08</code></td>
+<td>chat, 3,565 tokens</td>
+<td>13.53 s</td>
+<td>5.12 s</td>
+<td>264</td>
+<td>696</td>
+</tr>
+<tr>
+<td><code>hy4-3.08</code></td>
+<td>docs, 31,852 tokens</td>
+<td>120.60 s</td>
+<td>45.24 s</td>
+<td>264</td>
+<td>704</td>
+</tr>
+</tbody>
+</table>
+<p>Decode did not change: 22.6 to 23.1 tok/s plain on <code>hy4-3.56</code>, 23.5 to 24.3 on <code>hy4-3.08</code>. The flip moves the prompt pass's bits once, so its answers differ from the pass before's; a drafted answer still equals the plain one on both packs. On chat2048 (<code>hy4-3.08</code>, 16 rows) it scores KL 0.10151 and top-1 88.35 % against 0.10093 and 88.49 % before, a gap below the 0.003 to 0.005 between two correct forwards of this model, and the next-token rule passes on both rows it checks. Every cache tier (snapshot, resident prefix, disk tier, spill) equals a cold read with it on, on both packs (2026-11-21, on a tree from before the lanes moved the state onto the KV pool), and again on <code>aa596e81</code> with the state on the KV pool, drafted equal to plain (hold 1b, 16 of 16, 2026-11-21).</p>
+<p>The prompt pass reads every row in one summation order, whatever chunk holds it (R83). Its packed projections run on <code>tools/exl3_rows.py</code>: one order a weight, eight K slices of KT/8 tiles (S1 w8), on the skinny GEMM up to 1,024 rows (in 128-row calls past 128) and on the decoded slab's fused product above, a 3.5-bit projection (the twelve indexer query projections of <code>hy4-3.56</code>) on the slab at every row count. Before, a projection took the row kernel up to 32 rows, the skinny GEMM at the shape's own split up to 128 and the library GEMM above, each summing in its own order. A turn that resumed off the 4,096-row grid then read other bits than a cold read. The row pass and the drafter keep their kernels, so decode and verify do not change. A one-row prompt chunk runs the prompt pass, not a decode step (<code>Capabilities.prompt_rows</code>). The step moves the prompt pass's bits once, as the fixed-order flip did. Gate 0's figures (2026-11-21) come from the gate's scripts, which put the order on the engine before this code; the step's own box run replaces them: with the trunk in that order, chunks cut at 349 and 74, 390 and 33, 1,000 and 2,000, in chunks of 257, and as 2,999 rows then one gave a cold read's head inputs, last-row logits and state on both packs; the 31,852-token prompt in the engine alone took 42.06 and 42.09 s against 45.48 and 44.18 s before on <code>hy4-3.56</code> (0.952 of before) and 41.60 and 41.42 s against 44.99 and 43.40 s on <code>hy4-3.08</code> (0.954); 64 decode steps after it ran at 23.6 to 23.7 tok/s against 23.5 to 23.6 (<code>hy4-3.56</code>) and 24.5 to 24.7 against 24.4 to 24.7 (<code>hy4-3.08</code>). A 4,096-row chunk's trunk products took 756 ms against 960 ms on the library GEMM (<code>hy4-3.56</code>), and the 1,024-row line is where the slab first beat the skinny GEMM. On the device, on both packs (2026-11-21): the kernel guard's 15 shapes in both arms and each pack's 15 copies are equal; a resume cut at 423, 2,052 and 2,053 rows and every other cut equals a cold read; chat2048 KL 0.06494 to 0.06564 on <code>hy4-3.56</code> and 0.10151 to 0.09933 on <code>hy4-3.08</code>, both within the rule; a 32k prompt's first token 45.59 to 44.09 s and 44.75 to 43.10 s; decode 22.95 to 22.98 and 24.08 to 24.13 tok/s; drafted equal to plain; the order check over 430 weights found none off.</p>
+<p>Before the fixed-order pass, the prompt pass ran a chunk's routed experts on the shared prefill expert kernel (<code>QWEN38_HY4_PREFILL_EXPERTS=group</code>, the default), and both passes still do from 128 rows a chunk; a shorter chunk takes the row kernels, which are faster there (the measured crossover: 128 rows on <code>hy4-3.56</code>, 256 on <code>hy4-3.08</code>). On the shared kernel a chunk's expert outputs equal the row kernels' on all 41 mixture-of-experts layers of both packs (<code>tools/hy4_check.py --only experts-equal</code>, 82 of 82 layer-chunks); its first-token times and prefill rates are the table's "pass before" columns. With <code>rows</code> they run on the family's row kernels, in their grouped form, which decodes an expert's tiles once for up to 8 of its pairs (<code>QWEN38_HY4_PREFILL_GROUPED=1</code>, the default; <code>0</code> keeps the pair kernels). The row kernels' two forms were measured before the shared kernel came in: on <code>hy4-3.56</code>, one request at a time on an idle box, the first token of a 3,565-token chat came after 19.1 to 24.2 s grouped against 27.0 to 29.5 s on the pair kernels, and that of a 31,852-token prompt after 176.0 to 187.6 s against 253.2 to 256.4 s. The answers were the same bytes in all six pairs, the drafter kept the same tokens, and decode ran at 22.5 to 23.0 tok/s plain on both. On 8,192 rows of real text the two kernels gave equal last-row logits, head inputs and state, and equal expert outputs in all 41 MoE layers. A 262,144-token prompt took 1,735 s (151 tok/s) in the bare engine, on an older row path.</p>
+<p>A chat keeps its state between turns in the same caches as on other models. Anchors, prefix snapshots in the state store, the disk tier and the session spill give back the state a cold prefill writes, bit for bit. A turn that resumes at the end of the last prompt gives back that state too, at any row and with a one-row tail (R83: the prompt pass reads a row in one order whatever the cut). Verify blocks and decode steps write an answer's rows with other arithmetic than the prompt pass (their attention, value half, indexer and router), and on this model a resume from those rows shifts every later log-probability by up to 0.31 nats. So at the end of every turn the engine reads the answer's rows again on the prompt pass (<code>Capabilities.reread_end</code>, <code>ResidentPrefix.reread_end</code>, <code>QWEN38_END_REREAD=1</code>), from the end of the last prompt, and keeps only that read's state as the end anchor and the session snapshot. A turn that resumes at the end of the last answer or from a session snapshot then gets a cold read's state too. The read covers only the rows the next turn's prompt will hold, as the template renders the conversation: the request's messages, the answer as the client gets it back, and a next message, compared with the rows from the prompt's end on. The template drops an earlier answer's reasoning unless tools are passed (<code>preserved_thinking</code>) and the client sends it back; it keeps the reasoning of the answers in a tool chain after the last user message when the client sends it. So a thinking-on answer without tools is not read at all: the next prompt parts from its rows at the end of the last prompt, the turn keeps that prompt end alone, and the next turn resumes there. Thinking off, the whole answer is read. In a tool chain, whether the client sends reasoning back is read from its earlier answers in the request; a first turn is read as if it does. A wrong guess costs time, never exactness: an end the read kept is served only to a copy that holds its rows, and the end alignment, which serves a copy that differs from the rows, is not asked for it. Each turn's close is one log line, <code>[cache] &lt;id&gt; end re-read: &lt;read|skip|...&gt;, &lt;rows&gt; rows in &lt;ms&gt; ms ...; the next prompt holds &lt;k&gt; of the answer's &lt;n&gt; rows (&lt;why&gt;; decided in &lt;ms&gt; ms); end &lt;kept|...&gt;; close &lt;ms&gt; ms</code>: the read's own time, the time the two renders took, and the whole close. Under <code>--reasoning-format tags</code> the client gets the reasoning inside the answer's content and sends it back there, where the template writes it after an empty block, so a call's next prompt parts at the end of the last prompt. The read runs after the client has the answer's last bytes (the stream's last chunk, its usage and <code>[DONE]</code>, then the end of the connection, or the JSON body), on the request's own lane and GPU turn, and before that lane takes its next request: a follow-up sent at once waits for it, then resumes at the end. A stream says <code>Connection: close</code>, as every stream did before, so a keep-alive client sends its follow-up on a new connection; the stream's connection now ends before the read instead of after it. A JSON response keeps its connection, and a follow-up written on it during the read is read and served once the read is done. A stopping server (SIGTERM's drain) starts no read and stops a running one at its next chunk, keeping nothing of it, and waits for the close before it exits. It passes the same memory gate a prefill passes. On the box (2026-11-21, both packs) a follow-up's first token came after 0.19 to 0.28 s, against 0.36 to 0.42 s with <code>QWEN38_END_REREAD=0</code>. The read holds the lane about 100 to 130 ms plus 1.8 ms a row on <code>hy4-3.08</code> and 3.0 to 3.2 ms a row on <code>hy4-3.56</code>: the fixed part is the prompt pass's own cost a call, which a short follow-up's prefill pays too. Where the read does not run (<code>QWEN38_END_REREAD=0</code>, a guest, refused by memory), the turn keeps no end and no session snapshot, and the next turn resumes at the end of the last prompt and reads the answer itself. The start's <code>[limits]</code> line and <code>/health</code>'s cache block say <code>end_reread</code>. Here is how the caches fit this model:</p>
+<ul>
+<li>A turn that holds the chat's whole last prompt never runs as a guest, also after the chat comes back from the park or the NVMe. A guest is a short request served over a chat's rows, which go back afterwards, and it keeps nothing. When a pinned head comes back the engine does not know the last prompt's length, and the next turn follows the size rule once. With thinking on and no tools the template drops the last answer's reasoning, so the next prompt holds only the last prompt. That turn resumes at the end of the last prompt and reads the last answer and the new message. With thinking off, or with tools when the client sends the reasoning back, a turn resumes at the end of the last answer and reads only the new message.</li>
+<li>The conductor's own questions run as guests of the chat at any length. They keep no session snapshot, and the chat keeps its end. A question that finds nothing in place gives its rows back after it, or at the next request when its client left first.</li>
+<li>The engine cuts a prompt without a conductor plan where its first user turn starts, when its system turn holds at least 256 tokens. The state store keeps the state at that row, and the next prompt with the same system turn resumes there. The conductor's helper question then reads its system turn again only when the store does not hold it: after a start, and after the memory policy shed the store, which is the first cache it sheds. Two prompts whose system turns share 256 tokens or more count as one prompt's head, and the newer takes the older's place at the back of the store's eviction order. Past the mark anchors sit every 4,096 tokens. With a mark under 4,096 tokens the disk tier keeps no anchor of that prompt: it writes only the 4,096-token lines below the mark.</li>
+<li>A state store entry holds up to 0.25 GiB on this model, a prompt of about 11,000 tokens, unless the start sets <code>--store-entry-gb</code>.</li>
+<li>The end of the last prompt lives in the lane only. A chat with thinking on and no tools that loses the lane reads itself again once when it comes back, from the newest anchor below its end: the mark where its first user turn starts, or the last 4,096-row grid line past it. That is up to 4,095 rows and the new turn; on <code>hy4-3.56</code> with one lane (2026-11-22) a second chat's follow-up read 204 rows. Not fixed in this release (SRV-947).</li>
+<li>A follow-up reads again from the first token where the answer the client sends back reads as other tokens than the ones the model wrote. The model can write a stretch of text with tokens the tokenizer would not pick for it; the client sends the text back, the template writes it as sent, and the next prompt holds the tokenizer's own tokens there, so it parts from the rows at that token. On <code>hy4-3.56</code> (2026-11-22) a 40k chat's answer parted 68 tokens in, and its follow-up read 139 rows again. That comes from the row counts; the token ids were not compared.</li>
+<li>A resumed prefill forwards at least one row, which reads the draft head's picks again, so the first round after the engine resumes can draft. The <code>[drafter]</code> line counts the rounds that drafted nothing because the picks were stale (<code>stale=</code>, since the start). No device run has read that count yet.</li>
+</ul>
+<p>On the device, on both packs, each tier's restore equals a cold read: a snapshot, the resident prefix with and without a decode step, a disk flush, the disk tier with and without a step, and the spill (2026-11-21, on the tree before the lanes). With the end read again, on both packs (the box proof, 2026-11-21): a follow-up that resumes at the end of the last answer, one from the session snapshot, and a 40k chat's follow-up at its end equal a cold read in the text and every log-probability; with <code>QWEN38_END_REREAD=0</code> they resume at the end of the last prompt and equal it too; a guest promoted on a side lane and its follow-up from its session snapshot equal a cold read; the state read again on the prompt pass equals a cold read at every cut. The resume from the head mark ran in hold 1b (2026-11-21): the helper's second question forwarded 30 of its 2,338 rows, its answer after 0.34 and 0.33 s. A resume beside the conductor's question has not run on the device, nor has the <code>stale=</code> count been read.</p>
+<p>Two exceptions to "every cache equals a cold read" on this model: the end anchor still puts back the spans the server added and the client does not send (a note, a memory block), so a turn resumed there reads those rows as served, not the client's copy; and with <code>QWEN38_HY4_PREFILL_V2=0</code> the prompt pass depends on the chunk, so a resume at the end of the last prompt is held to the greedy-token test only.</p>
+<p>Hy4-flash needs its chat template. It always opens with a system turn that carries <code>reasoning_effort:&lt;mode&gt;</code>. Without that turn the unquantized model scores much worse: perplexity 21.0 against 7.25 on technical text, 10.9 against 3.79 on code, 10.5 against 7.07 on a novel. A think block that does not match the mode hurts the same way, and raw text without the template scores far worse. The template takes three modes: <code>no_think</code>, <code>high</code> (its default) and <code>max</code>. The family's spec (<code>engine/models/hy4_flash/arch.py</code>) maps the engine's effort levels onto them, and the shared effort policy does the rest, as for every model:</p>
+<table>
+<thead>
+<tr>
+<th>level</th>
+<th>reached by</th>
+<th>template mode</th>
+<th>thinking cap</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>off</td>
+<td>the client, or the server default <code>off</code></td>
+<td><code>no_think</code></td>
+<td>none: no thinking</td>
+</tr>
+<tr>
+<td>off</td>
+<td>a conductor category (<code>summarize</code>)</td>
+<td><code>high</code>; the router closes the block at the end of the prompt</td>
+<td>none: no thinking</td>
+</tr>
+<tr>
+<td>low</td>
+<td>the client, a category</td>
+<td><code>high</code></td>
+<td>1,024 tokens</td>
+</tr>
+<tr>
+<td>medium</td>
+<td>the client, a category, or nobody on the engine alone (no conductor plan that decides the effort)</td>
+<td><code>high</code></td>
+<td>8,192</td>
+</tr>
+<tr>
+<td>high</td>
+<td>the client, a category</td>
+<td><code>high</code></td>
+<td>16,384</td>
+</tr>
+<tr>
+<td>xhigh</td>
+<td>a category</td>
+<td><code>high</code></td>
+<td>none below the conductor's backstop of 30,720</td>
+</tr>
+<tr>
+<td>xhigh or max</td>
+<td>the client</td>
+<td><code>max</code></td>
+<td>none on the engine alone and where the client's word wins, and the block then closes 2,048 tokens and its close before the output limit; under the agent profiles (<code>hermes</code>, <code>coding</code>, <code>overnight</code>) the class's cap</td>
+</tr>
+</tbody>
+</table>
+<p>When a budget ends the block on the engine alone, the engine closes it as the template ends a finished one: <code>&lt;/think:opensource&gt;</code>, and the answer follows at once (the family's spec names its close, <code>ReasoningSpec.close</code>). The shared close is Qwen's: the vendor's sentence, the tag and blank lines, which the template never writes. On the raw route the scouting run on build <code>7f2a41f5</code> found budget-closed Hy4 answers holding reasoning, once the sentence itself. Under the conductor the session monitor closes with the vendor's sentence hidden from the client, the same tokens in the model's context, and that answer was clean at 651 tokens; the monitor's close is not changed. Which part of the old close made the raw answers hold reasoning is not isolated. Every request with thinking on keeps the answer reserve within its output limit, on every model and whatever set its cap (docs/server.md; a JSON answer with no budget named keeps half the limit). A request that names no effort, on the engine alone, thinks in mode <code>high</code> and stops at 8,192 thinking tokens, with the answer reserve after them; the server's <code>--think-budget</code> wins when it is set. <code>--reasoning-effort</code> keeps one job here: <code>off</code> turns thinking off for a request that says nothing about thinking. Any other value is not used, and the start log says so. Under the conductor, a category decides the cap and never the mode, and whether a client's word wins over the category is the profile's own rule (TandemApp's <code>thinking.client_word</code>).</p>
+<p>Only a client's own <code>xhigh</code> or <code>max</code> reaches <code>max</code>. The lengths below were measured; the mode each turn ran in was read from the code of the build that served it, not observed. On build <code>c98758af</code>, which sent the server's default xhigh to <code>max</code>, three such turns thought 82, 7,759 and 25,806 tokens; the 25,806-token turn ran 853.8 s and came from a category's xhigh with a server default of xhigh. Four Chat turns with an explicit <code>low</code>, which that build rendered as <code>high</code>, thought 45 to 536 tokens. Tencent's later template drops <code>max</code>; a pack built from it would need its spec to map xhigh to <code>high</code>.</p>
+<p>Tool calls use the model's own tags, which the tokenizer reads under the <code>argkey</code> form's names. One served call passed on <code>hy4-3.56</code>: the answer ended with <code>finish_reason</code> <code>tool_calls</code> and one well-formed call, and the model answered the follow-up turn that carried the tool's result. In hold 1a (2026-11-21) both packs passed the function-call check (20 of 20) and the chat smoke (26 of 26 under the conductor, 27 of 27 raw, its replay 10 of 10); a turn that wrote two calls with <code>parallel_tool_calls</code> false was served with one. So the model card says <code>tools: true</code>. In hold 1c (2026-11-22) both packs wrote every call a turn asked for with <code>parallel_tool_calls</code> true: two calls streamed and not streamed, three streamed, and two streamed with thinking on, under the conductor and raw, 8 of 8 cases a pack. Every call parsed, with JSON arguments, its own id and <code>finish_reason</code> <code>tool_calls</code>, and the model answered the turn that carried the results. The card says <code>parallel_tool_calls: true</code> on that evidence. <code>structured</code> stays false: on the box, structured output has run only in the ENG-581 checks (2026-11-23, under What is not measured), not in the card's own measured rows (OPS-316). The model opens its calls with its own <code>&lt;tool_calls&gt;</code> wrapper, which the text leaves out. A forced <code>tool_choice</code> (required, named, or required with <code>parallel_tool_calls: true</code>) lets the model write that opener and its closer as its own tokens around the calls, as it does each call's tags (the family's <code>call_wrapper</code>, ENG-472). Before, the constraint masked the opener and forced <code>&lt;tool_call&gt;</code> first. That is checked on the CPU with the pack's tokenizer: the template's own calls walk the constraint to its end and read back as the calls. A served forced call with these tags has not run yet. Tools beside a <code>response_format</code> or <code>structured_outputs</code> document under <code>tool_choice: auto</code> are served the same way (ENG-581): the answer is the model's calls inside its wrapper or the document, and its first token picks which. A JSON schema beside the tools is checked on the CPU with the pack's tokenizer; none has been served on either pack. Where the document allows the wrapper's bytes (a free string), the model can write the wrapper's id there and the content lacks those bytes; a plain JSON document stays valid. The wrapper spelled out byte by byte, which is off the model's distribution, is taken too, and its bytes stay in the content beside the calls, under a forced <code>tool_choice</code> as well. A document string that holds the model's <code>&lt;tool_call&gt;</code> tags is read as a call, and the content keeps the document without them (ENG-583).</p>
+<p>Vision is not served. Each pack holds the tower at 5 bits, and the engine reads text only.</p>
+<p>Memory: each pack's profile sets the engine's ceiling and peak, as every family's does: 85 and 92 GiB on both packs (<code>ops/profiles/hy4-&lt;bpw&gt;.env</code>). Both packs reserve the same after the load: 72.50 GiB at 8 lanes and 73.40 at one lane with the KV pool off (hold 1b on <code>aa596e81</code>, 2026-11-21), though <code>hy4-3.08</code> allocates 8.65 GiB less. On <code>hy4-3.08</code> about 9.4 GiB of that reserve sits free in the allocator, and no hand-back to the driver returns it. The weight sizes give a likely cause, not yet confirmed by a walk of the segments on the device: a routed expert's trellis is 864 KiB at 3 bits and 1,008 KiB at 3.5, under the CUDA caching allocator's 1 MiB small-block size, so two would share a 2 MiB segment and leave 320 KiB of it free on <code>hy4-3.08</code> and 32 KiB on <code>hy4-3.56</code>. The ceiling is the one-lane reserve plus 11.6 GiB for the caches and the reserve a request leaves; the peak adds the prefill workspace at 262,144 tokens (7.3). With the pool and 8 lanes the memory policy takes slot 0's window off both (4.12 GiB) and adds what the side slots took (3.22 GiB in hold 1b): 84.10 and 91.10 GiB, 11.6 over the 8-lane reserve. With one lane and the pool off it enforces 85 and 92; with one lane and the pool on, 80.88 and 87.88. The start's <code>[limits]</code> line names both: <code>MEM_CEILING_GIB_SET</code> and <code>MEM_PEAK_GIB_SET</code> are the profile's, <code>MEM_CEILING_GIB</code> and <code>MEM_PEAK_GIB</code> the policy's (<a href="../caches/#memory">caches.md</a>). Until OPS-308 the model set its own limits from what its load held, 12 GiB over it, and they moved three times in two days. Hold 1b's servers enforced 71.10 GiB on <code>hy4-3.08</code> from their first request on, under the 72.50 GiB reserve, so every request shed the end anchors, the store and the stash, and a follow-up read its chat cold. Hold 1b validated 84.22 and 91.22 GiB on <code>hy4-3.56</code> (its P4 and P5 passed; P5's 64k prompt reserved 75.12 GiB at most); 85 is the whole number that stays at or under it.</p>
+<p>The profiles ask for 97 GiB (<code>hy4-3.08</code>) and 101 GiB (<code>hy4-3.56</code>) of free memory before a start. Those two figures are the measured load plus the server's 7.3 GiB prefill estimate plus the 15 GiB floor, not a measured start.</p>
+<h2 id="speed">Speed<a class="headerlink" href="#speed" title="Permanent link">&para;</a></h2>
+<p>Both packs ran in one session on 2026-11-20, on an idle box with the full 262,144-token window and each pack's own memory limits. Every figure is one prose chat request through the server: a 3,565-token prompt in the pack's template with thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence. This is not the measured table's shape, and the model card's table is empty until that run exists.</p>
+<table>
+<thead>
+<tr>
+<th>profile</th>
+<th>plain, tok/s</th>
+<th>DFly2 + lookup + StairCut, tok/s</th>
+<th>tokens a drafted round</th>
+<th>first token</th>
+<th>load, start to healthy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hy4-3.56</code></td>
+<td>22.63, 23.00</td>
+<td>27.81, 28.37</td>
+<td>2.26</td>
+<td>27.0 to 31.5 s</td>
+<td>95 to 105 s, 147 to 165 s</td>
+</tr>
+<tr>
+<td><code>hy4-3.08</code></td>
+<td>23.78, 24.12</td>
+<td>32.08, 33.02</td>
+<td>2.53</td>
+<td>23.6 to 29.6 s</td>
+<td>87 to 93 s, 138 to 144 s</td>
+</tr>
+</tbody>
+</table>
+<p>In every run the drafted text equals the plain text. The two packs write different answers to the prompt, and why a round of <code>hy4-3.08</code> keeps more tokens on it was not isolated. These runs read the prompt on the pair kernels, the default when they were measured; the prompt path has changed since (above), and decode does not depend on it.</p>
+<h2 id="license">License<a class="headerlink" href="#license" title="Permanent link">&para;</a></h2>
+<p>The weights are Tencent's, under the Tencent Hy License, Version 1.0, which each pack carries as <code>LICENSE</code>. It is derived from Apache 2.0, and it counts quantized versions as derivative works, so the packs carry its terms. Its Section 10 adds terms for large Model-as-a-Service businesses: above US$50 million in revenue or 100 million monthly active users, a separate license from Tencent is needed. These terms apply to every recipient of the packs. TandemEngine itself is AGPL-3.0 or commercial.</p>
+<h2 id="what-is-not-measured">What is not measured<a class="headerlink" href="#what-is-not-measured" title="Permanent link">&para;</a></h2>
+<ul>
+<li>The measured table's runs (<code>tools/parallel_card.py</code>, raw <code>/v1/completions</code>) on either pack.</li>
+<li>A budget-closed raw turn on the end-tag close: whether the answer then holds no reasoning, on either pack (the CPU tests show the ids the model reads and the split, not what the model writes next).</li>
+<li><code>hy4-3.08</code> at the full window on an idle box, on the current build.</li>
+<li>Thinking on: speed and how many drafted tokens a round keeps.</li>
+<li>The card's structured-output rows (<code>bench_structured</code>, OPS-316) on either pack, so the card's <code>structured</code> stays false. A <code>response_format</code> or <code>structured_outputs</code> document is served alone, and beside tools under <code>tool_choice: auto</code> since ENG-581, checked on the CPU with the pack's tokenizer for a <code>json_schema</code> and a toy tokenizer for the other forms. What ran on the box, on this release's code (2026-11-23): on <code>hy4-3.56</code>, 18 requests with tools offered, streamed and not, answered 200 on the branch each asked for: under <code>tool_choice: auto</code> a <code>json_schema</code> document, a <code>json_object</code> and a choice, one call, two calls, and one call with <code>parallel_tool_calls</code> false; a document with <code>tool_choice: none</code> and a call with <code>required</code>. In 12 of 12 such requests, half of them seeded and sampled, the drafted answer equals the plain one with the same log-probabilities. In tool-eval-bench 2.8.0 (one run a pack, the raw route, <code>xhigh</code>) TC-64 to TC-67 and TC-69 pass on both packs. Before ENG-581, TC-65, 66, 67 and 69 were a 400 on both.</li>
+<li>Quality past 2,048 tokens, task-level checks, and any comparison with Tencent's own stack or its FP8 release.</li>
+<li>The free memory a start needs: the profiles' figures come from arithmetic.</li>
+<li>Whether the table reader's rate caps the prompt pass. It reads a chunk's Engram rows on one thread before the layers, in one-submit slices of 256 (SPD-319). On both packs its rows equal the reads it replaced (<code>tools/hy4_check.py --only table-rows</code>). Under the fixed-order pass a 4,096-row chunk's reads take 465 to 535 ms. Inside a loaded engine the reader managed 20,000 to 37,000 reads a second on <code>hy4-3.56</code> and 41,000 to 100,000 on <code>hy4-3.08</code>, against 106,000 to 120,000 idle. Whether that limits the prefill rate was not tested.</li>
+<li>The fixed-order pass's quality on sets other than chat2048. Its chunk independence on the device was measured by Gate 0 (R83, above), with the trunk pinned and in the one prompt order.</li>
+<li>Why a follow-up's decode is sometimes slower on <code>hy4-3.56</code>: by 20 to 42 % per token on some resumed turns (from the session snapshot, the end, the end of the last prompt, or an anchor) against the same turn read cold, with the same blocks and the same accepted tokens. Seen before the end read too (hold 1b). A known limit of this release (SPD-335).</li>
+<li>The prompt pass's fixed cost of about 100 ms a call, which the end read and a short follow-up's prefill both pay. Not cut in this release (SPD-337).</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../flint/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Flint">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Flint
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../reference/commands/" class="md-footer__link md-footer__link--next" aria-label="Next: Reference: commands">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Reference: commands
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      The documentation is CC BY 4.0. The code has its own license.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.88dd0f4e.min.js"></script>
+      
+    
+  </body>
+</html>
