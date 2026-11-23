@@ -2,6 +2,12 @@
 
 Releases of TandemEngine, TandemLLM's inference engine (TandemLLM up to 0.15.4; TandemApp's releases are in its own repository). Speed numbers are the benchmark row `serve-single-i256-o256-v1` (one request at a time, 256 prompt tokens, 256 generated, thinking off, greedy), mean tok/s with the lookup store off unless noted. [docs/measurement.md](docs/measurement.md) explains the row. Every release produces the same text as the one before it, except where an entry says otherwise.
 
+## Unreleased
+
+### Fixes
+
+- The Setup Guide no longer refuses a model switch after a long session (SRV-953): its memory check counts everything a stop frees (the allocator's reserve, the KV pool's pages, the process's memory; `/health` `memory.stop_frees_gb`), where it took only the largest of them.
+
 ## 0.17.0, 2026-11-23
 
 ### Models

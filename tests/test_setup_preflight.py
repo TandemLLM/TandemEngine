@@ -16,6 +16,21 @@ The test matrix, the Gherkin of OPS-169:
      interpreter missing: named                               test_the_configuration_and_the_interpreter
   5  all checks pass: the step is done and the job goes on     test_all_checks_pass
 
+SRV-953 (QA SRV-954): what a stop frees is the engine's own sum, `/health` `memory.stop_frees_gb` (the
+allocator's reserve, the KV pool's pages outside it, the process's memory), where the check took the largest
+of the three. On 2026-11-23 it refused Flash-Next 3.05 -> Hy4 3.56 after a 139k-token chat, 0.9 GiB short.
+
+  6  D15's numbers (MemAvailable 30.8, stop_frees_gb 84.07, need 101) pass; the same /health without the
+     field: the largest reading and the refusal of that day, unchanged   test_a_switch_after_a_long_session
+  7  a real shortfall (MemAvailable 10, 84 freed) refuses, the sum's parts named, nothing stopped; the
+     pool inside the allocator names no pool part                        test_a_real_shortfall
+  8  setup mode counts nothing to free (no /health read); a /health without `memory` counts 0; a
+     /health that does not answer skips the check (use-profile.sh checks again after the stop)
+                                                         test_setup_mode_a_missing_block_and_a_read_error
+  9  on the two measured samples of 2026-11-23, every shipped profile's verdict is the one
+     use-profile.sh's check after the stop gives (MemAvailable 117.68 with the engine down); the
+     largest reading refused profiles that check allows        test_every_profile_agrees_with_the_check_after_the_stop
+
 Run: python tests/test_setup_preflight.py
 """
 from __future__ import annotations
@@ -110,6 +125,128 @@ def test_not_enough_memory():
         assert rc == 0 and j["state"] == "done", j["message"]
 
 
+#: /health `memory` of Flash-Next 3.05 on 2026-11-23 after a 139k-token chat (D15): the reserve, the KV
+#: pool's pages outside it (6.25 GiB, 4.0 of them slot 5's) and the process's memory, summed by the engine
+D15 = {"engine_reserved_gb": 65.7, "reserved_gb": 67.30, "rss_gb": 10.52, "stop_frees_gb": 84.07}
+
+
+def _need(box, gib: int) -> None:
+    """The box's exl3-4.5 profile needs `gib` free to start, as hy4-3.56's does (101)."""
+    with open(os.path.join(box.ops, "profiles", "exl3-4.5.env"), "a") as fh:
+        fh.write(f"QSE_MEM_NEED_GIB={gib}\n")
+
+
+def _health(memory, asked=None, fail=False):
+    """An engine whose /health carries `memory` (None: no memory block); `fail`: the preflight's read
+    (and the idle check's, both with a 5 s timeout) raises; `asked` collects those reads."""
+    def http(url, body=None, timeout=10):
+        if url.endswith("/health"):
+            if timeout == 5 and asked is not None:
+                asked.append(url)
+            if timeout == 5 and fail:
+                raise OSError("timed out")
+            return dict({"status": "ok", "weights": {"name": "exl3-4.5"}},
+                        **({"memory": memory} if memory is not None else {}))
+        return {"choices": [{"message": {"content": "ready"}}]}
+    return http
+
+
+def _went_through(rc, j, seq):
+    st = {s["id"]: s["state"] for s in j["steps"]}
+    assert rc == 0 and j["state"] == "done" and st["preflight"] == "done", (st, j["message"])
+    assert seq == ["use-profile.sh exl3-4.5"], seq
+
+
+def test_a_switch_after_a_long_session():
+    with T.Box() as box:
+        _need(box, 101)
+        device_mod.meminfo = lambda: {"MemTotal": 121.6, "MemAvailable": 30.8}
+        # an engine before SRV-953: the largest reading, 30.8 + 67.3 + 2 < 101, as on 2026-11-23
+        old = {k: v for k, v in D15.items() if k != "stop_frees_gb"}
+        rc, j, seq = _run(box, http=_health(old))
+        _stopped_nothing(box, j, seq)
+        assert "Not enough memory for exl3-4.5: it needs 101 GiB free to start; 30.8 GiB are free now and " \
+               "the running engine gives back about 67.3. Stop other programs" in j["message"], j["message"]
+        # the engine's sum: 30.8 + 84.07 + 2 = 116.9, through
+        _went_through(*_run(box, http=_health(D15)))
+
+
+def test_a_real_shortfall():
+    with T.Box() as box:
+        _need(box, 101)
+        device_mod.meminfo = lambda: {"MemTotal": 121.6, "MemAvailable": 10.0}
+        rc, j, seq = _run(box, http=_health({"reserved_gb": 67.3, "rss_gb": 10.5, "stop_frees_gb": 84.0}))
+        assert rc == 1
+        _stopped_nothing(box, j, seq)
+        assert "Not enough memory for exl3-4.5: it needs 101 GiB free to start; 10.0 GiB are free now and " \
+               "the running engine gives back about 84.0 (the allocator's reserve 67.3, the KV pool's pages " \
+               "6.2 and the process's memory 10.5). Stop other programs that use memory, then try again." \
+               in j["message"], j["message"]
+        # the pool inside the allocator: the reserve holds its pages, no part of its own
+        rc, j, seq = _run(box, http=_health({"reserved_gb": 59.67, "rss_gb": 7.56, "stop_frees_gb": 67.23}))
+        _stopped_nothing(box, j, seq)
+        assert "gives back about 67.2 (the allocator's reserve 59.7 and the process's memory 7.6). Stop" \
+               in j["message"], j["message"]
+
+
+def test_setup_mode_a_missing_block_and_a_read_error():
+    # setup mode: no engine runs, nothing is counted and /health is not read
+    with T.Box() as box:
+        _need(box, 101)
+        device_mod.meminfo = lambda: {"MemTotal": 121.6, "MemAvailable": 30.8}
+        asked = []
+        rc, j, seq = _run(box, http=_health(D15, asked), setup_mode=True)
+        _stopped_nothing(box, j, seq)
+        assert "30.8 GiB are free now and the running engine gives back about 0.0. Stop" in j["message"], \
+            j["message"]
+        assert asked == [], asked
+    # a /health without a memory block: 0 counted
+    with T.Box() as box:
+        _need(box, 101)
+        device_mod.meminfo = lambda: {"MemTotal": 121.6, "MemAvailable": 30.8}
+        rc, j, seq = _run(box, http=_health(None))
+        _stopped_nothing(box, j, seq)
+        assert "the running engine gives back about 0.0. Stop" in j["message"], j["message"]
+    # a /health that does not answer: the check is skipped, use-profile.sh's after the stop decides
+    with T.Box() as box:
+        _need(box, 101)
+        device_mod.meminfo = lambda: {"MemTotal": 121.6, "MemAvailable": 30.8}
+        asked = []
+        _went_through(*_run(box, http=_health(D15, asked, fail=True)))
+        assert any(u.endswith(":8000/health") for u in asked), asked
+
+
+#: MemAvailable with the engine down after the D15 engine's stop (2026-11-23): what use-profile.sh's check
+#: after the stop compares with the need; and the two /health samples before a stop (MemAvailable, memory),
+#: the second inferred
+AFTER_STOP = 117.68
+SAMPLES = {"after the 139k chat": (31.15, D15),
+           "fresh": (47.62, {"engine_reserved_gb": 59.0, "reserved_gb": 59.67, "rss_gb": 7.56,
+                             "stop_frees_gb": 59.67 + 1.07 + 7.56})}
+
+
+def test_every_profile_agrees_with_the_check_after_the_stop():
+    with T.Box() as box:
+        needs = {}
+        for f in sorted(os.listdir(os.path.join(box.ops, "profiles"))):
+            if f.endswith(".env") and not f.startswith("_"):
+                env, err = apply._sources(box.ops, f[:-4], None, ["QSE_MEM_NEED_GIB"])
+                assert err is None, (f, err)
+                needs[f[:-4]] = float(env.get("QSE_MEM_NEED_GIB") or 80)     # use-profile.sh's default
+    assert len(needs) > 20 and needs["hy4-3.56"] == 101, needs
+    old_wrong = []
+    for name, (avail, mm) in SAMPLES.items():
+        freed, _ = apply.stop_frees(mm)
+        largest = max(mm["engine_reserved_gb"], mm["reserved_gb"], mm["rss_gb"])
+        for p, need in needs.items():
+            gate = AFTER_STOP >= need
+            assert (avail + freed + 2 >= need) == gate, (name, p, avail, freed, need)
+            if (avail + largest + 2 >= need) != gate:
+                old_wrong.append(f"{p} ({name})")
+    assert "hy4-3.56 (after the 139k chat)" in old_wrong, old_wrong
+    return f"{len(needs)} profiles x {len(SAMPLES)} samples; the largest reading refused {', '.join(old_wrong)}"
+
+
 def test_the_configuration_and_the_interpreter():
     with T.Box() as box:
         with open(os.path.join(box.ops, "serve.env"), "a") as fh:
@@ -142,7 +279,7 @@ if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
             t0 = time.time()
-            fn()
-            print(f"  {name:50s} ok ({time.time() - t0:.1f} s)")
+            note = fn()
+            print(f"  {name:50s} ok ({time.time() - t0:.1f} s)" + (f": {note}" if note else ""))
             passed += 1
     print(f"{passed} passed")

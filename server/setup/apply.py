@@ -1547,6 +1547,29 @@ def _weights_sizes(wdir: str) -> list[str]:
     return bad
 
 
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def stop_frees(mm: dict) -> tuple[float, str]:
+    """What a stop of the running engine frees, from its /health `memory`, in GiB, and the words that
+    name the parts (SRV-953). The engine's own sum `stop_frees_gb` (server/app.py `_stop_frees`): the
+    allocator's reserve, the KV pool's pages mapped outside it and the process's resident memory,
+    different memory that the stop frees together. An engine without the field: the largest of the
+    readings it reports, as the check counted before, and no parts."""
+    total = mm.get("stop_frees_gb")
+    if _num(total):
+        res, rss = mm.get("reserved_gb"), mm.get("rss_gb")
+        if not (_num(res) and _num(rss)):
+            return float(total), ""
+        pool = float(total) - float(res) - float(rss)            # 0 with the pool inside the reserve
+        named = [f"the allocator's reserve {res:.1f}"] + \
+            ([f"the KV pool's pages {pool:.1f}"] if pool >= 0.05 else []) + [f"the process's memory {rss:.1f}"]
+        return float(total), " (" + ", ".join(named[:-1]) + " and " + named[-1] + ")"
+    return max([float(mm[k]) for k in ("engine_reserved_gb", "reserved_gb", "rss_gb") if _num(mm.get(k))]
+               or [0.0]), ""
+
+
 def preflight(m: dict, profile: str, overlay: str | None, *, ops: str, old_port: int, new_port: int,
               setup_mode: bool, secrets: bool = False, http=None) -> list[str]:
     """What the restart needs, checked while the running setup still runs (OPS-169): each problem as a
@@ -1596,18 +1619,19 @@ def preflight(m: dict, profile: str, overlay: str | None, *, ops: str, old_port:
     # what ops/use-profile.sh waits for after the stop: MEM_NEED_GB, else the profile's, else 80
     need = float(os.environ.get("MEM_NEED_GB") or env.get("QSE_MEM_NEED_GIB") or 80)
     if "MemAvailable" in mem:
-        freed = 0.0
+        freed, parts = 0.0, ""
         if not setup_mode and http is not None:
             try:
                 mm = (http(f"http://127.0.0.1:{old_port}/health", timeout=5) or {}).get("memory") or {}
-                freed = max([float(mm[k]) for k in ("engine_reserved_gb", "reserved_gb", "rss_gb")
-                             if isinstance(mm.get(k), (int, float))] or [0.0])
+                freed, parts = stop_frees(mm)
             except Exception:                                     # noqa: BLE001
                 freed = None
+        # use-profile.sh checks again after the stop and exits 7 before any start when it is short
+        # (the job's rollback then): this check must not refuse a switch that one would allow
         if freed is not None and mem["MemAvailable"] + freed + 2 < need:
             out.append(f"Not enough memory for {profile}: it needs {need:g} GiB free to start; "
                        f"{mem['MemAvailable']:.1f} GiB are free now and the running engine gives back "
-                       f"about {freed:.1f}. Stop other programs that use memory, then try again.")
+                       f"about {freed:.1f}{parts}. Stop other programs that use memory, then try again.")
     # 5. the port, the box lock, a hold
     if new_port != old_port and _port_taken(new_port):
         out.append(f"Port {new_port} is in use by another program on this box.")

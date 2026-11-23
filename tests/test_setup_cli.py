@@ -221,8 +221,12 @@ MOMENT = ("uptime_s", "loading_s", "free_gb", "since", "checked_at", "left_s", "
 #: and 51 / 41 (the 388840a3 box run, 11-19 before it). Only those two figures; every other word is compared
 FREE_WORDS = re.compile(r"\b\d+(?:\.\d+)? GB (free|too few)\b")
 #: the live memory in a refusal's sentence: "40.2 GiB are free now and the running engine gives back about 61.0"
-#: (server/setup/apply.py `preflight`). Only those two figures; "it needs 97 GiB free to start" is compared
-MEM_WORDS = re.compile(r"\b\d+(?:\.\d+)? GiB are free now and the running engine gives back about \d+(?:\.\d+)?")
+#: (server/setup/apply.py `preflight`), with the parts of that sum when the engine names them (SRV-953: "(the
+#: allocator's reserve 51.0 and the process's memory 10.0)"). Only those figures; "it needs 97 GiB free to start"
+#: is compared
+MEM_WORDS = re.compile(r"\b\d+(?:\.\d+)? GiB are free now and the running engine gives back about \d+(?:\.\d+)?"
+                       r"(?: \(the allocator's reserve [\d.]+(?:, the KV pool's pages [\d.]+)? and the process's "
+                       r"memory [\d.]+\))?")
 
 
 def norm(x):
@@ -665,6 +669,12 @@ def test_two_reads_of_one_plan_differ_only_in_the_live_memory():
                 f"again.")
     a, b = dict(first, errors=[short(40.2, 61.0)]), dict(second, errors=[short(40.1, 61.2)])
     same({"result": a}, b, "a memory refusal read twice while MemAvailable moved")
+    # SRV-953: the parts of what the stop frees are live figures too
+    same({"result": dict(first, errors=[short(10.2, 84.1).replace(
+        "84.1.", "84.1 (the allocator's reserve 67.3, the KV pool's pages 6.3 and the process's memory 10.5).")])},
+        dict(second, errors=[short(10.1, 84.0).replace(
+            "84.0.", "84.0 (the allocator's reserve 67.2, the KV pool's pages 6.3 and the process's memory 10.5).")]),
+        "a memory refusal with the parts of its sum read twice")
     # a real difference still counts: the estimate's own figures, the memory the start needs, a refusal more or less
     for other in ({**b, "estimate": dict(b["estimate"], total_gb=b["estimate"]["total_gb"] + 1)},
                   {**b, "errors": [short(40.1, 61.2, need=98)]},

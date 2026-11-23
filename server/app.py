@@ -13067,6 +13067,9 @@ def _memory() -> dict:
                     out["vm_size_gb"] = round(int(line.split()[1]) / 2**20, 1)
     except Exception:
         pass
+    freed = _stop_frees(out)                                     # SRV-953: a Setup Guide apply reads it
+    if freed is not None:
+        out["stop_frees_gb"] = freed
     # SPD-257: the captures' switch to plain segments (engine/capture_lock.py): on, how often, why off
     a = capture_lock.ALLOC
     out["capture_plain_segments"] = {"on": a.get("on"), "toggles": a.get("toggles"), "errors": a.get("errors"),
@@ -13082,6 +13085,26 @@ def _memory() -> dict:
     if w is not None:
         out["python_refs_warnings"] = w.warnings
     return out
+
+
+def _stop_frees(out: dict) -> float | None:
+    """SRV-953: what a stop of this engine gives back to the box, in GiB: the allocator's reserve
+    (`reserved_gb`), the process's resident memory (`rss_gb`) and, when the KV pool maps its pages
+    through the driver outside the allocator, the pool's committed pages. They are different memory
+    and the stop frees all of them; the Setup Guide's preflight took only the largest and refused a
+    switch after a long chat that fit (server/setup/apply.py `preflight`). None when a part is not
+    known: the reserve or the resident set not read, or the pool's report failing."""
+    res, rss = out.get("reserved_gb"), out.get("rss_gb")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (res, rss)):
+        return None
+    total = float(res) + float(rss)
+    pool = kvpool.POOL
+    if pool is not None and kvpool.Driver.get() is not None:
+        try:
+            total += float(pool.report()["committed_gib"])
+        except Exception:                                          # noqa: BLE001
+            return None
+    return round(total, 3)
 
 
 def _caches_by_owner() -> dict:
