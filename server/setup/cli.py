@@ -10,9 +10,10 @@ switched off takes the tools that need it along, a tool switched on brings its `
 a profile with a shorter largest window takes the window down, a window snaps to the model's step.
 
 Why HTTP and not in-process: the routes need the server they belong to. One setup job at a time is
-a lock in that server (setup_api._JOB_LOCK); the requests in flight (409 busy), Wren, the admin rule
-and setup mode are its state; the job's runner is spawned by it. A second process calling the same
-functions would pass that lock and read none of that state. So the terminal is one more client.
+a lock in that server (setup_api._JOB_LOCK); the requests in flight (409 busy for a reset; an apply
+waits), Wren, the admin rule and setup mode are its state; the job's runner is spawned by it. A
+second process calling the same functions would pass that lock and read none of that state. So the
+terminal is one more client.
 
     bin/tandem setup                    the guide, step by step (a terminal only)
     bin/tandem setup models             the models (GET /v1/setup/models)

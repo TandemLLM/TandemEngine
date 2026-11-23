@@ -24,9 +24,10 @@ The test matrix:
      previous profile (setup mode: the marker back and start.sh --setup); the job says rolled_back
                                                          test_rollback
   6  the routes: a body that names a step, a command, an env or a path is 422 unknown_field; a
-     hostile profile or name is refused; dry_run is the plan and no job; busy and job_running are
-     409, a missing asset 412; slots 17 (past the engine's 16) is 422 out_of_range; a good apply
-     is 202, unloads Wren and starts the runner
+     hostile profile or name is refused; dry_run is the plan and no job; job_running is 409, a
+     missing asset 412; slots 17 (past the engine's 16) is 422 out_of_range; a good apply is 202,
+     unloads Wren and starts the runner; while requests run (SRV-953) an apply and the retry of
+     one are 202 jobs (the runner waits for them), a reset and the retry of a reset 409 busy
                                                          test_the_routes
   7  the job route: ?format=json the job; SSE sends the log on disk, the job as it is now and its
      done event, with their ids, and Last-Event-ID resumes after one; an unknown or malformed id is 404; the stream reads the log from a byte
@@ -62,6 +63,9 @@ The test matrix:
  17  SRV-915: an apply keeps the run/setup.env keys no registry entry, serve.env, profile or start.sh names
      (QWEN38_NOTES_HEAD), across a switch and back; never another model's knob, a serve.env limit, a secret, or
      anything when a registry file did not load               test_an_apply_keeps_the_keys_no_owner_names
+ 18  SRV-953: a switch the preflight let through on what the stop frees, and use-profile.sh's check
+     after the stop refuses (exit 7, "MemAvailable 95 GB < 101 GB after the stop"): rolled back, the
+     old run/setup.env back, the previous profile started   test_a_shortfall_after_the_stop_rolls_back
 
 Run: python tests/test_setup_apply.py
 """
@@ -521,6 +525,43 @@ def test_rollback():
         assert apply.read_job(jid)["state"] == "rolled_back"
 
 
+def test_a_shortfall_after_the_stop_rolls_back():
+    """SRV-953: the preflight lets the switch through on what the stop frees (30.8 + 84.07 + 2 >= 101), and
+    use-profile.sh's own check after the stop finds less (exit 7, before any start): the job's rollback."""
+    with Box() as box:
+        with open(os.path.join(box.ops, "profiles", "exl3-4.5.env"), "a") as fh:
+            fh.write("QSE_MEM_NEED_GIB=101\n")
+        device_mod.meminfo = lambda: {"MemTotal": 121.6, "MemAvailable": 30.8}
+        apply.write_overlay(M, _sel(slots=3))
+        old = open(apply.overlay_path()).read()
+        mem = {"engine_reserved_gb": 65.7, "reserved_gb": 67.30, "rss_gb": 10.52, "stop_frees_gb": 84.07}
+
+        def http(url, body=None, timeout=10):
+            if url.endswith("/health"):
+                return {"status": "ok", "weights": {"name": "exl3-6.0"}, "memory": mem}
+            return {"choices": [{"message": {"content": "ready"}}]}
+
+        rec = Recorder(rc={"use-profile.sh exl3-4.5": 7})
+
+        def short(argv, **kw):
+            if [os.path.basename(a) for a in argv[1:]] == ["use-profile.sh", "exl3-4.5"]:
+                kw["line"]("[use-profile 16:40:02] MemAvailable 95 GB < 101 GB after the stop; the caller rolls back")
+            return rec(argv, **kw)
+
+        jid = _job(_sel())
+        assert apply.Runner(jid, cmd=short, http=http, ops=box.ops).main() == 1
+        job = apply.read_job(jid)
+        st = _steps(jid)
+        assert st["preflight"] == "done" and st["switch"] == "failed" and st["rollback"] == "done", st
+        assert job["state"] == "rolled_back" and job["rolled_back"] is True and job["failed_step"] == "switch", job
+        assert job["message"] == ("The new setup did not start: there was not enough free memory to start it; stop "
+                                  "other programs that use memory, then press Retry. (exit 7)"), job["message"]
+        assert open(apply.overlay_path()).read() == old
+        seq = [" ".join(os.path.basename(a) for a in c["argv"][1:]) for c in rec.calls]
+        assert seq == ["use-profile.sh exl3-4.5", "use-profile.sh exl3-6.0"], seq
+        assert rec.calls[-1]["env"]["QSE_NO_ROLLBACK"] == "1", rec.calls[-1]["env"]
+
+
 def test_the_runners_hard_cases():
     # idle: two requests run, then none; the step waits and says so
     with Box() as box:
@@ -926,6 +967,13 @@ def test_every_fp8_cache_switch():
     return ", ".join(f"{k} {a:,} -> {b:,}" for k, (a, b) in sorted(seen.items()))
 
 
+def _ended(jid: str, state: str) -> None:
+    """A job the test spawned no runner for, ended as `state` (one setup job at a time: the next one starts)."""
+    j = apply.read_job(jid)
+    j.update(state=state)
+    apply._write_json(os.path.join(apply.job_dir(jid), "state.json"), j)
+
+
 def test_the_routes():
     with Box():
         app.STATE.clear()
@@ -949,10 +997,28 @@ def test_the_routes():
             assert not os.path.exists(apply.jobs_dir()) or not os.listdir(apply.jobs_dir())
             code, b = _api("POST", "/v1/setup/plan", sel)
             assert code == 200 and b["dry_run"] is False and b["changes"]
+            # SRV-953: while a request runs an apply is a job (its runner waits in write_config), a retry
+            # of one too; a reset, and a retry of a reset, are still 409 busy
             app.INFLIGHT["running"] = 1
             code, b = _api("POST", "/v1/setup/apply", {"selection": sel})
-            assert code == 409 and b["error"]["code"] == "busy" and b["error"]["running"] == 1
+            assert code == 202 and b["job"]["state"] == "queued" and spawned == [b["job"]["id"]], b
+            busy_job = b["job"]["id"]
+            _ended(busy_job, "failed")
+            code, b = _api("POST", f"/v1/setup/jobs/{busy_job}/retry", {})
+            assert code == 202 and b["job"]["retry_of"] == busy_job and spawned[-1] == b["job"]["id"], b
+            _ended(b["job"]["id"], "failed")
+            code, b = _api("POST", "/v1/setup/reset", {"level": 2, "confirm": True})
+            assert code == 409 and b["error"]["code"] == "busy" and b["error"]["running"] == 1, b
+            p = apply.reset_plan(M, setup_mode=False)
+            reset_job = apply.new_job(M, p["selection"], p, setup_mode=False, kind="reset")["id"]
+            _ended(reset_job, "failed")
+            code, b = _api("POST", f"/v1/setup/jobs/{reset_job}/retry", {})
+            assert code == 409 and b["error"]["code"] == "busy" and b["error"]["running"] == 1, b
+            assert "reset when the engine is idle" in b["error"]["message"], b
+            assert len(spawned) == 2 and w.unloads == ["apply", "apply"], (spawned, w.unloads)
             app.INFLIGHT["running"] = 0
+            spawned.clear()
+            w.unloads.clear()
             code, b = _api("POST", "/v1/setup/apply", {"selection": dict(sel, kv_pool=False)})
             assert code == 409 and b["error"]["code"] == "over_budget" and "plan" in b
             # VIS-199, SRV-707: the setup's limit, 64 lanes, whatever the card measured

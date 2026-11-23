@@ -22,8 +22,9 @@ The test matrix (the Gherkin of ENG-435):
      terminal sends the page's selection and prints the engine's answer unchanged (--json
      `result` equal to the page's body)                       test_same_answers_as_the_page
   3  the refusals are the engine's: a plan that does not fit (over_budget: rc 1, the page's plan,
-     no apply sent), requests in flight (409 busy), a job that runs (409 job_running), a body the
-     engine refuses (422 unknown_field from --selection): the status, code and body the page gets
+     no apply sent), a job that runs (409 job_running), a body the engine refuses (422
+     unknown_field from --selection): the status, code and body the page gets; requests in flight
+     are no refusal (SRV-953): the apply is a job that waits for them
                                                             test_the_refusals_are_the_engines
   4  a serving engine is never stopped unasked: apply without --restart is refused before any
      write (rc 4, no job); --restart without a terminal or --yes is refused; a no at the prompt
@@ -442,16 +443,12 @@ def test_the_refusals_are_the_engines():
                 assert rc == 1 and out["error"]["code"] == "over_budget" and not spawned
                 # the page's 409 carries the plan apply computed; the terminal's is POST /plan's (dry_run false)
                 assert norm(dict(out["result"], dry_run=None)) == norm(dict(refused["plan"], dry_run=None))
-                # requests in flight
+                # requests in flight (SRV-953): no refusal, the apply is a job whose runner waits for them
                 app.INFLIGHT["running"] = 1
-                code, busy = page(srv, "POST", "/v1/setup/apply", {"selection": seed})
                 rc, out, _ = run_cli(srv.url, "apply", mid, "--restart", "--yes", "--no-follow")
-                assert code == 409 and rc == 1 and out["error"]["status"] == 409, out
-                assert out["error"]["code"] == "busy" and out["result"] == busy and not spawned
+                assert rc == 0 and out["result"]["state"] == "queued" and spawned == [out["result"]["id"]], out
                 app.INFLIGHT["running"] = 0
                 # a job that runs
-                rc, out, _ = run_cli(srv.url, "apply", mid, "--restart", "--yes", "--no-follow")
-                assert rc == 0 and out["result"]["state"] == "queued" and spawned == [out["result"]["id"]]
                 code, running = page(srv, "POST", "/v1/setup/apply", {"selection": seed})
                 rc, out, _ = run_cli(srv.url, "apply", mid, "--restart", "--yes", "--no-follow")
                 assert code == 409 and rc == 1 and out["error"]["code"] == "job_running"

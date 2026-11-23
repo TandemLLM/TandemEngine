@@ -68,7 +68,7 @@ def _err(h, status: int, code: str, message: str, **extra) -> None:
 
 
 def busy(app) -> bool:
-    """Requests are in flight or waiting (what apply and reset refuse to run beside)."""
+    """Requests are in flight or waiting (what a reset refuses to run beside; an apply waits, SRV-953)."""
     inf = app.INFLIGHT
     return bool(inf.get("running") or inf.get("waiting") or inf.get("lane"))
 
@@ -431,14 +431,15 @@ def diagnostics_route(h, jid: str) -> None:
 
 def _launch(h, app, m: dict, sel: dict, p: dict, *, setup_mode: bool, kind: str = "apply",
             retry_of: str | None = None, remove_after: list[str] | None = None) -> None:
-    """A job from a checked plan: refused while requests run (409 busy), when the plan has an
-    error, or while another job runs (409 job_running); else Wren unloaded, the runner spawned,
-    202 and the job."""
+    """A job from a checked plan: refused when the plan has an error, while another job runs (409
+    job_running), and a reset while requests run (409 busy); else Wren unloaded, the runner spawned,
+    202 and the job. An apply while requests run is a job too (SRV-953): its runner waits for them
+    before anything stops (`Runner._wait_idle`, the write_config step `waiting`, 10 minutes at most)."""
     from server.setup import apply
-    if busy(app) and not setup_mode:
+    if kind == "reset" and busy(app) and not setup_mode:
         inf = app.INFLIGHT
         return _err(h, 409, "busy", f"{inf.get('running', 0)} request(s) run and "
-                    f"{inf.get('waiting', 0)} wait; apply when the engine is idle",
+                    f"{inf.get('waiting', 0)} wait; reset when the engine is idle",
                     running=inf.get("running", 0), waiting=inf.get("waiting", 0))
     if not p["ok"]:
         code = p["error_codes"][0]
