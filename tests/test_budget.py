@@ -930,6 +930,94 @@ def test_the_planner_refuses_a_12_gib_role_at_37_9_free_with_the_engine_at_70_of
     assert residency.check("decider", 60, doc, engine_peak_gib=77)["engine_growth_gib"] == 77
 
 
+def _profile_figure(profile: str, key: str) -> float:
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    m = re.search(rf"(?m)^{key}=([0-9.]+)", open(os.path.join(root, "ops", "profiles", profile)).read())
+    return float(m.group(1))
+
+
+#: ENG-609: what the planner adds to a hy4-<bpw> profile's peak at 8 lanes with the KV pool (hold 1b, OPS-308): slot
+#: 0's window off (4.12 GiB), the side slots' share on (3.22), the disk tier's staging until its first read (0.16:
+#: the planner saw 91.26 over the enforced 91.10 on every Hy4 start of 2026-11-23/24)
+HY4_PLANNER_OVER_PROFILE = -4.12 + 3.22 + 0.16
+
+
+def test_eng609_the_planner_replays_the_journal_rows_and_the_decision_models_fit_beside_hy4():
+    """ENG-609: the residency planner's rows of 2026-11-23/24 (`residency.jsonl`, the live document v6: floor 15,
+    margin 4, the decider's claim 3.0), replayed. Flash-Next 3.05 (66 / 77) was allowed; Hy4-flash at 85 / 92 (the
+    planner saw 91.26) was refused on every start, and still is with those figures: the rule is not weaker. At the
+    hy4-3.56 profile's new peak the planner sees 80.26: the branch's first start on the box (33.88 GiB available with
+    a 250,316-token conversation read back into slot 0, 72.12 reserved) was allowed with 21.74 after, as the row of
+    82 gave it, and is 22.74 here; the stage-1 start without one (36.7) and the next two checks there leave room for
+    all three decision models, each load taking 2.5 GiB off MemAvailable (the larger of the two measured on hy4-3.08:
+    laya-typed-decisions 2.50, laya-multilingual 1.91; laya-english holds 1.57 GiB on the device). The seed's floor
+    and claim are pinned: the fix moves Hy4's figures, never these."""
+    from server.api import seeds
+    from server.conductor import residency
+    seed = seeds.seed("residency")
+    assert seed["floor_gib"] == 15.0 and seed["margin_gib"] == 6.0 and seed["claims"]["decider"]["gib"] == 3.0, seed
+    doc = dict(seed, margin_gib=4.0)                   # the live document, v6
+    for avail, peak, now, after in ((54.43, 75.56, 54.88, 30.75), (52.25, 76.52, 56.54, 29.27),
+                                    (33.88, 81.26, 72.12, 21.74)):
+        d = residency.check("decider", avail, doc, engine_peak_gib=peak, engine_now_gib=now)
+        assert d["allowed"] and d["after_gib"] == after, d
+    for avail, now, after in ((36.79, 72.77, 15.3), (35.7, 72.79, 14.23), (36.7, 72.12, 14.56)):
+        d = residency.check("decider", avail, doc, engine_peak_gib=91.26, engine_now_gib=now)
+        assert not d["allowed"] and d["reason"] == "refused_memory" and d["after_gib"] == after, d
+    peak = round(_profile_figure("hy4-3.56.env", "MEM_PEAK_GIB") + HY4_PLANNER_OVER_PROFILE, 2)
+    assert peak == 80.26, peak
+    d = residency.check("decider", 33.88, doc, engine_peak_gib=peak, engine_now_gib=72.12)
+    assert d["allowed"] and d["after_gib"] == 22.74, d
+    rows = []
+    for i in range(3):
+        d = residency.check("decider", round(36.7 - i * 2.5, 2), doc, engine_peak_gib=peak, engine_now_gib=72.12)
+        assert d["allowed"] and d["after_gib"] >= d["need_gib"] == 19.0, (i, d)
+        rows.append(d["after_gib"])
+    assert rows == [25.56, 23.06, 20.56], rows
+    return f"Flash-Next allowed, Hy4 at 91.26 refused; at {peak}: three loads from 36.7 GiB, {rows} after"
+
+
+def test_eng609_hy4_flash_names_its_workspace_and_a_cold_window_fits_its_peak():
+    """ENG-609: Hy4-flash's CostModel names where its prefill workspace stops growing, measured on the box under
+    expandable segments (the policy's reading: 1.48 GiB at 130,020 cold tokens, 1.81 at 249,971), as Flash-Next's
+    and NemotronH's do; shorter prompts keep the shared line (engine/cache.py, the 27B's floor and slope). Under the
+    hy4-3.56 profile's limits as the policy enforces them at 8 lanes (78.10 / 80.10 GiB) a cold full-window prompt is
+    admitted with nothing shed and nothing emptied with the engine at the stage-1 high-water (77.80 GiB reserved on a
+    129,951-token cold prompt with two requests in flight, read on 0.17.0 under the setting at its 85 / 92, so 0.05
+    GiB under this peak with the cap), and with the engine at its ceiling the gate gives back the free reserve and
+    sheds no cache. At 79 / 81 the engine's own reserve reached 78.26 GiB on two cold side-slot conversations, over
+    the ceiling and over the 77.85 that leaves the cap under the peak: a cold window there needs the free reserve
+    back first, as in the second case (78.26 itself is not pinned). The 27B's line would charge it 7.34 GiB, over that peak by
+    5 GiB: the caches would go first."""
+    from types import SimpleNamespace
+
+    from engine.models.hy4_flash import serving as hy4
+    srv = hy4.Hy4FlashServing.__new__(hy4.Hy4FlashServing)
+    srv.state = SimpleNamespace(sections=lambda: {}, views=lambda: [])
+    srv.st = srv.cfg = None
+    c = srv.cost()
+    assert c.workspace_cap == hy4.WS_CAP == int(2.25 * GIB) and c.workspace_floor is None and \
+        c.workspace_per_token is None, c
+    assert hy4.WS_CAP >= int(1.81 * GIB)              # the measured window
+    ceiling = round(_profile_figure("hy4-3.56.env", "MEM_CEILING_GIB") - 4.12 + 3.22, 2)
+    peak = round(_profile_figure("hy4-3.56.env", "MEM_PEAK_GIB") - 4.12 + 3.22, 2)
+    assert (ceiling, peak) == (78.10, 80.10), (ceiling, peak)
+    for alloc, res, empties in ((73.28, 77.80, 0), (76.90, ceiling, 1)):
+        fa = FakeAlloc(alloc, reserve_gib=res - alloc)
+        order = []
+        m = budget(fa, ceiling=ceiling, peak=peak, ws_cap=c.workspace_cap)
+        for lv, gib in (("store", 1.0), ("anchors", 0.3), ("stash", 0.5), ("park", 1.0), ("pin", 1.0)):
+            m.register(lv, shedder(fa, order, lv, gib))
+        assert m.workspace(8192) == cache.WORKSPACE_FLOOR and m.workspace(262_144) == hy4.WS_CAP
+        g = m.gate(262_144)
+        assert g["workspace"] == hy4.WS_CAP and order == [] and fa.empties == empties, (res, g, order, fa.empties)
+        assert (fa.res + hy4.WS_CAP) / GIB <= peak
+    line = budget(FakeAlloc(73.28, reserve_gib=77.80 - 73.28), ceiling=ceiling, peak=peak).workspace(262_144)
+    assert 77.80 + line / GIB - peak > 4.9, line / GIB
+    return f"a cold 262,144-token prompt charged {hy4.WS_CAP / GIB:.2f} GiB under {peak}: nothing shed"
+
+
 def test_the_plan_takes_the_growth_once():
     from server.conductor import residency
     p = residency.plan(37.9, _residency_doc(), engine_peak_gib=77, engine_now_gib=70)

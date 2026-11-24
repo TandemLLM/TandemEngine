@@ -48,6 +48,14 @@ TABLES = ("ops/hy4-dense-splits.json",)
 #: prior the router's guard, the disk tier and the spill price a read at until a request has measured one, in place
 #: of the 27B's 740 (a 2,345-row question was priced at 3.2 s and took 18.8)
 PREFILL_TOK_S = 140.0
+#: ENG-609: where the prefill workspace stops growing (CostModel.workspace_cap, as Flash-Next's and NemotronH's): a prompt
+#: pass runs chunks of PREFILL_CHUNK rows and its sparse layers read a fixed number of picked rows, so the workspace grows
+#: little with the context, where the 27B's line charges 7.34 GiB at 262,144 tokens. Measured on hy4-3.56 under expandable
+#: segments (2026-11-24, the policy's own reading, `Budget.prefilled`): 1.48 GiB on a cold 130,020-token prompt, 1.81 on
+#: a cold 249,971-token one; 2.25 keeps about 0.4 over the window. Shorter prompts keep the shared line (engine/cache.py
+#: WORKSPACE_FLOOR, WORKSPACE_PER_TOKEN; not measured on this family); a cold prefill of 64k rows or more that takes more
+#: raises the cap (`Budget.prefilled`)
+WS_CAP = int(2.25 * (1 << 30))
 
 
 def manifest() -> Manifest:
@@ -189,7 +197,7 @@ class Hy4FlashServing:
         sec = sum(t.numel() * t.element_size() for t in self.state.sections().values())
         row = sum(t.numel() // t.shape[ax] * t.element_size() for _, t, ax in self.state.views())
         return CostModel(section_bytes=sec, view_bytes_per_token=row, parts={"recurrent": sec, "conv": 0},
-                         prefill_tok_s=PREFILL_TOK_S)
+                         workspace_cap=WS_CAP, prefill_tok_s=PREFILL_TOK_S)
 
     def manifest(self) -> Manifest:
         return manifest()

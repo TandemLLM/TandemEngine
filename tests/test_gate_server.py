@@ -358,17 +358,18 @@ def test_a_gate_arm_serves_the_engine_alone():
 
 def test_a_pack_with_profile_limits_runs_them_on_both_sides():
     """OPS-308: the gb10 profile's 66/77 GiB, written after the pack's profile, would run a Hy4-flash start under what
-    its load reserves (72.50 GiB at 8 lanes). With `limits: profile` both sides' arms get the ceiling and peak the
-    pack's weight profile serves it with (85/92 on both packs), read from this checkout's profile, so the base side's
-    tree, which names none, runs them too; a pack without the key keeps the hardware profile's. Both Hy4-flash packs,
-    both sides, both variants."""
+    its load reserves at 8 lanes: 72.50 GiB on both packs without expandable segments, 71.84 on hy4-3.56 with them
+    (ENG-609; hy4-3.08 63.29). With `limits: profile` both sides' arms get the ceiling and peak the
+    pack's weight profile serves it with (79/81 on both packs since ENG-609), read from this checkout's profile, so
+    the base side's tree, which names none, runs them too; a pack without the key keeps the hardware profile's. Both
+    Hy4-flash packs, both sides, both variants."""
     from tools.gate.hw.gb10 import GB10
     g = GB10(Fingerprint(name="NVIDIA GB10", memory_gib=119.7, cc="12.1", unified=True))
     packs = load_packs()
     for pid in ("hy4-3.56", "hy4-3.08"):
         pack = dict(packs[pid], id=pid)
         want = _profile_limits(pack["profile"])
-        assert want == (85.0, 92.0), (pid, want)
+        assert want == (79.0, 81.0), (pid, want)
         for side in ("base", "head"):
             env = arm_env(g, pack, side, "main")
             assert (float(env["MEM_CEILING_GIB"]), float(env["MEM_PEAK_GIB"])) == want, (pid, side, env)
@@ -404,7 +405,7 @@ def test_a_pack_capped_at_one_plans_c1_rows_only():
         assert [s[0] for s in decode.shapes(ctx)] == ["c1", "c1-1k"]
         assert [(s, v) for s, v, _ in arms_of(p)] == [("base", "main"), ("head", "main"), ("head", "plain")]
         notes = pack_notes(pack, p.profile, True)
-        assert len(notes) == 3 and "limits: profile" in notes[0] and "85/92 GiB" in notes[0], notes
+        assert len(notes) == 3 and "limits: profile" in notes[0] and "79/81 GiB" in notes[0], notes
         assert "none above c1" in notes[1], notes
         assert pack["base"] == "7f2a41f51b9793dcc8fddb30316d8a0161d10072"
     assert plan("quick", [], g, dict(load_packs()["flashnext-3.05"], id="flashnext-3.05")).profile is g

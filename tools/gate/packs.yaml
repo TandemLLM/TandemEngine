@@ -56,9 +56,10 @@ flint-exl3-4.0:
   plain_env: {QSE_ENGINE_FLAGS: '--model ${QSE_WEIGHTS_DIR} --drafter none'}
 
 # OPS-314: Hy4-flash (engine/models/hy4_flash), one entry a pack, both run (SRV-897 point 5). OPS-308: its profiles
-# name its memory ceiling and peak as every family's (85/92 GiB on both packs), and `limits: profile` hands those to
-# both sides' arms: the hardware profile's 66/77, written after the pack's profile, would run it under what its load
-# reserves (72.50 GiB at 8 lanes), and the base side's tree names none. The plain arm is speculation off; the
+# name its memory ceiling and peak as every family's (79/81 GiB on both packs since ENG-609, 85/92 before), and
+# `limits: profile` hands those to both sides' arms: the hardware profile's 66/77, written after the pack's profile,
+# would run it under what its load reserves at 8 lanes (72.50 GiB without expandable segments, 71.84 on hy4-3.56 with
+# them), and the base side's tree names none. The plain arm is speculation off; the
 # spec arm drafts with the profile's own `--drafter mtp` (DFly2, the lookup, StairCut). Rows of one request at a
 # time until two clients at once are proved on the family (ENG-485). Main has no hy4_flash family until the branch
 # merges, so the base side is the branch's 7f2a41f5, the head the program's proofs start from: drop `base` then

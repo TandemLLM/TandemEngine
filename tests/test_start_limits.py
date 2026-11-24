@@ -19,10 +19,10 @@ The test matrix:
      in docs/caches.md, and opt-in by RESPONSE_CACHE=on alone; Hy4-flash's profiles leave it to serve.env
                                                                test_the_response_store_is_off_by_default_everywhere
   5  OPS-308, one accounting rule, every figure a configured one: on both Hy4-flash packs (their profiles'
-     85/92, 8 lanes and one lane with the pool off), the 27B and Flash-Next, the [kv-pool], [parallel], [limits]
-     and residency lines and the policy name one ceiling and peak, a request's refresh cuts nothing again, a
-     dashboard figure is enforced live as the next start enforces it, and the Hy4-flash loads' idle gate sheds
-     nothing; Hy4-flash takes its limits from its profiles, its builder sets none
+     79/81 since ENG-609, 8 lanes and one lane with the pool off), the 27B and Flash-Next, the [kv-pool],
+     [parallel], [limits] and residency lines and the policy name one ceiling and peak, a request's refresh cuts
+     nothing again, a dashboard figure is enforced live as the next start enforces it, and the Hy4-flash loads'
+     idle gate sheds nothing; Hy4-flash takes its limits from its profiles, its builder sets none
                                      test_one_accounting_rule_from_the_start_through_every_refresh
                                      test_hy4_flash_takes_its_limits_from_its_profiles
   6  the end read again: `end_reread` in the line and in /health's cache block, on, off (QWEN38_END_REREAD=0) or
@@ -277,29 +277,32 @@ def test_a_configured_limit_loses_slot_0s_window_to_the_pool():
 
 def test_hy4_flash_takes_its_limits_from_its_profiles():
     """OPS-308: Hy4-flash's ceiling and peak are its weight profiles' (ops/profiles/hy4-<bpw>.env), as every
-    family's: both packs 85 / 92 GiB (both reserve 72.50 GiB after an 8-lane load and 73.40 after a one-lane one with
-    the pool off, hold 1b). Its builder sets no memory limit (server/app.py `BUILDER_LIMITS`: the state store's
-    entry cap alone) and its serving module computes none: until then it set them from what its load held, and
-    the limits moved three times in two days."""
+    family's. ENG-609: both packs 79 / 81 GiB, derived as Flash-Next's: the load (71.84 GiB reserved after an 8-lane
+    load under expandable segments on hy4-3.56, 2026-11-24) and the caches' 6 GiB, plus the measured prefill
+    workspace for the peak (85 / 92 before: the one-lane reserve plus 12 and the 27B's workspace line). Its builder
+    sets no memory limit (server/app.py `BUILDER_LIMITS`: the state store's entry cap alone) and its serving module
+    computes none: until OPS-308 it set them from what its load held, and the limits moved three times in two
+    days."""
     from engine.models.hy4_flash import serving
     from server import app
     figs = _configured_figures()
-    assert figs.get("hy4-3.56.env") == figs.get("hy4-3.08.env") == (85.0, 92.0), figs
+    assert figs.get("hy4-3.56.env") == figs.get("hy4-3.08.env") == (79.0, 81.0), figs
     assert app.BUILDER_LIMITS == ("store_entry_gb",), app.BUILDER_LIMITS
     gone = [n for n in ("memory_limits", "own_limits", "held_after_load", "SERVER_LIMITS") if hasattr(serving, n)]
     assert not gone, gone
-    return "hy4-3.56 and hy4-3.08: 85 / 92 GiB from their profiles; the builder sets the store's entry cap alone"
+    return "hy4-3.56 and hy4-3.08: 79 / 81 GiB from their profiles; the builder sets the store's entry cap alone"
 
 
 #: OPS-308: the shapes the one accounting rule is locked on: the start's configured ceiling and peak (GiB; Hy4-flash's
 #: from its profiles), slot 0's window the KV pool holds (GiB; None: the pool off), the side slots' share (GiB; 0: one
 #: lane), and the allocator after the load (allocated, reserved GiB) where a log has it. Hy4-flash: hold 1b on
-#: aa596e81 ("ceiling and peak +3.22 GiB for the side slots", 8 lanes "after the load: 62.66 GiB allocated, 72.50
-#: GiB reserved" on hy4-3.08, 71.29 and 72.50 on hy4-3.56; one lane with the pool off 64.02 and 73.40, 72.67 and
-#: 73.40). The 27B: serve.env's 70/77; Flash-Next 3.05: its profile's 66/77 with slot 0's 7.58 GiB of KV; their window
-#: and side figures are stand-ins
-SHAPES = {"hy4-3.08": dict(profile="hy4-3.08.env", window=4.12, side=3.22, load=(62.66, 72.50)),
-          "hy4-3.56": dict(profile="hy4-3.56.env", window=4.12, side=3.22, load=(71.29, 72.50)),
+#: aa596e81 ("ceiling and peak +3.22 GiB for the side slots"; one lane with the pool off 64.02 and 73.40 on hy4-3.08,
+#: 72.67 and 73.40 on hy4-3.56); ENG-609: 8 lanes under expandable segments, hy4-3.56 71.26 allocated and 71.84
+#: reserved, hy4-3.08 62.63 and 63.29 (2026-11-24); one lane is hold 1b's, not measured under the setting. The 27B:
+#: serve.env's 70/77; Flash-Next 3.05: its profile's 66/77 with slot 0's 7.58 GiB of KV; their window and side figures
+#: are stand-ins
+SHAPES = {"hy4-3.08": dict(profile="hy4-3.08.env", window=4.12, side=3.22, load=(62.63, 63.29)),
+          "hy4-3.56": dict(profile="hy4-3.56.env", window=4.12, side=3.22, load=(71.26, 71.84)),
           "hy4-3.08 one lane": dict(profile="hy4-3.08.env", window=None, side=0.0, load=(64.02, 73.40)),
           "hy4-3.56 one lane": dict(profile="hy4-3.56.env", window=None, side=0.0, load=(72.67, 73.40)),
           "27b": dict(profile="serve.env", window=5.0, side=1.5, load=None),
@@ -391,7 +394,7 @@ def test_one_accounting_rule_from_the_start_through_every_refresh():
     """OPS-308: one rule for the memory limits (server/memlimits.py `limit_of`): the policy enforces a figure plus
     its fixed bytes (slot 0's window off with the KV pool, the side slots' share on), at the start and at every
     refresh, and every line that names the ceiling and peak prints the policy's own. Locked on both Hy4-flash packs at
-    8 lanes and at one lane with the pool off (their profiles' 85/92), the 27B and Flash-Next 3.05:
+    8 lanes and at one lane with the pool off (their profiles' 79/81, ENG-609), the 27B and Flash-Next 3.05:
 
       * the [kv-pool] line plus the side slots' share, the [parallel] line, the [limits] line, the residency
         refresh's line and the policy after the refresh name one ceiling and one peak;
@@ -399,8 +402,8 @@ def test_one_accounting_rule_from_the_start_through_every_refresh():
         the policy as it started: no figure is cut again;
       * a document's figure is enforced live as the next start enforces it (`overrides_at_start` makes it a flag),
         and a document that stops setting it gives back the start's figure;
-      * on the Hy4-flash loads hold 1b read, the gate after the refresh sheds nothing (84.10 GiB enforced over the
-        8-lane 72.50 reserved, 85 over the one-lane 73.40)."""
+      * on the Hy4-flash loads, the gate after the refresh sheds nothing (78.10 GiB enforced over the 8-lane 71.84
+        and 63.29 reserved, 79 over the one-lane 73.40)."""
     gib2 = lambda b: round(b / GIB, 2)                        # noqa: E731
     for name, sh in SHAPES.items():
         w, s = sh["window"] or 0.0, sh["side"]

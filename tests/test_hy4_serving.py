@@ -120,6 +120,9 @@ def test_cost_and_cache_state():
         ("lat", (len(c.sparse_layers), s.max_len, R), 1), ("ik", (len(c.sparse_layers), s.max_len, c.index_head_dim), 1)]
     assert s.cache_state().views()[0][1] is s.st.lat_all and s.cache_state().views()[1][1] is s.st.ik_all
     assert manifest().arch == "hy_v4_flash" and s.memory_parts()["weights"] > 0
+    # ENG-609: where the prefill workspace stops growing, measured on the box; short prompts keep the shared line
+    from engine.models.hy4_flash.serving import WS_CAP
+    assert cost.workspace_cap == WS_CAP and cost.workspace_floor is None and cost.workspace_per_token is None
     return f"{cost.view_bytes_per_token} bytes a token in {len(c.sparse_layers)} sparse layers, {cost.section_bytes} bytes of rings"
 
 

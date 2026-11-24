@@ -1,0 +1,201 @@
+{
+ "commit": "da76b01a",
+ "keys": [
+  "QSE_ENGINE_ALLOC_CONF",
+  "MEM_CEILING_GIB",
+  "MEM_PEAK_GIB"
+ ],
+ "note": "Every weight profile's resolved QSE_ENGINE_ALLOC_CONF, MEM_CEILING_GIB and MEM_PEAK_GIB through ops/serve.env as on da76b01a (\"\": no profile; \"<unset>\": the key is not set). ENG-609 moves hy4-* alone.",
+ "rows": {
+  "": {
+   "MEM_CEILING_GIB": "70",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "exl3-2.5": {
+   "MEM_CEILING_GIB": "70",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "exl3-3.0": {
+   "MEM_CEILING_GIB": "70",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "exl3-3.5": {
+   "MEM_CEILING_GIB": "70",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "exl3-4.0": {
+   "MEM_CEILING_GIB": "70",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "exl3-4.5": {
+   "MEM_CEILING_GIB": "70",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "exl3-6.0": {
+   "MEM_CEILING_GIB": "70",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "flashnext-2.05": {
+   "MEM_CEILING_GIB": "51",
+   "MEM_PEAK_GIB": "62",
+   "QSE_ENGINE_ALLOC_CONF": "expandable_segments:True"
+  },
+  "flashnext-3.05": {
+   "MEM_CEILING_GIB": "66",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "expandable_segments:True"
+  },
+  "flashnext-4.05": {
+   "MEM_CEILING_GIB": "81",
+   "MEM_PEAK_GIB": "92",
+   "QSE_ENGINE_ALLOC_CONF": "expandable_segments:True"
+  },
+  "flashnext-5.05": {
+   "MEM_CEILING_GIB": "95",
+   "MEM_PEAK_GIB": "106",
+   "QSE_ENGINE_ALLOC_CONF": "expandable_segments:True"
+  },
+  "flashnext-6.05": {
+   "MEM_CEILING_GIB": "110",
+   "MEM_PEAK_GIB": "121",
+   "QSE_ENGINE_ALLOC_CONF": "expandable_segments:True"
+  },
+  "flint-bf16": {
+   "MEM_CEILING_GIB": "82",
+   "MEM_PEAK_GIB": "86",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "flint-exl3-4.0": {
+   "MEM_CEILING_GIB": "40",
+   "MEM_PEAK_GIB": "46",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "flint-exl3-6.0": {
+   "MEM_CEILING_GIB": "50",
+   "MEM_PEAK_GIB": "56",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "hy4-3.08": {
+   "MEM_CEILING_GIB": "85",
+   "MEM_PEAK_GIB": "92",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "hy4-3.56": {
+   "MEM_CEILING_GIB": "85",
+   "MEM_PEAK_GIB": "92",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "lfm25-bf16": {
+   "MEM_CEILING_GIB": "52",
+   "MEM_PEAK_GIB": "55",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "lfm25-exl3-2.5": {
+   "MEM_CEILING_GIB": "15",
+   "MEM_PEAK_GIB": "18",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "lfm25-exl3-3.0": {
+   "MEM_CEILING_GIB": "16",
+   "MEM_PEAK_GIB": "19",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "lfm25-exl3-3.5": {
+   "MEM_CEILING_GIB": "18",
+   "MEM_PEAK_GIB": "21",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "lfm25-exl3-4.0": {
+   "MEM_CEILING_GIB": "19",
+   "MEM_PEAK_GIB": "22",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "lfm25-exl3-4.5": {
+   "MEM_CEILING_GIB": "20",
+   "MEM_PEAK_GIB": "23",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "lfm25-exl3-6.0": {
+   "MEM_CEILING_GIB": "24",
+   "MEM_PEAK_GIB": "27",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-bolt-exl3-2.0": {
+   "MEM_CEILING_GIB": "32",
+   "MEM_PEAK_GIB": "36",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-bolt-exl3-2.5": {
+   "MEM_CEILING_GIB": "36",
+   "MEM_PEAK_GIB": "40",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-bolt-exl3-3.0": {
+   "MEM_CEILING_GIB": "40",
+   "MEM_PEAK_GIB": "44",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-bolt-exl3-3.5": {
+   "MEM_CEILING_GIB": "44",
+   "MEM_PEAK_GIB": "48",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-bolt-exl3-4.0": {
+   "MEM_CEILING_GIB": "48",
+   "MEM_PEAK_GIB": "52",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-bolt-exl3-5.0": {
+   "MEM_CEILING_GIB": "56",
+   "MEM_PEAK_GIB": "60",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-bolt-exl3-6.0": {
+   "MEM_CEILING_GIB": "65",
+   "MEM_PEAK_GIB": "69",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-bolt-iq2": {
+   "MEM_CEILING_GIB": "33",
+   "MEM_PEAK_GIB": "37",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-lightning-bf16": {
+   "MEM_CEILING_GIB": "65",
+   "MEM_PEAK_GIB": "68",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-super-vl-exl3-2.0": {
+   "MEM_CEILING_GIB": "50",
+   "MEM_PEAK_GIB": "54",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-super-vl-exl3-4.0": {
+   "MEM_CEILING_GIB": "78",
+   "MEM_PEAK_GIB": "82",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nemotron-super-vl-nvfp4": {
+   "MEM_CEILING_GIB": "80",
+   "MEM_PEAK_GIB": "86",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "nvfp4": {
+   "MEM_CEILING_GIB": "70",
+   "MEM_PEAK_GIB": "77",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  },
+  "ornith-1.5-122b-exl3-4.0": {
+   "MEM_CEILING_GIB": "86",
+   "MEM_PEAK_GIB": "90",
+   "QSE_ENGINE_ALLOC_CONF": "<unset>"
+  }
+ }
+}

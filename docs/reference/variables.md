@@ -560,7 +560,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_DASHBOARD_LOGIN` | `ops/serve.env, ops/start.sh, server/api/auth.py` and 1 more |
 | `QSE_DISK_ADOPT_FROM` | `ops/serve.env, server/diskcache.py` |
 | `QSE_DISK_CACHE` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh` and 12 more |
-| `QSE_ENGINE_ALLOC_CONF` | `engine/cache.py, ops/profiles/_flashnext.env, ops/start.sh` |
+| `QSE_ENGINE_ALLOC_CONF` | `engine/cache.py, ops/profiles/_flashnext.env, ops/profiles/_hy4.env` and 1 more |
 | `QSE_ENGINE_FLAGS` | `engine/models/nemotron_h/community.py, engine/models/qwen3_5/community.py, ops/engines.sh` and 11 more |
 | `QSE_ENGINE_PORT` | `ops/engine_status.py` |
 | `QSE_EXL3_BPW` | `ops/profiles/_exl3.env, ops/profiles/exl3-2.5.env, ops/profiles/exl3-3.0.env` and 4 more |

@@ -19,8 +19,10 @@ engines before.
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import random
+import re
 import shutil
 import signal
 import subprocess
@@ -405,7 +407,8 @@ def _start_with_fake_engine(drop: str, extra: str = "", procs=(), env=None,
 def test_the_profiles_allocator_setting_reaches_the_engine_only():
     """SPD-257: a weight profile's QSE_ENGINE_ALLOC_CONF (Flash-Next's: expandable segments) becomes the engine's
     PYTORCH_CUDA_ALLOC_CONF and nothing else's: the roles start without it. An operator's own value wins; without
-    the key the engine starts with none. Only the Flash-Next profile names it, serve.env does not."""
+    the key the engine starts with none. The Flash-Next and (ENG-609) Hy4-flash profiles name it, serve.env does
+    not."""
     def marks_of(extra="", env=None):
         r, marks = _start_with_fake_engine("0", extra, env=env, roles_probe=True)
         assert r.returncode == 0, r.stdout + r.stderr
@@ -422,9 +425,56 @@ def test_the_profiles_allocator_setting_reaches_the_engine_only():
             os.environ["PYTORCH_CUDA_ALLOC_CONF"] = keep
     named = sorted(f for f in os.listdir(os.path.join(OPS, "profiles"))
                    if "QSE_ENGINE_ALLOC_CONF" in open(os.path.join(OPS, "profiles", f)).read())
-    assert named == ["_flashnext.env"], named
+    assert named == ["_flashnext.env", "_hy4.env"], named
     assert "PYTORCH_CUDA_ALLOC_CONF" not in open(os.path.join(OPS, "serve.env")).read()
     return "the engine has it, the roles do not; an operator's value wins"
+
+
+#: ENG-609: the keys every weight profile's limits are pinned on, as ops/serve.env resolves them
+PROFILE_LIMIT_KEYS = ("QSE_ENGINE_ALLOC_CONF", "MEM_CEILING_GIB", "MEM_PEAK_GIB")
+
+
+def _profile_limits(profile: str | None) -> dict:
+    """`PROFILE_LIMIT_KEYS` as ops/serve.env resolves them with `profile` (QSE_PROFILE_OVERRIDE; None: no
+    profile), from a HOME whose serve.env REPO is this tree; `<unset>` for a key that is not set."""
+    root = os.path.dirname(OPS)
+    with tempfile.TemporaryDirectory() as home:
+        m = re.search(r"^REPO=\$\{HOME\}/(\S+)$", open(os.path.join(OPS, "serve.env")).read(), re.M)
+        os.symlink(root, os.path.join(home, m.group(1) if m else "qwen38-spark-engine"))
+        script = (f"set -a; . {OPS}/serve.env; "
+                  + "; ".join(f'echo "{k}=${{{k}-<unset>}}"' for k in PROFILE_LIMIT_KEYS))
+        env = {"HOME": home, "PATH": "/usr/bin:/bin"}
+        if profile:
+            env["QSE_PROFILE_OVERRIDE"] = profile
+        out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True).stdout
+        return dict(line.split("=", 1) for line in out.splitlines())
+
+
+def test_every_other_profiles_allocator_setting_and_limits_are_as_on_da76b01a():
+    """ENG-609: Hy4-flash takes Flash-Next's allocator setting and limits from its own measured load; no other
+    profile moves. Every profile's resolved QSE_ENGINE_ALLOC_CONF, MEM_CEILING_GIB and MEM_PEAK_GIB (serve.env
+    sourced as ops/start.sh sources it) equals the table taken on da76b01a (tests/fixtures/profile_limits.json),
+    except hy4-*, which take expandable segments and their profiles' new figures. A profile added later needs its
+    own row."""
+    golden = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                                         "profile_limits.json")))
+    assert tuple(golden["keys"]) == PROFILE_LIMIT_KEYS and golden["commit"] == "da76b01a", golden["keys"]
+    names = [""] + sorted(f[:-4] for f in os.listdir(os.path.join(OPS, "profiles"))
+                          if f.endswith(".env") and not f.startswith("_"))
+    assert sorted(golden["rows"]) == sorted(names), (sorted(set(names) ^ set(golden["rows"])))
+    moved, same = {}, 0
+    for name in names:
+        got = _profile_limits(name or None)
+        if name.startswith("hy4-"):
+            moved[name] = got
+            continue
+        assert got == golden["rows"][name], (name or "(no profile)", got, golden["rows"][name])
+        same += 1
+    for name, got in moved.items():
+        assert got == {"QSE_ENGINE_ALLOC_CONF": "expandable_segments:True", "MEM_CEILING_GIB": "79",
+                       "MEM_PEAK_GIB": "81"}, (name, got)
+    assert sorted(moved) == ["hy4-3.08", "hy4-3.56"], sorted(moved)
+    return f"{same} profiles as on da76b01a; hy4-3.08 and hy4-3.56: expandable segments, 79 / 81"
 
 
 def test_the_service_drops_the_weights_page_cache_once_healthy():
