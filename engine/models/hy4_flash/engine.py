@@ -302,10 +302,15 @@ class Hy4FlashEngine(Hy4FlashRef):
         n = self.cuts.get(id(w))
         return (y if n is None else y[:, :n]).view(*x.shape[:-1], -1)
 
-    def head(self, n: torch.Tensor) -> torch.Tensor:
-        if self.kernels and hasattr(self.w("lm_head.weight"), "bf16_cached") and n.dtype == torch.bfloat16:
-            return torch.cat([self.head_rows(n[i:i + BLOCK]) for i in range(0, n.shape[0], BLOCK)])
-        return super().head(n)
+    def head(self, n: torch.Tensor, w=None) -> torch.Tensor:
+        w = self.w("lm_head.weight") if w is None else w
+        if self.kernels and hasattr(w, "bf16_cached") and n.dtype == torch.bfloat16:
+            return torch.cat([self.head_rows(n[i:i + BLOCK], w=w) for i in range(0, n.shape[0], BLOCK)])
+        if w is self.w("lm_head.weight"):
+            return super().head(n)
+        if not torch.is_tensor(w):
+            w = w.bf16_cached()
+        return self.lin(n, w)[:, :self.cfg.vocab_size]
 
     def lin1(self, x: torch.Tensor, w) -> torch.Tensor:
         if self.kernels and hasattr(w, "bf16_cached") and x.dtype == torch.bfloat16:
@@ -455,14 +460,22 @@ class Hy4FlashEngine(Hy4FlashRef):
         out = gates * main.unsqueeze(1) + branch
         return out.masked_fill(~live[:, None, None], 0.0)
 
+    def route_weights(self, x: torch.Tensor, gate_w: torch.Tensor, bias: torch.Tensor, k: int, scale: float,
+                      norm_prob: bool, fused: bool = False, lin=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Shared sigmoid-topk + optional renormalization router (reused by target layers and MoE drafters)."""
+        if fused and self.kernels:
+            return K_.router(x, gate_w, bias, k, scale, norm_prob)
+        scores = (lin or self.linr)(x, gate_w.float()).sigmoid()
+        idx = topk_stable(scores + bias.float(), k)[1]
+        wts = scores.gather(1, idx)
+        if norm_prob:
+            wts = wts / (self.rsum(wts) + 1e-20)
+        return idx, wts * scale
+
     def route_r(self, x: torch.Tensor, li: int, lin=None) -> tuple[torch.Tensor, torch.Tensor]:
         cfg, p = self.cfg, f"layers.{li}.mlp.gate."
-        scores = (lin or self.linr)(x, self.w(p + "weight").float()).sigmoid()
-        idx = topk_stable(scores + self.w(p + "e_score_correction_bias").float(), cfg.num_experts_per_tok)[1]
-        wts = scores.gather(1, idx)
-        if cfg.norm_topk_prob:
-            wts = wts / (self.rsum(wts) + 1e-20)
-        return idx, wts * cfg.routed_scaling_factor
+        return self.route_weights(x, self.w(p + "weight"), self.w(p + "e_score_correction_bias"),
+                                  cfg.num_experts_per_tok, cfg.routed_scaling_factor, cfg.norm_topk_prob, lin=lin)
 
     def group_keys_r(self, tks: torch.Tensor, li: int) -> torch.Tensor:
         """Token keys [M, r, D] of the group that ends at each row -> its pooled key [M, D] (before the rotary)."""
@@ -757,8 +770,8 @@ class Hy4FlashEngine(Hy4FlashRef):
             g = F.silu(self.lin1(x, self.w(p + "gate_proj.weight")))
             y = self.lin1(g * self.lin1(x, self.w(p + "up_proj.weight")), self.w(p + "down_proj.weight"))
             return K_.norm(y, self.w(p + "post_fc2_norm.weight"), eps)
-        idx, wts = K_.router(x, self.w(p + "gate.weight"), self.w(p + "gate.e_score_correction_bias"), cfg.num_experts_per_tok,
-                             cfg.routed_scaling_factor, cfg.norm_topk_prob)
+        idx, wts = self.route_weights(x, self.w(p + "gate.weight"), self.w(p + "gate.e_score_correction_bias"),
+                                      cfg.num_experts_per_tok, cfg.routed_scaling_factor, cfg.norm_topk_prob, fused=True)
         z = self.lin1(x, self.w(p + "routed_expert_down_proj.weight"))
         routed = self.lin1(self.combine(self.expert_pairs(z, idx, li, grouped=self.block_grouped), idx, wts), self.w(p + "routed_expert_up_proj.weight"))
         sp = p + "shared_experts."
@@ -805,15 +818,14 @@ class Hy4FlashEngine(Hy4FlashRef):
         y = (self.attend_r(q, K, valid, li).reshape(M, -1) * torch.sigmoid(gate))
         return self.rms_r(self.lin_rows(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
 
-    def expert_pairs(self, z: torch.Tensor, idx: torch.Tensor, li: int, grouped: bool = False) -> torch.Tensor:
-        """Every (row, slot) pair through its expert: [M * k, latent] fp32, unweighted. The clamp sits between
-        the kernels' two launches, on the gate|up buffer. `grouped`: the kernels that decode an expert's tiles
-        once for up to 8 of its pairs (a prompt chunk's pairs share experts); the same bits a pair."""
-        lim = self.cfg.swiglu_limit
+    def expert_pairs_bank(self, z: torch.Tensor, idx: torch.Tensor, bank=None, experts: tuple | None = None,
+                          lim: float | None = None, grouped: bool = False) -> torch.Tensor:
+        """Every (row, slot) pair through an explicit `MoEBank` or `(G, U, D)` bank: [M * k, latent] fp32."""
+        lim = self.cfg.swiglu_limit if lim is None else lim
         M, k = idx.shape
-        if li in self.banks:
+        if bank is not None:
             from tools import fn_kernels as FK
-            bank, mod = self.banks[li], FK._module()
+            mod = FK._module()
             flat = idx.reshape(-1).to(torch.int32).contiguous()
             order = FK.expert_order(idx.to(torch.int32)) if M > 1 else torch.empty(0, dtype=torch.int32, device=z.device)
             ygu = torch.empty(M * k, 2, bank.I, dtype=torch.bfloat16, device=z.device)
@@ -824,24 +836,38 @@ class Hy4FlashEngine(Hy4FlashRef):
                 mod.fn_moe_groups(flat, order, gt, ng)
                 xs = torch.empty(0, dtype=torch.float16, device=z.device)
                 mod.fn_moe_gu_group(z.contiguous(), gt, ng, k, bank.tr, bank.kb, bank.su, bank.sv, ygu, bank.ks[-1], xs)
-                ygu[:, 0].clamp_(max=lim)
-                ygu[:, 1].clamp_(min=-lim, max=lim)
+                if lim > 0:
+                    ygu[:, 0].clamp_(max=lim)
+                    ygu[:, 1].clamp_(min=-lim, max=lim)
                 mod.fn_moe_down_group(ygu, gt, ng, bank.tr, bank.kb, bank.su, bank.sv, yd, bank.ks[-1])
                 return yd
             mod.fn_moe_gu(z.contiguous(), flat, order, bank.tr, bank.kb, bank.su, bank.sv, ygu, bank.ks[-1])
-            ygu[:, 0].clamp_(max=lim)
-            ygu[:, 1].clamp_(min=-lim, max=lim)
+            if lim > 0:
+                ygu[:, 0].clamp_(max=lim)
+                ygu[:, 1].clamp_(min=-lim, max=lim)
             mod.fn_moe_down(ygu, flat, order, bank.tr, bank.kb, bank.su, bank.sv, yd, bank.ks[-1])
             return yd
-        p = f"layers.{li}.mlp.experts."
-        G, U, D = self.w(p + "gate_proj"), self.w(p + "up_proj"), self.w(p + "down_proj")
+        G, U, D = experts
         out = []
         for r in range(M):
             for e in idx[r].tolist():
-                g = F.linear(z[r:r + 1], G.weight(e, z.dtype)).clamp(max=lim)
-                u = F.linear(z[r:r + 1], U.weight(e, z.dtype)).clamp(min=-lim, max=lim)
+                g = F.linear(z[r:r + 1], G.weight(e, z.dtype))
+                u = F.linear(z[r:r + 1], U.weight(e, z.dtype))
+                if lim > 0:
+                    g, u = g.clamp(max=lim), u.clamp(min=-lim, max=lim)
                 out.append(F.linear(F.silu(g) * u, D.weight(e, z.dtype)).float())
         return torch.cat(out)
+
+    def expert_pairs(self, z: torch.Tensor, idx: torch.Tensor, li: int, grouped: bool = False) -> torch.Tensor:
+        """Every (row, slot) pair through its expert: [M * k, latent] fp32, unweighted. The clamp sits between
+        the kernels' two launches, on the gate|up buffer. `grouped`: the kernels that decode an expert's tiles
+        once for up to 8 of its pairs (a prompt chunk's pairs share experts); the same bits a pair."""
+        bank = self.banks.get(li)
+        experts = None
+        if bank is None:
+            p = f"layers.{li}.mlp.experts."
+            experts = (self.w(p + "gate_proj"), self.w(p + "up_proj"), self.w(p + "down_proj"))
+        return self.expert_pairs_bank(z, idx, bank=bank, experts=experts, lim=self.cfg.swiglu_limit, grouped=grouped)
 
     def combine(self, yd: torch.Tensor, idx: torch.Tensor, wts: torch.Tensor) -> torch.Tensor:
         """A row's pairs weighted and added in ascending expert id, in fp32, rounded once."""
@@ -918,8 +944,8 @@ class Hy4FlashEngine(Hy4FlashRef):
         rb = st.rb[M]
         return (rb["logits"].clone(), rb["hidden"].clone()) if clone else (rb["logits"], rb["hidden"])
 
-    def head_rows(self, n: torch.Tensor) -> torch.Tensor:
-        w = self.w("lm_head.weight")
+    def head_rows(self, n: torch.Tensor, w=None) -> torch.Tensor:
+        w = self.w("lm_head.weight") if w is None else w
         if self.kernels and hasattr(w, "bf16_cached"):
             from tools import fn_kernels as FK
             y = FK.dense(n.contiguous(), w)
@@ -1308,10 +1334,10 @@ class Hy4FlashEngine(Hy4FlashRef):
         y = (out * torch.sigmoid(gate).view(T, a.heads, a.v)).reshape(T, a.heads * a.v)
         return self._norm_v2(self.lin_prompt(y, self.w(p_ + "o_proj.weight")), self.w(p_ + "post_proj_norm.weight"))
 
-    def attend_chunk(self, q: torch.Tensor, K: torch.Tensor, allowed: torch.Tensor, li: int, w: tuple | None = None) -> torch.Tensor:
-        """q [t, heads, qk] over shared latents K [n, R + rope] with `allowed` [t, n] -> [t, heads, v]. `w`: another
-        layer's absorbed halves, sinks and head shape (a draft layer reading this model's latents)."""
-        wk, wv, sinks, a = w if w is not None else (self.wk[li], self.wv[li], self.sinks[li], self.cfg.attn(li))
+    def attend_chunk_latent(self, q: torch.Tensor, K: torch.Tensor, allowed: torch.Tensor, w: tuple,
+                            return_fp32: bool = False) -> torch.Tensor:
+        """q [t, heads, qk] over shared latents K [n, R + rope] -> latent mix [t, heads, R] before `wv`."""
+        wk, _, sinks, a = w
         R = self.cfg.kv_lora_rank
         qa = torch.einsum("thd,hdr->thr", q[..., :a.nope], wk).float()
         Kf = K.float()
@@ -1320,8 +1346,15 @@ class Hy4FlashEngine(Hy4FlashRef):
         s = torch.cat((s, sinks.expand(s.shape[0], -1, -1)), dim=-1)
         s = s - s.max(dim=-1, keepdim=True).values
         p = F.softmax(s, dim=-1)[..., :-1]
-        mix = (p @ Kf[:, :R]).to(self.dtype)
-        return torch.einsum("thr,hrv->thv", mix, wv)
+        mix = p @ Kf[:, :R]
+        return mix if return_fp32 else mix.to(self.dtype)
+
+    def attend_chunk(self, q: torch.Tensor, K: torch.Tensor, allowed: torch.Tensor, li: int, w: tuple | None = None) -> torch.Tensor:
+        """q [t, heads, qk] over shared latents K [n, R + rope] with `allowed` [t, n] -> [t, heads, v]. `w`: another
+        layer's absorbed halves, sinks and head shape (a draft layer reading this model's latents)."""
+        w = w if w is not None else (self.wk[li], self.wv[li], self.sinks[li], self.cfg.attn(li))
+        mix = self.attend_chunk_latent(q, K, allowed, w)
+        return torch.einsum("thr,hrv->thv", mix, w[1])
 
     def attend_lists(self, q: torch.Tensor, K: torch.Tensor, valid: torch.Tensor, li: int) -> torch.Tensor:
         """q [t, heads, qk], each row over its own latents K [t, n, R + rope] with `valid` [t, n]."""

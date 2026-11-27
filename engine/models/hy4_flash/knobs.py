@@ -20,6 +20,9 @@ KNOBS: dict[str, tuple] = {
     'HY4_ROW_TORCH': ('0', 'engine/models/hy4_flash/serving.py'),
     # the DFly2 draft layers (1) or plain decode only (0)
     'HY4_DFLY': ('1', 'engine/models/hy4_flash/serving.py'),
+    # standalone external DFly2 draft model path / HF repo (e.g. AngelSlim/Hy4-flash-DFly2-B6 or EXL3 quant),
+    # overriding the checkpoint's embedded dfly_layers.* when non-empty
+    'HY4_DFLY_MODEL': ('', 'engine/models/hy4_flash/serving.py'),
     # a drafted round as a tree: the cut may keep the draft layers' second token at a depth as a leaf beside the
     # chain (1), or the chain alone (0)
     'HY4_DFLY_SIBLINGS': ('0', 'engine/models/hy4_flash/serving.py'),

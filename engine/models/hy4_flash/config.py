@@ -104,7 +104,7 @@ class AttnShape:
 
 @dataclass
 class DFlyConfig:
-    """The DFly2 draft layers the checkpoint carries (`model.dfly_layers.*`)."""
+    """The DFly2 draft layers: embedded (`dfly_layers.*`) or standalone `HY4DFlyDraftModel` (`layers.*`)."""
     layers: int                         # draft layers
     mask_token_id: int
     index_layers: list[int]             # target layer whose indexer picks draft layer i reads
@@ -112,6 +112,24 @@ class DFlyConfig:
     index_topk: int                     # context tokens a draft layer reads beside its block
     draft_tokens: int                   # tokens a round drafts (Tencent's serving configs: 5)
     intermediate_size: int | None = None    # the draft MLP's width; None: from the weights
+    mlp_type: str = "dense"             # "dense" | "moe"
+    num_experts: int = 0
+    num_experts_per_tok: int = 0
+    latent_size: int = 0
+    moe_intermediate_size: int = 0
+    shared_intermediate_size: int = 0
+    routed_scaling_factor: float = 1.0
+    norm_topk_prob: bool = True
+    swiglu_limit: float = 0.0
+    attentive_correction: bool = False
+    attentive_source_layer: int = -1
+    attentive_block_keys: bool = False
+    attentive_block_mode: str = "gated"
+    attentive_block_kv_in: str = "hidden_embed"
+    hidden_correction_intermediate_size: int = 0
+    prefix: str = "dfly_layers."
+    norm_name: str = "final_norm.weight"
+    path: str = ""
 
 
 @dataclass
@@ -393,11 +411,83 @@ def validate(cfg: Hy4FlashConfig, t: dict, top: dict) -> None:
             raise ValueError("engram_lookup_table_size must cover engram_pad_id")
     d = cfg.dfly
     if d is not None:
-        if len(d.index_layers) != d.layers or len(d.kv_layers) != d.layers:
-            raise ValueError("DFly needs one target layer a draft layer")
-        for li in d.index_layers + d.kv_layers:
-            if not 1 <= li < n or cfg.layer_types[li] != SPARSE:
-                raise ValueError(f"DFly target layer {li} must be a sparse attention layer")
+        validate_dfly(d, cfg)
+
+
+def validate_dfly(d: DFlyConfig, cfg: Hy4FlashConfig) -> None:
+    """Validate a DFly2 configuration (embedded or standalone external) against `cfg`."""
+    n = cfg.num_hidden_layers
+    if len(d.index_layers) != d.layers or len(d.kv_layers) != d.layers:
+        raise ValueError("DFly needs one target layer a draft layer")
+    for li in d.index_layers + d.kv_layers:
+        if not 1 <= li < n or cfg.layer_types[li] != SPARSE:
+            raise ValueError(f"DFly target layer {li} must be a sparse attention layer")
+    if d.mlp_type not in ("dense", "moe"):
+        raise ValueError(f"DFly draft_mlp_type={d.mlp_type!r}: dense or moe")
+    if d.mlp_type == "moe" and not 0 < d.num_experts_per_tok <= d.num_experts:
+        raise ValueError("DFly num_experts_per_tok out of range")
+
+
+def dfly_config_from_dict(raw: dict, target: Hy4FlashConfig, path: str = "") -> DFlyConfig:
+    """Parse a standalone `HY4DFlyDraftModel` / `hy4_angelspec_draft` config against a loaded target config."""
+    nd = int(raw["num_hidden_layers"])
+
+    def per_layer(v):
+        return [int(v)] * nd if isinstance(v, int) else [int(x) for x in v]
+
+    for field_name, want in (
+        ("hidden_size", target.hidden_size),
+        ("kv_lora_rank", target.kv_lora_rank),
+        ("q_lora_rank", target.q_lora_rank),
+        ("qk_nope_head_dim", target.sparse_attn.nope),
+        ("qk_rope_head_dim", target.sparse_attn.rope),
+        ("v_head_dim", target.sparse_attn.v),
+        ("num_attention_heads", target.sparse_attn.heads),
+    ):
+        if field_name in raw:
+            _check(f"dfly.{field_name}", int(raw[field_name]), want)
+    block_size = int(raw.get("block_size", int(raw.get("draft_tokens", 5)) + 1))
+    sample_anchor = bool(raw.get("sample_from_anchor", False))
+    draft_tokens = block_size if sample_anchor else block_size - 1
+    moe_i = int(raw.get("moe_intermediate_size", 0))
+    n_sh = int(raw.get("num_shared_experts", 1))
+    d = DFlyConfig(
+        layers=nd,
+        mask_token_id=int(raw["mask_token_id"]),
+        index_layers=per_layer(raw["target_index_layer"]),
+        kv_layers=per_layer(raw["target_kv_layers"]),
+        index_topk=int(raw.get("target_index_topk", target.index_topk)),
+        draft_tokens=draft_tokens,
+        intermediate_size=raw.get("intermediate_size"),
+        mlp_type=str(raw.get("draft_mlp_type", "dense")),
+        num_experts=int(raw.get("num_experts", 0)),
+        num_experts_per_tok=int(raw.get("num_experts_per_tok", 0)),
+        latent_size=int(raw.get("routed_expert_hidden_size", moe_i)),
+        moe_intermediate_size=moe_i,
+        shared_intermediate_size=moe_i * n_sh,
+        routed_scaling_factor=float(raw.get("router_scaling_factor", 1.0)),
+        norm_topk_prob=bool(raw.get("route_norm", True)),
+        swiglu_limit=float(raw.get("swiglu_limit", 0.0)),
+        attentive_correction=bool(raw.get("attentive_correction", False)),
+        attentive_source_layer=int(raw.get("attentive_correction_source_layer", -1)),
+        attentive_block_keys=bool(raw.get("attentive_correction_block_keys", False)),
+        attentive_block_mode=str(raw.get("attentive_correction_block_mode", "gated")),
+        attentive_block_kv_in=str(raw.get("attentive_correction_block_kv_in", "hidden_embed")),
+        hidden_correction_intermediate_size=int(raw.get("hidden_correction_intermediate_size", target.hidden_size)),
+        prefix="layers.",
+        norm_name="norm.weight",
+        path=path,
+    )
+    validate_dfly(d, target)
+    return d
+
+
+def load_dfly_config(path: str, target: Hy4FlashConfig) -> DFlyConfig:
+    """Resolve `path` (local dir or HF repo) and parse its standalone DFly2 config."""
+    snap = resolve_snapshot(path)
+    with open(os.path.join(snap, "config.json")) as f:
+        raw = json.load(f)
+    return dfly_config_from_dict(raw, target, path=snap)
 
 
 def load_hy4_flash_config(path: str | None = None) -> Hy4FlashConfig:

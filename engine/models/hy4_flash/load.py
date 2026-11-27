@@ -77,7 +77,7 @@ class PackExperts:
 
 
 def load(path: str, device="cuda", dtype=torch.bfloat16, log=print, table_policy: str = "cold",
-         table_cache_bytes: int = 2 << 30, experts: bool = True, splits: bool = True):
+         table_cache_bytes: int = 2 << 30, experts: bool = True, splits: bool = True, skip_dfly: bool = False):
     """(pack, W, cuts, tables, banks, timing) of the pack at `path`."""
     t0 = time.time()
     pack = Hy4Pack.open(path)
@@ -104,9 +104,9 @@ def load(path: str, device="cuda", dtype=torch.bfloat16, log=print, table_policy
         if N is not None and w.N != N:
             cuts[id(w)] = N
         return w
-    for base, N, _ in projections(c, experts=False, dfly_mlp=pack.dfly_mlp):
+    for base, N, _ in projections(c, experts=False, dfly_mlp=0 if skip_dfly else pack.dfly_mlp):
         W[base + ".weight"] = proj(base, N, out_fp32=base == "lm_head")
-    for name, _ in plain_names(c, dfly=pack.has_dfly):
+    for name, _ in plain_names(c, dfly=False if skip_dfly else pack.has_dfly):
         t = pack.read(name)
         if t.is_floating_point() and not (name.endswith(STORED) and dtype == torch.bfloat16):
             t = t.to(torch.float32 if name.endswith(FP32) and not name.startswith("dfly_layers.") else dtype)
@@ -140,3 +140,163 @@ def load(path: str, device="cuda", dtype=torch.bfloat16, log=print, table_policy
     timing["total_s"] = round(time.time() - t0, 2)
     log(f"[hy4] pack {path}: {'; '.join(notes)}; {len(tables)} Engram tables ({table_policy}); loaded in {timing['total_s']} s")
     return pack, W, cuts, tables, banks, timing
+
+
+DFLY_FP32 = ("learnable_sink_param", "expert_bias", "e_score_correction_bias",
+             "block_sink", "block_rel_bias", "block_gate_bias", "mlp.gate.weight")
+
+
+def _open_safetensors_index(snap: str) -> tuple[dict[str, str], dict]:
+    from safetensors import safe_open
+    idx_path = os.path.join(snap, "model.safetensors.index.json")
+    if os.path.isfile(idx_path):
+        with open(idx_path) as f:
+            files = sorted(set(json.load(f)["weight_map"].values()))
+    elif os.path.isfile(os.path.join(snap, "model.safetensors")):
+        files = ["model.safetensors"]
+    else:
+        raise FileNotFoundError(f"{snap}: no model.safetensors or model.safetensors.index.json")
+    handles = {fn: safe_open(os.path.join(snap, fn), framework="pt", device="cpu") for fn in files}
+    keymap: dict[str, tuple[str, object]] = {}
+    for fn, h in handles.items():
+        for raw_k in h.keys():
+            canon = raw_k[6:] if raw_k.startswith("model.") else raw_k
+            keymap[canon] = (raw_k, h)
+    return keymap, handles
+
+
+def _read_exl3_from_map(keymap: dict, base: str, device, out_fp32: bool = False):
+    from tools.exl3_linear import EXL3Block, unpack_signs
+
+    def get(suffix: str):
+        raw_k, h = keymap[f"{base}.{suffix}"]
+        return h.get_tensor(raw_k).to(device)
+
+    def sign(s: str, alt: str):
+        if f"{base}.{s}" in keymap:
+            return get(s)
+        return unpack_signs(get(alt)).to(device)
+
+    return EXL3Block(get("trellis"), sign("suh", "su"), sign("svh", "sv"), out_fp32=out_fp32)
+
+
+def _dfly_expected_widths(d, target_cfg) -> dict[str, int]:
+    """Expected unpadded output widths N for every external DFly2 projection."""
+    H, R, qr, a = target_cfg.hidden_size, target_cfg.kv_lora_rank, target_cfg.q_lora_rank, target_cfg.sparse_attn
+    Im, Lz, Is = d.moe_intermediate_size, d.latent_size, d.shared_intermediate_size
+    hc_i = d.hidden_correction_intermediate_size or H
+    out = {"mtp_fusion.eh_proj": H, "hidden_correction.gate_proj": hc_i,
+           "hidden_correction.up_proj": hc_i, "hidden_correction.down_proj": H}
+    for i in range(d.layers):
+        s = f"layers.{i}.self_attn."
+        out.update({s + "q_a_proj": qr, s + "q_b_proj": a.heads * a.qk, s + "kv_a_proj_with_mqa": R + a.rope,
+                    s + "kv_b_proj": a.heads * (a.nope + a.v), s + "linear_gate": a.heads * a.v, s + "o_proj": H})
+        m = f"layers.{i}.mlp."
+        if d.mlp_type == "moe":
+            out.update({m + "routed_expert_down_proj": Lz, m + "routed_expert_up_proj": H,
+                        m + "shared_experts.gate_proj": Is, m + "shared_experts.up_proj": Is, m + "shared_experts.down_proj": H})
+        else:
+            mi = d.intermediate_size or Im
+            out.update({m + "gate_proj": mi, m + "up_proj": mi, m + "down_proj": H})
+    if d.attentive_correction:
+        s = "hidden_correction.attention."
+        out.update({s + "q_in": qr, s + "q_b_proj": a.heads * a.qk, s + "kv_in": R + a.rope,
+                    s + "kv_b_proj": a.heads * (a.nope + a.v), s + "o_proj": H, s + "block_gate": a.heads})
+    return out
+
+
+def load_dfly_external(path: str, target_cfg, device="cuda", dtype=torch.bfloat16, log=print):
+    """Load standalone `HY4DFlyDraftModel` (BF16 AngelSlim or EXL3 pack) into `(DFlyConfig, W, cuts, banks)`."""
+    from engine.models.flashnext.ref import ExpertBank
+    from engine.models.hy4_flash.config import load_dfly_config
+    t0 = time.time()
+    d = load_dfly_config(path, target_cfg)
+    keymap, _ = _open_safetensors_index(d.path)
+    W, cuts, banks = {}, {}, {}
+    on_gpu = str(device).startswith("cuda")
+    widths = _dfly_expected_widths(d, target_cfg)
+    exl3_bases = {k[:-len(".trellis")] for k in keymap if k.endswith(".trellis")}
+
+    def read(name: str):
+        raw_k, h = keymap[name]
+        return h.get_tensor(raw_k)
+
+    for base in sorted(exl3_bases):
+        if ".mlp.experts." in base:
+            continue
+        N = widths.get(base)
+        if base.endswith("kv_b_proj"):
+            w = _read_exl3_from_map(keymap, base, device).dequant()
+            W[base + ".weight"] = (w[:N] if N is not None else w).to(dtype).contiguous()
+        else:
+            blk = _read_exl3_from_map(keymap, base, device)
+            if N is not None and blk.N != N:
+                cuts[id(blk)] = N
+            W[base + ".weight"] = blk
+
+    if d.mlp_type == "moe":
+        for i in range(d.layers):
+            p = f"layers.{i}.mlp.experts."
+            if f"{p}0.gate_proj" in exl3_bases:
+                blocks = [tuple(_read_exl3_from_map(keymap, f"{p}{e}.{w}", device)
+                                for w in ("gate_proj", "up_proj", "down_proj"))
+                          for e in range(d.num_experts)]
+                for j, w in enumerate(("gate_proj", "up_proj", "down_proj")):
+                    W[p + w] = PackExperts([b[j] for b in blocks])
+                if on_gpu:
+                    from tools.fn_kernels import MoEBank
+                    banks[i] = MoEBank([tuple((b.t, b.suh[0], b.svh) for b in e) for e in blocks], device)
+            elif f"{p}gate_up_proj" in keymap and f"{p}down_proj" in keymap:
+                # AngelSlim HY4DFlyDraftModel stores [E, 2*Im, Lz] (gate first) and [E, Lz, Im] ([E, out, in]).
+                gu = read(p + "gate_up_proj")
+                dn = read(p + "down_proj")
+                Im, Lz = d.moe_intermediate_size, d.latent_size
+                if gu.shape != (d.num_experts, 2 * Im, Lz) or dn.shape != (d.num_experts, Lz, Im):
+                    raise ValueError(
+                        f"DFly2 layer {i} expert shapes mismatch: gate_up_proj={tuple(gu.shape)}, "
+                        f"down_proj={tuple(dn.shape)}, expected ({d.num_experts}, {2 * Im}, {Lz}) and ({d.num_experts}, {Lz}, {Im})"
+                    )
+                W[p + "gate_proj"] = ExpertBank(dense=gu[:, :Im, :].to(device, dtype).contiguous())
+                W[p + "up_proj"] = ExpertBank(dense=gu[:, Im:, :].to(device, dtype).contiguous())
+                W[p + "down_proj"] = ExpertBank(dense=dn.to(device, dtype).contiguous())
+            else:
+                for w in ("gate_proj", "up_proj", "down_proj"):
+                    W[p + w] = ExpertBank(dense=torch.stack([read(f"{p}{e}.{w}.weight") for e in range(d.num_experts)]).to(device, dtype))
+
+    skip_suffixes = (".trellis", ".suh", ".svh", ".su", ".sv", ".mul1")
+    for k in sorted(keymap):
+        if k.endswith(skip_suffixes) or ".mlp.experts." in k or k + ".weight" in W:
+            continue
+        t = read(k)
+        if t.is_floating_point():
+            t = t.to(torch.float32 if k.endswith(DFLY_FP32) else dtype)
+        W[k] = t.to(device).contiguous()
+
+    dt = round(time.time() - t0, 2)
+    fmt = "exl3" if exl3_bases else "bf16"
+    log(f"[hy4] external DFly2 ({fmt}, {d.layers}L {d.mlp_type}) {d.path}: loaded in {dt} s")
+    return d, W, cuts, banks
+
+
+def load_draft_head_exl3(path: str, target_cfg, device="cuda", log=print):
+    """Load an EXL3 `lm_head` block from a checkpoint directory or single `.safetensors` file."""
+    from safetensors import safe_open
+    from tools.exl3_linear import EXL3Block, unpack_signs
+    p = os.path.expanduser(path)
+    if os.path.isfile(p):
+        files = [p]
+    else:
+        from engine.config import resolve_snapshot
+        snap = resolve_snapshot(p)
+        files = sorted(os.path.join(snap, f) for f in os.listdir(snap) if f.endswith(".safetensors"))
+    for fp in files:
+        with safe_open(fp, framework="pt", device=str(device)) as f:
+            keys = set(f.keys())
+            for base in ("lm_head", "model.lm_head"):
+                if base + ".trellis" in keys:
+                    def sign(s, alt):
+                        return f.get_tensor(f"{base}.{s}") if f"{base}.{s}" in keys else unpack_signs(f.get_tensor(f"{base}.{alt}")).to(device)
+                    blk = EXL3Block(f.get_tensor(base + ".trellis"), sign("suh", "su"), sign("svh", "sv"), out_fp32=True)
+                    log(f"[hy4] draft head from {path}: K{blk.kb}, {blk.nbytes / 1e9:.2f} GB")
+                    return blk, (target_cfg.vocab_size if blk.N != target_cfg.vocab_size else None)
+    raise RuntimeError(f"no lm_head.trellis in {path}")

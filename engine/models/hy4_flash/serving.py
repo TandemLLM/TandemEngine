@@ -223,8 +223,14 @@ class Hy4FlashServing:
         fn = self.fn
         seen, w = set(), 0
         objs = list(fn.W.values()) + list(fn.wk.values()) + list(fn.wv.values())
-        for bank in fn.banks.values():
-            objs += list(bank.keep)
+        for extra in (getattr(fn, "dfly_weights", None),):
+            if extra:
+                objs += list(extra.values())
+        for bank_map in (fn.banks, getattr(fn, "dfly_banks", None) or {}):
+            for bank in bank_map.values():
+                objs += list(bank.keep)
+        if getattr(fn, "draft_head", None) is not None:
+            objs.append(fn.draft_head)
         for o in objs:
             for t in _tensors(o):
                 s = t.untyped_storage()
@@ -451,13 +457,29 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
           kv_pool=None):
     """Hy4-flash for the server: the pack's weights, the engine in the loop's interface, the load-time
     self-check (a block's rows against the decode step's). Returns (serving, info)."""
-    from engine.models.hy4_flash.load import load
+    from engine.models.hy4_flash.load import load, load_dfly_external, load_draft_head_exl3
     from engine.settings import SETTINGS as _S
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    ext_dfly = (_S.get("HY4_DFLY_MODEL") or "").strip()
     pack, W, cuts, tables, banks, timing = load(path, device, log=log, table_policy=_S.get("HY4_TABLE"),
-                                                table_cache_bytes=int(float(_S.get("HY4_TABLE_CACHE_GB")) * (1 << 30)))
+                                                table_cache_bytes=int(float(_S.get("HY4_TABLE_CACHE_GB")) * (1 << 30)),
+                                                skip_dfly=bool(ext_dfly))
+    dfly_W, dfly_banks, draft_head = None, {}, None
+    if ext_dfly and _S.get("HY4_DFLY") == "1":
+        dfly_cfg, dfly_W, dfly_cuts, dfly_banks = load_dfly_external(ext_dfly, pack.cfg, device=device, log=log)
+        pack.cfg.dfly = dfly_cfg
+        cuts.update(dfly_cuts)
+    dh_path = (_S.get("DRAFT_HEAD_EXL3") or "").strip()
+    if dh_path and (ext_dfly or pack.has_dfly) and _S.get("HY4_DFLY") == "1":
+        draft_head, dh_cut = load_draft_head_exl3(dh_path, pack.cfg, device=device, log=log)
+        if dh_cut is not None:
+            cuts[id(draft_head)] = dh_cut
     mark("weights")
     eng = Hy4FlashEngine(pack.cfg, W, tables, device=device, max_len=max_len, banks=banks, cuts=cuts)
+    if dfly_W is not None:
+        eng.dfly_cfg, eng.dfly_weights, eng.dfly_banks = pack.cfg.dfly, dfly_W, dfly_banks
+    if draft_head is not None:
+        eng.draft_head = draft_head
     eng.prefill_grouped = _S.get("HY4_PREFILL_GROUPED") == "1"
     eng.row_torch = _S.get("HY4_ROW_TORCH") == "1"
     eng.prefill_experts = _S.get("HY4_PREFILL_EXPERTS")
@@ -485,7 +507,7 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
         res = eng.self_check(prompt, widths=(2, 4, 6), log=log, graphs=srv.graphs is not None)
         srv.restart()
     info = {"pack": path, "load": timing, "device": device, "self_check": res, "prompt_order": order, "quant": pack.quant,
-            "dfly": pack.has_dfly,
+            "dfly": bool(ext_dfly) or pack.has_dfly, "dfly_model": ext_dfly or None,
             "formats": timing.get("notes"), "tables": [t.report() for t in tables.values()]}
     return srv, info
 
@@ -519,7 +541,12 @@ def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print)
     from engine.models.hy4_flash.dfly import DFlyHead
     from engine.tokfp import fingerprint
     ng = NgramDrafter(corpus_path=corpus or "", tokenizer_sha=fingerprint(path), min_order=3, max_depth=16, min_corpus_order=8)
-    prices = PriceModel.load(os.path.join(ROOT, "ops", "prices", MODEL_ID, f"{profile_of(path)}.{device_id()}.json"), log=log)
+    pdir = os.path.join(ROOT, "ops", "prices", MODEL_ID)
+    prof, did = profile_of(path), device_id()
+    pfile = os.path.join(pdir, f"{prof}-dfly2.{did}.json") if getattr(srv.fn, "dfly_weights", None) is not None else ""
+    if not pfile or not os.path.isfile(pfile):
+        pfile = os.path.join(pdir, f"{prof}.{did}.json")
+    prices = PriceModel.load(pfile, log=log)
     head = DFlyHead(srv, graphs=srv.graphs is not None)
     srv.heads["dfly"] = head
     cut, freeze = priced_cut(prices, siblings=_S.get("HY4_DFLY_SIBLINGS") == "1", freeze=_S.get("HY4_DRAFT_FREEZE") == "1")

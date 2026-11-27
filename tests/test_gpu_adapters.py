@@ -243,6 +243,8 @@ ALLOWED = {
     "install.sh": "runs before the repository is on disk",
     # builds the third-party exllamav3 on a quantization box and logs its capability
     "tools/exl3/common.sh": "the third-party exllamav3 build, not this engine's kernels",
+    # offline HF RTX PRO 6000 calibration & quantization helper for DFly2-B6 (OPS-341)
+    "tools/hy4_dfly2_quant.py": "offline HF quantization helper for DFly2-B6 on RTX PRO 6000",
     # a stub nvidia-smi that plays a GB10 for the release gate's install check
     "tools/release_gate_setup.sh": "a stub nvidia-smi, not a choice",
 }
