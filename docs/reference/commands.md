@@ -191,7 +191,7 @@
 | `--dir DIR` | install directory (default ~/TandemLLM) |
 | `--port PORT` | the API port (default 8000) |
 | `--host ADDR` | the address to bind (default 127.0.0.1; 0.0.0.0 serves the LAN, with no auth on the OpenAI routes) |
-| `--ref REF` | the engine release: tag, branch or commit (default v0.17.1) |
+| `--ref REF` | the engine release: tag, branch or commit (default v0.17.2) |
 | `--repo URL` | the git repository to clone (default the public repository) |
 | `--hf-token TOKEN` | a Hugging Face token (or set HF\_TOKEN; a stored 'hf auth login' works too) |
 | `--no-corpus` | skip the lookup corpus (the lookup drafter then copies from the conversation only) |

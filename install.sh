@@ -57,7 +57,10 @@ set -euo pipefail
 # Pinned versions
 # ---------------------------------------------------------------------------------------------
 
-# The engine release. v0.17.1 fixes the Setup Guide's memory check after a long session and a
+# The engine release. v0.17.2 accelerates Hy4-flash with the standalone DFly2-B6 EXL3 3.5 drafter
+# and K3 draft head, staged grouped MoE and fused DFly2 row kernels, host-sync-free and joint burst
+# prefill, CUDA-graphed joint verify and packed draft rounds with 262k gcap bucketing, and
+# QSE_RUNNER_PIPE=1; v0.17.1 fixes the Setup Guide's memory check after a long session and a
 # reasoning close written as the model's first token (TandemApp Chat on Hy4-flash);
 # v0.17.0 adds Hy4-flash (the hy4-3.56 and hy4-3.08 profiles, up to 8 chats at
 # once on lanes that take turns) and structured outputs beside tools in the arg-key call form;
@@ -105,7 +108,7 @@ set -euo pipefail
 # engines. The raw path (X-Tandem: raw) decodes as in v0.3.0; v0.2.0-staircut is the StairCut paper's
 # version (merge c111fa7).
 # Any tag, branch or commit of the repository works here (TANDEM_REF=main for the newest code).
-TANDEM_REF="${TANDEM_REF:-v0.17.1}"
+TANDEM_REF="${TANDEM_REF:-v0.17.2}"
 TANDEM_REPO="${TANDEM_REPO:-https://github.com/TandemLLM/TandemEngine.git}"
 
 # The weights. The base checkpoint gives every tensor the NVFP4 overlays do not replace

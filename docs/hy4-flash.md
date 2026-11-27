@@ -1,6 +1,6 @@
 # Hy4-flash
 
-Tencent's Hy4-flash has about 220B parameters, and 64B of them are Engram n-gram tables. About 11B run for each token. The engine serves it from two of our EXL3 packs on one DGX Spark, up to 8 chats at once on lanes that take turns, text only. This page lists what the engine does with it, the limits a user meets, and what is not measured yet.
+Tencent's Hy4-flash has about 220B parameters, and 64B of them are Engram n-gram tables. About 11B run for each token. The engine serves it from two of our EXL3 packs on one DGX Spark, up to 8 chats at once with CUDA-graphed joint verify and joint burst prefill, text only. From 0.17.2, the default `hy4-3.56` profile drafts with the standalone 3-layer `DFly2-B6` (block size 6, 5 drafted tokens) EXL3 3.5 drafter and a K3 draft head beside the lookup. This page lists what the engine does with it, the limits a user meets, and what is not measured yet.
 
 ## The model
 
@@ -12,7 +12,7 @@ Tencent's Hy4-flash has about 220B parameters, and 64B of them are Engram n-gram
 | Engram | n-gram tables at four layers, 38.11 GiB in the packs, read from the SSD a row at a time |
 | state a token | 16,896 bytes (the 12 sparse layers' latents and indexer keys); the window layers keep rings of 17.7 MB a sequence |
 | context | 1,048,576 tokens in the checkpoint; the engine serves 262,144 |
-| draft layers | five DFly2 layers in the checkpoint |
+| draft layers | five embedded DFly2 layers in the checkpoint; `hy4-3.56` serves the standalone 3-layer `DFly2-B6` (block size 6) EXL3 3.5 drafter and K3 head (`QWEN38_HY4_DFLY_MODEL`, `QWEN38_DRAFT_HEAD_EXL3`) |
 | images | a vision tower in the pack, not served |
 
 *Hy4-flash as the engine runs it (`engine/models/hy4_flash`).*
@@ -28,13 +28,18 @@ Its reference forward (`ref.py`) follows transformers operation for operation an
 
 Both packs keep attention, the shared experts, the head and the Engram tables at 5 bits. Routed experts are at 3 bits in `hy4-3.08` and 3.5 bits in `hy4-3.56`, which was also calibrated on templated chat. Both packs carry the same four table files, 40.92 GB of each download. With both packs under `~/models`, `ops/fetch_weights.py` links the tables from the first pack instead of fetching them twice.
 
-Both repositories are public since 2026-11-22, so a download needs no Hugging Face token: [`0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5`](https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5) and [`0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0`](https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0). The Setup Guide and `ops/use-profile.sh hy4-3.56` read the weights from `~/models/hy4-flash-exl3-3.56` (and `-3.08`), and skip the download when the folder holds every file.
+Both target packs and both standalone `DFly2-B6` EXL3 drafters are public in [one Hugging Face collection](https://huggingface.co/collections/0xBakeer/hy4-flash-exl3-for-tandemllm-6b033035038e355b04930cb5) (no Hugging Face token needed):
+
+- Target packs: [`0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5`](https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5) and [`0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0`](https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0)
+- Standalone 3-layer `DFly2-B6` (block size 6) drafters (quantized from `AngelSlim/Hy4-flash-DFly2-B6` with K3/K4 EXL3 `lm_head` draft heads via `tools/hy4_dfly2_quant.py`): [`0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.5`](https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.5) (`1.60 GB`, required asset `hy4-dfly2-b6-3.5` for `hy4-3.56`) and [`0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.0`](https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.0) (`1.44 GB`, optional asset `hy4-dfly2-b6-3.0` via `QWEN38_HY4_DFLY_MODEL`).
+
+The Setup Guide and `ops/use-profile.sh hy4-3.56` read the weights from `~/models/hy4-flash-exl3-3.56` (and `-3.08`) and the drafter from `~/models/hy4-flash-dfly2-b6-exl3-3.5`, skipping downloads when every file is already on disk.
 
 Each KL column compares a pack with the unquantized BF16 checkpoint (revision `d88c9dfd`). Both sides ran through exllamav3's cache-less forward with our converter patch for this model. The reference is our forward of the BF16 weights, not Tencent's own stack, and the logits are stored in fp16. chat2048 is 16 rows of 2,048 tokens of wikitext-2 inside a templated turn with thinking off. conv2048 is 16 held-out conversations of 2,048 tokens from ultrachat. Two correct forwards of the same weights already differ by about KL 0.003 to 0.005 on such rows. On `hy4-3.08` this engine's own prompt pass scores KL 0.1009 and top-1 88.49 % on the chat2048 rows, so the engine adds nothing to the quantization there.
 
 ## Limits
 
-Up to 8 chats at once (ENG-485). Each lane is a side slot with the whole 262,144-token window on the shared KV pool: a lane's latents and indexer keys take pages only for the rows it holds, and an idle conversation goes to the park and the NVMe spill under memory pressure. The lanes take turns, a whole round each, with no joint pass yet, so two chats at once share the decode rate. The profiles run the round runner without its pipe (`QSE_RUNNER_PIPE=0`): with the pipe the drafter accepted fewer tokens a round on this family and one chat decoded 5.6 to 6.6 % slower on `hy4-3.56`, with the same text.
+Up to 8 chats at once (ENG-485, SPD-349). Each lane is a side slot with the whole 262,144-token window on the shared KV pool: a lane's latents and indexer keys take pages only for the rows it holds, and an idle conversation goes to the park and the NVMe spill under memory pressure. From 0.17.2, concurrent lanes run through CUDA-graphed joint verify passes (`HY4_ATTN_MULTI=1`, `HY4_JOINT_GRAPH=1`, padded buckets 4..64, up to 40 active rows at 8 lanes) and packed `DFly2` draft graphs (`HY4_PACK_GRAPH=1`), sharing one weight read per layer across active lanes. Sparse-indexer group scoring buckets its key width (`GCAP_BUCKETS` up to `65,536` groups at `262,144` tokens) so short contexts never score unpopulated groups, with identical bits to scoring all `65,536`. Concurrent prompt arrivals share one MoE forward per layer via joint burst prefill (`HY4_JOINT_PREFILL=1`, SPD-347), and long prefills yield between layers (`WINDOW_YIELD`) so an active decode keeps streaming. With `pre_commit_tree` wired into the round runner, the profiles run with `QSE_RUNNER_PIPE=1`, deferred runner host work overlapped behind GPU passes (`QSE_RUNNER_BUSY_WORK=1`), periodic runner GC (`QSE_RUNNER_GC=1`, full pass every 200 rounds), and a 1 s `/health` cache (`QSE_HEALTH_TTL_MS=1000`). Single-lane decode and verify also use staged streamed-row grouped experts (`HY4_MOE_AS=1`), one-launch hyper-connections (`HY4_HC_FUSED_MIN=16`), fused attention gating, `dense_rows` for the output head and multi-row blocks, and row-kernel `DFly2` drafting (`HY4_DFLY_FUSED=1`, SPD-345).
 
 The window is 262,144 tokens. Both packs ran at it through the server, and a run filled `hy4-3.08` to 262,144 real tokens. Each token of state costs 16,896 bytes, 4.13 GiB at the full window. The checkpoint reads 1,048,576 tokens, but no run went past 262,144.
 
@@ -93,6 +98,38 @@ The profiles ask for 97 GiB (`hy4-3.08`) and 101 GiB (`hy4-3.56`) of free memory
 
 ## Speed
 
+### 0.17.2 (`hy4-3.56` with `DFly2-B6` EXL3 3.5 + K3 head, `/v1/completions`)
+
+Measured on one DGX Spark on 2026-11-27 (`hy4-3.56`, `--max-len 262,144`, 8 lanes, `QSE_RUNNER_PIPE=1`, `HY4_JOINT_PREFILL=1`, `HY4_JOINT_GRAPH=1`, `HY4_PACK_GRAPH=1`, `cache_prompt: false`, `X-Tandem: raw`, thinking off, greedy, 3 rounds per workload, 74 requests total, 0 errors).
+
+Single-request decode and prompt prefill (3-round median):
+
+| workload | prompt -> output | decode tok/s | accepted / round | TTFT / wall | prefill tok/s | notes |
+|-|-|-|-|-|-|-|
+| `C1` | 3,538 -> 600 | 43.33 (38.30, 43.39, 43.33) | 3.37 (178 blocks) | 3.762 s | 940.5 | identical greedy text in 3 of 3 runs |
+| `short` | 42 -> 1 | — | — | 0.192 s | — | `HY4_PREFILL_FAST=1` |
+| `p8k` | 8,034 -> 1 | — | — | 8.841 s | 908.7 | single prompt |
+| `burst 2x` | 2 x ~3,518 (~7,036 total) | — | — | 7.229 s wall | 973.3 (up to 984.0) | `HY4_JOINT_PREFILL=1` |
+| `burst 4x` | 4 x ~2,016 (~8,065 total) | — | — | 8.067 s wall | 999.8 (up to 1,002.8) | `HY4_JOINT_PREFILL=1` |
+
+Concurrent decode (256 greedy tokens per request, 3-round median):
+
+| concurrency | aggregate end-to-end tok/s | observed steady tok/s | runner steady tok/s | ms / joint round | simultaneous rounds verified |
+|-|-|-|-|-|-|
+| `C2` (2 requests) | 47.75 | 48.92 | 51.6 | 98.4 | 274 (92 + 91 + 91) |
+| `C4` (4 requests) | 60.86 | 65.87 | 63.1 | 185.1 | 192 (64 + 65 + 63) |
+| `C8` (8 requests) | 76.72 | 85.06 | 81.5 | 274.1 | 194 (65 + 65 + 64) |
+
+Concurrent long prefill beside active decode (`D12`, inter-layer `WINDOW_YIELD`, 3-round median):
+
+| workload | prefill prompt | prefill wall | prefill tok/s | concurrent decode tok/s | max decode gap |
+|-|-|-|-|-|-|
+| `D12` | 12,334 tokens | 24.88 s | 495.7 | 12.22 | 0.340 s |
+
+Across the full 74-request run, `/health` recorded 942 of 942 joint verify passes replayed from 9 captured graphs (0 eager fallbacks, 3.05 s total capture), 933 packed draft graph replays from 35 captures (0 pool flushes), 0 late host-work flushes, 75.22 GB CUDA reserved (`32.14 GiB` `MemAvailable`), and 0 errors.
+
+### 0.17.0 baseline (embedded 5-layer DFly2, single chat request)
+
 Both packs ran in one session on 2026-11-20, on an idle box with the full 262,144-token window and each pack's own memory limits. Every figure is one prose chat request through the server: a 3,565-token prompt in the pack's template with thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence. This is not the measured table's shape, and the model card's table is empty until that run exists.
 
 | profile | plain, tok/s | DFly2 + lookup + StairCut, tok/s | tokens a drafted round | first token | load, start to healthy |
@@ -118,4 +155,4 @@ The weights are Tencent's, under the Tencent Hy License, Version 1.0, which each
 - Whether the table reader's rate caps the prompt pass. It reads a chunk's Engram rows on one thread before the layers, in one-submit slices of 256 (SPD-319). On both packs its rows equal the reads it replaced (`tools/hy4_check.py --only table-rows`). Under the fixed-order pass a 4,096-row chunk's reads take 465 to 535 ms. Inside a loaded engine the reader managed 20,000 to 37,000 reads a second on `hy4-3.56` and 41,000 to 100,000 on `hy4-3.08`, against 106,000 to 120,000 idle. Whether that limits the prefill rate was not tested.
 - The fixed-order pass's quality on sets other than chat2048. Its chunk independence on the device was measured by Gate 0 (R83, above), with the trunk pinned and in the one prompt order.
 - Why a follow-up's decode is sometimes slower on `hy4-3.56`: by 20 to 42 % per token on some resumed turns (from the session snapshot, the end, the end of the last prompt, or an anchor) against the same turn read cold, with the same blocks and the same accepted tokens. Seen before the end read too (hold 1b). A known limit of this release (SPD-335).
-- The prompt pass's fixed cost of about 100 ms a call, which the end read and a short follow-up's prefill both pay. Not cut in this release (SPD-337).
+- The prompt pass's short-prompt overhead was reduced by removing host reads and decoding packed Engram rows on the device (`HY4_PREFILL_FAST=1`, SPD-347): a 42-token cold prompt reaches its first token in 0.192 s on `hy4-3.56` (SPD-337). End-reread timings on 0.17.2 are not re-measured separately.

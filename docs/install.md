@@ -44,7 +44,7 @@ Run one engine per board. Two engines loading side by side run the board out of 
 Since 0.8.1 a new DGX Spark needs two commands and no Hugging Face token. Every file a profile reads is public on Hugging Face: our own packs, the vendors' releases, and turboderp's Flash-Next packs ([Qwen3.8-Flash-Next](flash-next.md)).
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/TandemLLM/TandemEngine/v0.17.1/install.sh
+curl -fsSLO https://raw.githubusercontent.com/TandemLLM/TandemEngine/v0.17.2/install.sh
 bash install.sh --setup --yes
 ```
 
@@ -80,7 +80,7 @@ bash ~/TandemLLM/run/ops/use-profile.sh <profile>
 
 A folder appears only when all its files are there. If a download stops, run the same command again: it keeps the files that finished and continues. The corrector file of `flashnext-3.05` is checked against the sha256 the profile pins. If it does not download, the script prints a warning and goes on, and Flash-Next drafts without it: the same text, fewer drafts accepted. The engine then needs about 80 GiB of free memory for a 27B profile and 70 GiB for `flashnext-3.05`. If the profile does not come up, the script brings setup mode back.
 
-The installer checks out the tag `v0.17.1` from the repository `--repo` names, the public one by default. Where the tag is missing, `curl` fails with a 404, and the installer stops at its clone step with “no tag, branch or commit 'v0.17.1'”. `--ref` picks another release, and `--repo` another repository.
+The installer checks out the tag `v0.17.2` from the repository `--repo` names, the public one by default. Where the tag is missing, `curl` fails with a 404, and the installer stops at its clone step with “no tag, branch or commit 'v0.17.2'”. `--ref` picks another release, and `--repo` another repository.
 
 ## Updating a box in setup mode
 
@@ -96,13 +96,13 @@ bash ~/TandemLLM/run/ops/use-profile.sh flashnext-3.05
 Without `--setup`, one command sets up the NVFP4 profile, StairCut included:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TandemLLM/TandemEngine/v0.17.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TandemLLM/TandemEngine/v0.17.2/install.sh | bash
 ```
 
 The installer works in seven steps, and each step is skipped when it is already done, so running it again updates an install and resumes a download that stopped.
 
 1. Checks. The GPU needs its driver and the CUDA compiler, the disk and the memory need room, and Hugging Face must answer.
-2. The engine: a clone of the repository `--repo` names into `~/TandemLLM/src` at the pinned release, `v0.17.1`.
+2. The engine: a clone of the repository `--repo` names into `~/TandemLLM/src` at the pinned release, `v0.17.2`.
 3. A Python venv in `~/TandemLLM/venv` with the pinned packages; torch and torchvision come from the CUDA 13.0 index. If neither `uv` nor Python 3.11 is on the machine, the installer fetches `uv` first.
 4. The weights, into the normal Hugging Face cache: the vendor's FP8 checkpoint (it supplies the tensors the NVFP4 overlays do not replace, and the tokenizer), the four NVFP4 files and both fine-tuned drafters. With `--setup`, only Wren's model; `use-profile.sh` fetches the rest later.
 5. A lookup corpus built from public text (one English and one German Wikipedia shard, plus Python sources from the venv's own packages, about 31 million tokens). `--no-corpus` skips it. With `--setup`, only the two shards: `use-profile.sh` builds the corpus for the model it installs, under `corpus/tokenizers/`, with no network.

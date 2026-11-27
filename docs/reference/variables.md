@@ -362,11 +362,20 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QWEN38_HEAD_GEMM` | `none` | `tools/head_gemv.py` |
 | `QWEN38_HOST_ASYNC` | `0` | `engine/model.py` |
 | `QWEN38_HOST_WALK` | `0` | `1` · `engine/drafters/dflash2.py` |
+| `QWEN38_HY4_ATTN_MULTI` | `1` | `engine/models/hy4_flash/engine.py` |
 | `QWEN38_HY4_DFLY` | `1` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_DFLY_FUSED` | `1` | `engine/models/hy4_flash/dfly.py` |
+| `QWEN38_HY4_DFLY_MODEL` | `none` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_DFLY_SIBLINGS` | `0` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_DRAFT_FREEZE` | `1` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_GRAPHS` | `1` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_HC_FUSED_MIN` | `16` | `engine/models/hy4_flash/kernels.py` |
+| `QWEN38_HY4_JOINT_GRAPH` | `1` | `engine/models/hy4_flash/engine.py` |
+| `QWEN38_HY4_JOINT_PREFILL` | `1` | `engine/models/hy4_flash/joint_prefill.py` |
+| `QWEN38_HY4_MOE_AS` | `1` | `engine/models/hy4_flash/engine.py` |
+| `QWEN38_HY4_PACK_GRAPH` | `1` | `engine/models/hy4_flash/dfly.py` |
 | `QWEN38_HY4_PREFILL_EXPERTS` | `group` | `engine/models/hy4_flash/serving.py` |
+| `QWEN38_HY4_PREFILL_FAST` | `1` | `engine/models/hy4_flash/engine.py` |
 | `QWEN38_HY4_PREFILL_GROUPED` | `1` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_PREFILL_V2` | `1` | `engine/models/hy4_flash/serving.py` |
 | `QWEN38_HY4_ROW_TORCH` | `0` | `engine/models/hy4_flash/serving.py` |
@@ -533,7 +542,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_ADVERTISE` | `ops/serve.env, server/pairing/mdns.py, server/remote/overlay.py` |
 | `QSE_ALLOW_FROM` | `ops/serve.env, server/api/access.py, server/app.py` and 4 more |
 | `QSE_ANSWER_RESERVE` | `server/app.py` |
-| `QSE_ASSETS` | `engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env` and 17 more |
+| `QSE_ASSETS` | `engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env` and 18 more |
 | `QSE_BACKENDS` | `install.sh, ops/engines.sh, ops/serve.env` and 5 more |
 | `QSE_BARRIER_IDLE_OWNER` | `ops/serve.env, server/slots.py` |
 | `QSE_CAPTURE_GUARD_DEBUG` | `engine/capture_lock.py` |
@@ -580,7 +589,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_GRAPH_SET_MIN_IDLE_S` | `server/app.py` |
 | `QSE_GUARD_MARGIN_GB` | `server/app.py` |
 | `QSE_HANDLER_TIMEOUT_S` | `server/app.py` |
-| `QSE_HEALTH_TTL_MS` | `ops/profiles/_flashnext.env, server/app.py, server/health_cache.py` |
+| `QSE_HEALTH_TTL_MS` | `ops/profiles/_flashnext.env, ops/profiles/_hy4.env, server/app.py` and 1 more |
 | `QSE_HY4_BPW` | `ops/profiles/_hy4.env, ops/profiles/hy4-3.08.env, ops/profiles/hy4-3.56.env` |
 | `QSE_IMAGE_BACKEND` | `server/app.py` |
 | `QSE_KV_ADMIT_ROWS` | `ops/serve.env, server/app.py` |
@@ -665,11 +674,11 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_ROLE_UNLOAD_LAYA` | `ops/serve.env, server/app.py, server/rolemem.py` |
 | `QSE_ROUND_RUNNER` | `server/round_runner.py` |
 | `QSE_ROUND_WALK` | `server/app.py` |
-| `QSE_RUNNER_BUSY_WORK` | `ops/profiles/_flashnext.env, server/api/live.py, server/health_cache.py` and 1 more |
+| `QSE_RUNNER_BUSY_WORK` | `ops/profiles/_flashnext.env, ops/profiles/_hy4.env, server/api/live.py` and 2 more |
 | `QSE_RUNNER_COMMIT_MULTI` | `server/round_runner.py` |
 | `QSE_RUNNER_COUNTERS` | `engine/models/flashnext/serving.py, server/round_runner.py` |
-| `QSE_RUNNER_GC` | `engine/cache.py, ops/profiles/_flashnext.env, server/app.py` and 1 more |
-| `QSE_RUNNER_GC_FULL_ROUNDS` | `ops/profiles/_flashnext.env, server/round_runner.py` |
+| `QSE_RUNNER_GC` | `engine/cache.py, ops/profiles/_flashnext.env, ops/profiles/_hy4.env` and 2 more |
+| `QSE_RUNNER_GC_FULL_ROUNDS` | `ops/profiles/_flashnext.env, ops/profiles/_hy4.env, server/round_runner.py` |
 | `QSE_RUNNER_HOST_BLOCKS` | `engine/models/flashnext/serving.py, server/round_runner.py` |
 | `QSE_RUNNER_JOINT1` | `engine/model.py, engine/models/qwen3_5/joint_graphs.py, server/round_runner.py` |
 | `QSE_RUNNER_JOINT_PRICE` | `server/round_runner.py` |
@@ -677,7 +686,7 @@ TandemEngine reads four families of settings. Engine switches are `QWEN38_*` var
 | `QSE_RUNNER_LANE_PLAIN` | `engine/models/nemotron_h/serving.py, server/round_runner.py` |
 | `QSE_RUNNER_LANE_PROBE` | `server/round_runner.py` |
 | `QSE_RUNNER_MTP_PACK` | `server/round_runner.py` |
-| `QSE_RUNNER_PIPE` | `engine/models/flashnext/engine.py, ops/profiles/_hy4.env, server/round_runner.py` |
+| `QSE_RUNNER_PIPE` | `engine/models/flashnext/engine.py, engine/models/hy4_flash/dfly.py, engine/models/hy4_flash/serving.py` and 3 more |
 | `QSE_RUNNER_PRICED_CUT` | `server/round_runner.py` |
 | `QSE_RUNNER_PRICED_EXPLORE` | `server/round_runner.py` |
 | `QSE_RUNNER_ROWCAP` | `server/app.py` |

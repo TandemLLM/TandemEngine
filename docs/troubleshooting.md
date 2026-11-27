@@ -4,7 +4,7 @@ Each entry is a symptom, what causes it, and what to do. `~/TandemLLM/bin/tandem
 
 ## Installing
 
-**The installer stops: no tag, branch or commit 'v0.17.1'.** The repository it clones has no such tag. The installer clones the repository `--repo` names, the public one by default, at the tag `--ref` names, `v0.17.1` by default. To install from another repository, such as a fork, pass its address with `--repo`. The same missing tag makes `curl` answer 404 for the installer's own URL.
+**The installer stops: no tag, branch or commit 'v0.17.2'.** The repository it clones has no such tag. The installer clones the repository `--repo` names, the public one by default, at the tag `--ref` names, `v0.17.2` by default. To install from another repository, such as a fork, pass its address with `--repo`. The same missing tag makes `curl` answer 404 for the installer's own URL.
 
 **`install.sh -{}-setup` refuses: the directory already has a configured engine.** A box that switched to a profile counts as configured, and `--setup` would stop that engine. To update it, add `--force-setup`, then run `use-profile.sh` with the profile again; its files are already on disk.
 
