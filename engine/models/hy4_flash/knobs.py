@@ -52,4 +52,11 @@ KNOBS: dict[str, tuple] = {
     # projections on dense_rows, the experts grouped; a packed round of any width drafts each lane's lone tokens), or
     # the torch arithmetic before (0). The draft's bits are its own either way; the target's verify decides the text
     'HY4_DFLY_FUSED': ('1', 'engine/models/hy4_flash/dfly.py'),
+    # SPD-347: the fixed-order prompt pass without host reads or copies (1: the rotary once a chunk, the read lists'
+    # bounds from the host's positions, the rotary and norms in place, the indexer's scores with the rows on the tile
+    # axis, the Engram rows' packed words to the device and decoded there; the same bits), or the pass before (0)
+    'HY4_PREFILL_FAST': ('1', 'engine/models/hy4_flash/engine.py'),
+    # SPD-347: a prefill burst's prompts in one pass (engine/models/hy4_flash/joint_prefill.py: each MoE layer's
+    # routed experts once over every prompt's rows, each prompt's bits its own prefill's), or each prompt alone (0)
+    'HY4_JOINT_PREFILL': ('1', 'engine/models/hy4_flash/joint_prefill.py'),
 }
