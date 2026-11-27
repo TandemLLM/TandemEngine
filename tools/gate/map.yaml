@@ -203,5 +203,6 @@ kernels:
       - tests/gpu/test_hy4_vdense_gpu.py
       - tests/gpu/test_hy4_prefill_grouped_gpu.py
       - tests/gpu/test_hy4_mla_rows_gpu.py
+      - tests/gpu/test_hy4_joint_kernels_gpu.py
       - tests/gpu/test_linear_rowinv_gpu.py
       - tests/gpu/test_fn_moe_grouped_pin_gpu.py

@@ -30,6 +30,15 @@ try:
     HAVE_TRITON = True
 except Exception:          # noqa: BLE001  (a Mac, a CPU venv: the reference only)
     HAVE_TRITON = False
+try:
+    import triton.language.extra.libdevice as _LD
+except Exception:          # noqa: BLE001
+    _LD = None
+
+#: SPD-345: a hyper-connection in one launch (`_hc_fused`) from this many rows, else the three launches (the same
+#: bits either way: the fused program runs their statements in their shapes). Below it the three launches keep more of
+#: the device busy (the mixes of a row are NMIX programs there, one here)
+HC_FUSED_MIN = 16
 
 #: the K block (fixed: an element's summation order)
 BK = 64
@@ -83,6 +92,84 @@ def mm_reference(a: torch.Tensor, b: torch.Tensor, bj: int | None = None) -> tor
     if a.shape[0] == 0:
         return torch.empty(0, a.shape[1], b.shape[2], dtype=torch.float32, device=a.device)
     return torch.stack([a[n].float() @ b[n % NB].float() for n in range(a.shape[0])])
+
+
+# ------------------------------------------------------------------------------------ the joint pass's lane reads
+# SPD-349: a joint verify pass holds the rows of several sequences; each row reads its own sequence's committed rows.
+# The sequences' buffers are separate tensors (paged or not, each reserved as one address range), so a row's lane names
+# a base address in a table (int64 device pointers, one a lane) and the kernels read there: the pass never depends on
+# which tensors the lanes hold, and a graph of it replays for any lanes. Both kernels compute what their one-lane forms
+# do (a copy; `_mm`'s statements in its shapes), so a row's bits are its lone pass's.
+
+if HAVE_TRITON:
+
+    @triton.jit
+    def _gather_lanes(OUT, IDX, FLAG, LANE, APTR, a_off, a_stride, BSRC, b_stride, n, C,
+                      BN: tl.constexpr, CB: tl.constexpr):
+        """out[r, j, :C] = FLAG[r, j] ? BSRC[IDX[r, j]] : lane(r)'s A[a_off + IDX[r, j]] (rows of C bf16)."""
+        r = tl.program_id(0).to(tl.int64)
+        j = tl.program_id(1) * BN + tl.arange(0, BN)
+        jm = j < n
+        c = tl.arange(0, CB)
+        cm = c < C
+        idx = tl.load(IDX + r * n + j, mask=jm, other=0).to(tl.int64)
+        fl = tl.load(FLAG + r * n + j, mask=jm, other=0) != 0
+        lane = tl.load(LANE + r)
+        abase = tl.load(APTR + lane).to(tl.pointer_type(tl.bfloat16))
+        m2 = jm[:, None] & cm[None, :]
+        va = tl.load(abase + a_off + idx[:, None] * a_stride + c[None, :], mask=m2 & ~fl[:, None], other=0.0)
+        vb = tl.load(BSRC + idx[:, None] * b_stride + c[None, :], mask=m2 & fl[:, None], other=0.0)
+        tl.store(OUT + (r * n + j[:, None]) * C + c[None, :], tl.where(fl[:, None], vb, va), mask=m2)
+
+    @triton.jit
+    def _mm_lanes(A, BPTR, LANE, C, I, J, K, b_off, sa_b, sa_i, sa_k, sb_k, sb_j, sc_b, sc_i, sc_j,
+                  BI: tl.constexpr, BJ: tl.constexpr, BK_: tl.constexpr):
+        """`_mm` (bf16 both, NB 1) with item n's b at its lane's base address + b_off: the same statements."""
+        pb = tl.program_id(0).to(tl.int64)
+        oi = tl.program_id(1) * BI + tl.arange(0, BI)
+        oj = tl.program_id(2) * BJ + tl.arange(0, BJ)
+        a_ptr = A + pb * sa_b
+        b_ptr = tl.load(BPTR + tl.load(LANE + pb)).to(tl.pointer_type(tl.bfloat16)) + b_off
+        acc = tl.zeros([BI, BJ], dtype=tl.float32)
+        for k0 in range(0, K, BK_):
+            ok = k0 + tl.arange(0, BK_)
+            a = tl.load(a_ptr + oi[:, None].to(tl.int64) * sa_i + ok[None, :].to(tl.int64) * sa_k,
+                        mask=(oi[:, None] < I) & (ok[None, :] < K), other=0.0)
+            b = tl.load(b_ptr + ok[:, None].to(tl.int64) * sb_k + oj[None, :].to(tl.int64) * sb_j,
+                        mask=(ok[:, None] < K) & (oj[None, :] < J), other=0.0)
+            acc += tl.dot(a, b)
+        tl.store(C + pb * sc_b + oi[:, None].to(tl.int64) * sc_i + oj[None, :].to(tl.int64) * sc_j, acc,
+                 mask=(oi[:, None] < I) & (oj[None, :] < J))
+
+
+def gather_lanes(idx: torch.Tensor, flag: torch.Tensor, lane: torch.Tensor, aptr: torch.Tensor, a_off: int, a_stride: int,
+                 bsrc: torch.Tensor, C: int) -> torch.Tensor:
+    """idx int64 [R, n] (contiguous), flag bool [R, n], lane int64 [R], aptr int64 [lanes] (bf16 bases) -> bf16 [R, n, C]:
+    a row's entries from its lane's buffer at a_off + idx * a_stride (flag 0) or from bsrc's row idx (flag 1)."""
+    R, n = idx.shape
+    out = torch.empty(R, n, C, dtype=torch.bfloat16, device=idx.device)
+    if R and n:
+        assert bsrc.stride(-1) == 1 and idx.is_contiguous() and flag.is_contiguous()
+        BN = 8 if C > 256 else 32
+        _gather_lanes[(R, triton.cdiv(n, BN))](out, idx, flag, lane, aptr, a_off, a_stride, bsrc, bsrc.stride(0), n, C,
+                                               BN=BN, CB=_pow2(C), num_warps=4)
+    return out
+
+
+def mm_lanes(a: torch.Tensor, bptr: torch.Tensor, lane: torch.Tensor, b_off: int, K: int, J: int, sb_k: int, sb_j: int,
+             bj: int | None = None) -> torch.Tensor:
+    """`mm(a, b)` where item n's b [K, J] (bf16, strides sb_k, sb_j) is at its lane's base + b_off -> fp32 [B, I, J], the
+    bits of `mm(a[n:n+1], b_lane)` for every n (a bf16)."""
+    Bn, I, Ka = a.shape
+    assert Ka == K and a.dtype == torch.bfloat16
+    out = torch.empty(Bn, I, J, dtype=torch.float32, device=a.device)
+    if Bn == 0 or I == 0 or J == 0:
+        return out
+    BJ = bj or (16 if J <= 16 else 32 if J <= 32 else 64)
+    _mm_lanes[(Bn, triton.cdiv(I, 16), triton.cdiv(J, BJ))](
+        a, bptr, lane, out, I, J, K, b_off, a.stride(0), a.stride(1), a.stride(2), sb_k, sb_j,
+        out.stride(0), out.stride(1), out.stride(2), BI=16, BJ=BJ, BK_=BK, num_warps=4)
+    return out
 
 
 # ------------------------------------------------------------------------------------ fused row kernels
@@ -241,6 +328,56 @@ if HAVE_TRITON:
         w = tl.load(W + k, mask=km, other=0.0).to(tl.float32)
         tl.store(XN + m * HD + k, (w * n).to(tl.bfloat16), mask=km)
 
+    @triton.jit
+    def _hc_fused(Hh, Y, POST, HOUT, FN, MIX, BASE, SCALE, W, XN, POSTO, HD, NMIX, hc_eps, mag, eps,
+                  S: tl.constexpr, NB: tl.constexpr, HB: tl.constexpr, INJECT: tl.constexpr, HEAD: tl.constexpr):
+        """SPD-345: `_hc_sq`, every `_hc_mix` and `_hc_apply` of a row in one program, statement for statement: the
+        same loads, the same block shapes and warps, so every `tl.sum` is the three launches' tree and the bits are
+        theirs. The mixes and the injected streams go through global memory between the phases, as before, behind a
+        barrier of the program's threads (a CTA's writes are seen by its own threads after `bar.sync`)."""
+        m = tl.program_id(0).to(tl.int64)
+        o = tl.arange(0, NB)
+        msk = o < S * HD
+        f = tl.load(Hh + m * S * HD + o, mask=msk, other=0.0)
+        if INJECT:
+            y = tl.load(Y + m * HD + o % HD, mask=msk, other=0.0).to(tl.float32)
+            p = tl.load(POST + m * S + o // HD, mask=msk, other=0.0)
+            f = (p * y + f.to(tl.float32)).to(tl.bfloat16)
+            tl.store(HOUT + m * S * HD + o, f, mask=msk)
+        ff = f.to(tl.float32)
+        tl.store(MIX + m * (NMIX + 1) + NMIX + tl.arange(0, 1), tl.sum(ff * ff, axis=0) + tl.zeros([1], dtype=tl.float32))
+        for j in range(NMIX):
+            w = tl.load(FN + j * S * HD + o, mask=msk, other=0.0)
+            tl.store(MIX + m * (NMIX + 1) + j + tl.arange(0, 1), tl.sum(ff * w, axis=0) + tl.zeros([1], dtype=tl.float32))
+        tl.debug_barrier()
+        js = tl.arange(0, S)
+        ms = tl.sum(tl.load(MIX + m * (NMIX + 1) + NMIX + tl.arange(0, 1)), axis=0) / (S * HD)
+        r = 1.0 / tl.sqrt(ms + eps)
+        s0 = tl.sum(tl.load(SCALE + tl.arange(0, 1)), axis=0)
+        pre = tl.sigmoid(tl.load(MIX + m * (NMIX + 1) + js) * r * s0 + tl.load(BASE + js)) + hc_eps
+        if not HEAD:
+            s1 = tl.sum(tl.load(SCALE + 1 + tl.arange(0, 1)), axis=0)
+            post = mag * tl.sigmoid(tl.load(MIX + m * (NMIX + 1) + S + js) * r * s1 + tl.load(BASE + S + js)) + hc_eps
+            tl.store(POSTO + m * S + js, post)
+        k = tl.arange(0, HB)
+        km = k < HD
+        h = tl.load(HOUT + m * S * HD + js[:, None] * HD + k[None, :], mask=km[None, :], other=0.0).to(tl.float32)
+        xf = tl.sum(pre[:, None] * h, axis=0).to(tl.bfloat16).to(tl.float32)
+        n = (xf * (1.0 / tl.sqrt(tl.sum(xf * xf, axis=0) / HD + eps))).to(tl.bfloat16).to(tl.float32)
+        w = tl.load(W + k, mask=km, other=0.0).to(tl.float32)
+        tl.store(XN + m * HD + k, (w * n).to(tl.bfloat16), mask=km)
+
+    @triton.jit
+    def _mul_sigmoid(X, G, OUT, N, BLK: tl.constexpr):
+        """out = x * sigmoid(g), bf16, torch's two operations' bits: the sigmoid 1 / (1 + exp(-g)) in fp32 with the
+        full-precision exp and an IEEE division (torch's CUDA sigmoid), rounded to bf16, the product in fp32 rounded."""
+        i = tl.program_id(0).to(tl.int64) * BLK + tl.arange(0, BLK)
+        msk = i < N
+        g = tl.load(G + i, mask=msk, other=0.0).to(tl.float32)
+        s = tl.math.div_rn(tl.full([BLK], 1.0, tl.float32), 1.0 + _LD.exp(-g)).to(tl.bfloat16)
+        x = tl.load(X + i, mask=msk, other=0.0).to(tl.float32)
+        tl.store(OUT + i, (x * s.to(tl.float32)).to(tl.bfloat16), mask=msk)
+
 
 if HAVE_TRITON:
 
@@ -307,6 +444,53 @@ def rot(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, d0: int) -> None:
     _rot[(B, G)](x, cos, sin, x.stride(0), x.stride(1), d0, P_, PB=_pow2(P_), num_warps=1)
 
 
+def rot_exact(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, d0: int) -> None:
+    """SPD-347: `rot` with every product rounded before the sum (no fused multiply-add): the bits of ref.py's
+    `rotate` (x * cos + rotate_half(x) * sin in fp32 as three torch operations, back to bf16), in place. The prompt
+    pass's rotary, which `rotate` defines; the row pass keeps `rot`."""
+    B, G, D = x.shape
+    P_ = cos.shape[1]
+    assert cos.is_contiguous() and sin.is_contiguous() and x.stride(2) == 1
+    _rot[(B, G)](x, cos, sin, x.stride(0), x.stride(1), d0, P_, PB=_pow2(P_), num_warps=1, enable_fp_fusion=False)
+
+
+if HAVE_TRITON:
+
+    @triton.jit
+    def _engram_decode(PK, HEADS, BIAS, CB, OUT, W, DIM, K: tl.constexpr, DB: tl.constexpr):
+        """One packed Engram row -> its DIM values bf16, table.py `decode_rows` statement for statement: the 16 state
+        bits of position i from stream bits ((i - m // K) mod DIM) K + m % K, the mul1 codebook value (fp16) times the
+        row's fp16 scale plus its head's bias, the product rounded before the sum (launched without fused
+        multiply-add), then bf16."""
+        n = tl.program_id(0).to(tl.int64)
+        i = tl.arange(0, DB)
+        msk = i < DIM
+        base = PK + n * W
+        scale = tl.load(base + tl.arange(0, 1)).to(tl.float16, bitcast=True).to(tl.float32)
+        state = tl.zeros([DB], dtype=tl.int32)
+        for m in tl.static_range(16):
+            s = ((i - m // K + DIM) % DIM) * K + m % K
+            wd = tl.load(base + 1 + s // 16, mask=msk, other=0).to(tl.int32) & 0xFFFF
+            state = state | (((wd >> (s % 16)) & 1) << m)
+        cb = tl.load(CB + state, mask=msk, other=0.0).to(tl.float32)
+        hd = tl.load(HEADS + n).to(tl.int64)
+        b = tl.load(BIAS + hd * DIM + i, mask=msk, other=0.0).to(tl.float32)
+        v = cb * tl.sum(scale, axis=0) + b
+        tl.store(OUT + n * DIM + i, v.to(tl.bfloat16), mask=msk)
+
+
+def engram_decode(packed: torch.Tensor, heads: torch.Tensor, bias: torch.Tensor, K: int, codebook: torch.Tensor,
+                  dim: int) -> torch.Tensor:
+    """packed int16 [N, 1 + dim K / 16] on the device, heads int [N], bias fp16 [n_heads, dim], codebook fp16 [65536]
+    -> bf16 [N, dim]: `table.decode_rows(...).to(torch.bfloat16)`'s bits in one launch."""
+    N, W = packed.shape
+    out = torch.empty(N, dim, dtype=torch.bfloat16, device=packed.device)
+    if N:
+        _engram_decode[(N,)](packed, heads, bias, codebook, out, W, dim, K=K, DB=_pow2(dim), num_warps=1,
+                             enable_fp_fusion=False)
+    return out
+
+
 def inject(h: torch.Tensor, y: torch.Tensor, post: torch.Tensor) -> torch.Tensor:
     B, S, H = h.shape
     out = torch.empty_like(h)
@@ -325,12 +509,29 @@ def hc(h: torch.Tensor, pend: tuple | None, fn: torch.Tensor, base: torch.Tensor
     y, post = pend if pend is not None else (h, mix)
     hout = torch.empty_like(h) if pend is not None else h
     NB = _pow2(S * H)
-    _hc_sq[(B,)](h, y, post, hout, mix, H, NMIX, S=S, NB=NB, INJECT=pend is not None, num_warps=8)
-    _hc_mix[(B, NMIX)](h, y, post, fn, mix, H, NMIX, S=S, NB=NB, INJECT=pend is not None, num_warps=8)
     xn = torch.empty(B, H, dtype=torch.bfloat16, device=h.device)
     posto = None if head else torch.empty(B, S, dtype=torch.float32, device=h.device)
+    if HC_FUSED_MIN and B >= HC_FUSED_MIN:
+        _hc_fused[(B,)](h, y, post, hout, fn, mix, base, scale, w, xn, mix if head else posto, H, NMIX, hc_eps, mag, eps,
+                        S=S, NB=NB, HB=_pow2(H), INJECT=pend is not None, HEAD=head, num_warps=8)
+        return xn, posto, hout
+    _hc_sq[(B,)](h, y, post, hout, mix, H, NMIX, S=S, NB=NB, INJECT=pend is not None, num_warps=8)
+    _hc_mix[(B, NMIX)](h, y, post, fn, mix, H, NMIX, S=S, NB=NB, INJECT=pend is not None, num_warps=8)
     _hc_apply[(B,)](hout, mix, base, scale, w, xn, mix if head else posto, H, NMIX, hc_eps, mag, eps, S=S, HB=_pow2(H), HEAD=head, num_warps=8)
     return xn, posto, hout
+
+
+def mul_sigmoid(x: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    """x * torch.sigmoid(g) for bf16 x, g of one shape (contiguous) in one launch, the two torch operations' bits."""
+    x, g = x.contiguous(), g.contiguous()
+    out = torch.empty_like(x)
+    N = x.numel()
+    _mul_sigmoid[(triton.cdiv(N, 1024),)](x, g, out, N, BLK=1024, num_warps=4)
+    return out
+
+
+def mul_sigmoid_ok() -> bool:
+    return HAVE_TRITON and _LD is not None and hasattr(tl.math, "div_rn")
 
 
 # ------------------------------------------------------------------------------------ the prompt pass's attention

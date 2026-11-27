@@ -41,4 +41,15 @@ KNOBS: dict[str, tuple] = {
     # first token after 4.9 to 6.6 s against 13.3 to 13.7 s, the cache tiers equal to a cold read, chat2048 KL 0.1015
     # against 0.1009. 0: the pass before, kept as the way back
     'HY4_PREFILL_V2': ('1', 'engine/models/hy4_flash/serving.py'),
+    # SPD-345: a verify block's grouped experts on the staged kernels (1: every pair's rows rotated once and streamed
+    # beside the tiles, the groups table from one 1024-thread block; the grouped kernels' bits), or the grouped kernels
+    # rotating a group's rows in each CTA (0, the path before)
+    'HY4_MOE_AS': ('1', 'engine/models/hy4_flash/engine.py'),
+    # SPD-345: a hyper-connection in one launch from this many rows (the three launches' statements in one program,
+    # their bits); 0: always the three launches
+    'HY4_HC_FUSED_MIN': ('16', 'engine/models/hy4_flash/kernels.py'),
+    # SPD-345: the DFly2 head on the row kernels (1: norms, rotary, softmax and attention on the row kernels, the
+    # projections on dense_rows, the experts grouped; a packed round of any width drafts each lane's lone tokens), or
+    # the torch arithmetic before (0). The draft's bits are its own either way; the target's verify decides the text
+    'HY4_DFLY_FUSED': ('1', 'engine/models/hy4_flash/dfly.py'),
 }
