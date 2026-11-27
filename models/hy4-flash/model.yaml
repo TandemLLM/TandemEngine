@@ -2,13 +2,14 @@
 #
 # Tencent's Hy4-flash (engine/models/hy4_flash) in our EXL3 packs, one profile each (ops/profiles/hy4-<bpw>.env), one
 # Hugging Face repository a pack with the weights on main. weights_gib: the server's load stage `weights` at
-# 262,144 tokens (58.52 on 3.08, 67.17 on 3.56); drafters_gib: the DFly2 layers' own stage (0.08), already in the
-# pack. disk_gb: the repository's bytes / 1e9 with the four Engram tables (40.92 GB, the same files in both packs).
-# table: the Engram tables, read past the page cache through a 2 GiB hot-row cache. max_window: both packs were
-# served at 262,144 tokens (the 3.08 pack also filled to 262,144 real tokens); the checkpoint reads 1,048,576, which
-# is not tested. Up to 8 lanes, each the full window on the KV pool, taking turns (no joint pass yet). Quality: our KL runs against the
-# unquantized checkpoint. The measured table is empty: the served speeds so far are one chat request each, not the
-# table's shape, and are in the profile notes with their setup.
+# 262,144 tokens (58.52 on 3.08, 67.17 on 3.56); drafters_gib: the embedded DFly2 layers' stage (0.08); hy4-3.56 adds
+# the standalone 3-layer DFly2-B6 (block size 6) EXL3 3.5 drafter and K3 head (hy4-dfly2-b6-3.5). disk_gb: the repository's bytes / 1e9
+# with the four Engram tables (40.92 GB, the same files in both packs). table: the Engram tables, read past the page
+# cache through a 2 GiB hot-row cache. max_window: both packs were served at 262,144 tokens (the 3.08 pack also filled
+# to 262,144 real tokens); the checkpoint reads 1,048,576, which is not tested. Up to 8 lanes, each the full window on
+# the KV pool, verified together via CUDA-graphed joint verify and joint burst prefill with QSE_RUNNER_PIPE=1 and 79/81
+# GiB memory limits. Quality: our KL runs against the unquantized checkpoint. The measured table is empty: the served
+# speeds so far are in the profile notes with their setup.
 schema: 1
 id: hy4-flash
 name: Hy4-flash
@@ -34,6 +35,12 @@ links:
   url: https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.0
 - label: EXL3 3.56 bpw
   url: https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-EXL3-3.5
+- label: DFly2-B6 EXL3 3.5
+  url: https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.5
+- label: DFly2-B6 EXL3 3.0
+  url: https://huggingface.co/0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.0
+- label: Collection
+  url: https://huggingface.co/collections/0xBakeer/hy4-flash-exl3-for-tandemllm-6b033035038e355b04930cb5
 devices:
 - id: dgx-spark
   label: NVIDIA DGX Spark (128 GB unified memory)
@@ -41,6 +48,42 @@ devices:
   reserved_gib: 10.0
   note: The GPU and the CPU share this memory. MemTotal reads 121.6 GiB of the 128 GB.
 assets:
+- id: hy4-dfly2-b6-3.5
+  label: DFly2-B6 draft model and K3 head (EXL3 3.5)
+  path: ${HOME}/models/hy4-flash-dfly2-b6-exl3-3.5/model.safetensors
+  also:
+  - ${HOME}/models/hy4-flash-dfly2-b6-exl3-3.5/config.json
+  - ${HOME}/models/hy4-flash-dfly2-b6-exl3-3.5/draft-head-lm_head-k3.safetensors
+  fetchable: true
+  protected: false
+  hf_repo: 0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.5
+  fetch:
+  - repo: 0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.5
+    files:
+    - config.json
+    - model.safetensors
+    - draft-head-lm_head-k3.safetensors
+    to: ${HOME}/models/hy4-flash-dfly2-b6-exl3-3.5
+    gb: 1.60
+  source: Public on Hugging Face (no token needed); standalone 3-layer DFly2-B6 (block size 6) drafter (EXL3 3.5) and K3 draft head, fetched with hy4-3.56 (ENG-617, OPS-341).
+- id: hy4-dfly2-b6-3.0
+  label: DFly2-B6 draft model and K3 head (EXL3 3.0)
+  path: ${HOME}/models/hy4-flash-dfly2-b6-exl3-3.0/model.safetensors
+  also:
+  - ${HOME}/models/hy4-flash-dfly2-b6-exl3-3.0/config.json
+  - ${HOME}/models/hy4-flash-dfly2-b6-exl3-3.0/draft-head-lm_head-k3.safetensors
+  fetchable: true
+  protected: false
+  hf_repo: 0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.0
+  fetch:
+  - repo: 0xBakeer/TandemLLM-Hy4-flash-DFly2-B6-EXL3-3.0
+    files:
+    - config.json
+    - model.safetensors
+    - draft-head-lm_head-k3.safetensors
+    to: ${HOME}/models/hy4-flash-dfly2-b6-exl3-3.0
+    gb: 1.44
+  source: Public on Hugging Face (no token needed); smaller standalone 3-layer DFly2-B6 (block size 6) drafter (EXL3 3.0) and K3 draft head, optional via QWEN38_HY4_DFLY_MODEL (ENG-617, OPS-341).
 - id: qwen3.5-2b
   label: Qwen3.5-2B (the narrator, and Wren)
   path: ${HOME}/.qwen38-spark-engine/models/qwen3.5-2b/config.json
@@ -107,10 +150,10 @@ profiles:
       correct implementations differ by about KL 0.003 to 0.005 on such rows.'
   assets_required: []
   note: 'Served speed, one prose chat request (3,565-token prompt rendered by the pack''s template, thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence, --max-len 262,144, idle box, 2026-11-20, both packs in one run): plain 23.78 and 24.12 tok/s,
-    drafted (DFly2 + lookup + StairCut over the pack''s price file) 32.08 and 33.02, 237 rounds for 599 tokens; the
-    drafted text equals the plain text. First token after 23.6 to 29.6 s on that prompt. Load 86.8 to 93.4 s, 138 to
-    144 s from start to healthy. After the load 63.9 to 64.0 GiB allocated, 73.4 to 73.8 reserved; the start took
-    the pack''s limits, ceiling 77 GiB and peak 84. Not in the measured table''s shape.'
+    drafted (embedded DFly2 + lookup + StairCut over the pack''s price file) 32.08 and 33.02, 237 rounds for 599 tokens; the
+    drafted text equals the plain text. First token after 23.6 to 29.6 s on that prompt (before the fixed-order prompt pass).
+    Load 86.8 to 93.4 s, 138 to 144 s from start to healthy; profile limits 79 GiB ceiling and 81 GiB peak (ENG-609).
+    The standalone DFly2-B6 EXL3 3.0 asset (hy4-dfly2-b6-3.0) is available via QWEN38_HY4_DFLY_MODEL. Not in the measured table''s shape.'
   hf_revision: main
   max_window: 262144
   table:
@@ -141,12 +184,14 @@ profiles:
       median 0.0187, top-1 90.54 %, reference top-1 in the top 5 99.58 %, perplexity 8.12 for the reference, 8.32 for
       the pack. conv2048 (held-out ultrachat test_sft conversations, 16 x 2,048): KL 0.0729, median 0.0033, top-1
       93.75 %, top 5 99.42 %. Two correct implementations differ by about KL 0.003 to 0.005 on such rows.'
-  assets_required: []
-  note: 'The default: the lower KL of the two packs on both row sets. Served speed, one prose chat request (3,565-token prompt rendered by the pack''s template, thinking off, 600 tokens, greedy, tok/s from token 50, two requests a server, one sequence, --max-len 262,144, idle box, 2026-11-20, both packs in one run):
-    plain 22.63 and 23.00 tok/s, drafted (DFly2 + lookup + StairCut over the pack''s price file) 27.81 and 28.37, 265
-    rounds for 599 tokens; the drafted text equals the plain text. First token after 27.0 to 31.5 s on that prompt.
-    Load 95.1 to 105.0 s, 147 to 165 s from start to healthy. After the load 72.5 to 72.7 GiB allocated, 73.4 to 73.8
-    reserved; the start took the pack''s limits, ceiling 85 GiB and peak 92. Not in the measured table''s shape.'
+  assets_required:
+  - hy4-dfly2-b6-3.5
+  note: 'The default: lower KL on both row sets, served with the standalone 3-layer DFly2-B6 (block size 6) EXL3 3.5 drafter and K3 head,
+    CUDA-graphed joint verify and joint burst prefill, QSE_RUNNER_PIPE=1, and 79/81 GiB memory limits (--max-len 262,144, 8 lanes).
+    Measured on /v1/completions (cache_prompt: false, thinking off, greedy, 3 rounds, 2026-11-27): single request
+    (3,538->600 tokens) 43.33 tok/s median, 3.37 tok/round, 3.76 s first token (940.5 tok/s), identical greedy text in 3 of 3
+    runs; 2/4/8 concurrent 256-token requests 47.75 / 60.86 / 76.72 tok/s end-to-end and 51.6 / 63.1 / 81.5 tok/s runner
+    steady. Not in the measured table''s shape.'
   hf_revision: main
   max_window: 262144
   table:
@@ -357,8 +402,8 @@ components:
   docs: docs/caches.md
   note: Compressed, up to SESSION_SPILL_GB (64 GB), inside the disk cache's folder.
 parallelism:
-  # ENG-485: side slots whose lanes take turns, serve.env's lane count, each the full window on the KV pool;
-  # no lane row measured yet
+  # ENG-485 / SPD-349: 8 lanes on the KV pool, each the full 262,144-token window, verified together in CUDA-graphed
+  # joint passes (with packed DFly2 draft graphs and joint burst prefill); measured table rows not recorded yet
   slots:
     min: 1
     max: 8
