@@ -59,4 +59,13 @@ KNOBS: dict[str, tuple] = {
     # SPD-347: a prefill burst's prompts in one pass (engine/models/hy4_flash/joint_prefill.py: each MoE layer's
     # routed experts once over every prompt's rows, each prompt's bits its own prefill's), or each prompt alone (0)
     'HY4_JOINT_PREFILL': ('1', 'engine/models/hy4_flash/joint_prefill.py'),
+    # SPD-349: a joint verify pass on the joint row pass (1: every lane's rows through each layer at once, each row
+    # reading its own lane's committed rows by address; a row's bits its lone pass's), or the per-lane pass (0)
+    'HY4_ATTN_MULTI': ('1', 'engine/models/hy4_flash/engine.py'),
+    # SPD-349: the joint row pass as CUDA graphs, one a padded row count (4 to 64) and form, captured at a key's first
+    # pass the round runner allows (1), or launched one by one (0); the same bits
+    'HY4_JOINT_GRAPH': ('1', 'engine/models/hy4_flash/engine.py'),
+    # SPD-349: a packed DFly2 round (several lanes' drafts in one pass) from its CUDA graph, one a set of heads (1), or
+    # launched one by one (0); the same bits
+    'HY4_PACK_GRAPH': ('1', 'engine/models/hy4_flash/dfly.py'),
 }

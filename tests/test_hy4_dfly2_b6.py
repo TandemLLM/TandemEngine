@@ -139,7 +139,7 @@ def _make_dfly2_checkpoint(root_dir: str, cfg, seed: int = 123) -> tuple[dict, d
 
     H, R, qr = cfg.hidden_size, cfg.kv_lora_rank, cfg.q_lora_rank
     a = cfg.sparse_attn
-    Im, Lz, Is, E = 24, 24, 24, 8
+    Im, Lz, Is, E = 32, 24, 28, 8
     raw_cfg = {
         "architectures": ["HY4DFlyDraftModel"],
         "model_type": "hy4_angelspec_draft",
@@ -223,9 +223,9 @@ def _make_dfly2_checkpoint(root_dir: str, cfg, seed: int = 123) -> tuple[dict, d
             p + "mlp.routed_expert_down_proj.weight": w((Lz, H)),
             p + "mlp.routed_expert_up_proj.weight": w((H, Lz)),
             p + "mlp.combine_output_norm.weight": norm(H),
-            # AngelSlim [E, in, out] layout
-            p + "mlp.experts.gate_up_proj": w((E, Lz, 2 * Im)),
-            p + "mlp.experts.down_proj": w((E, Im, Lz)),
+            # AngelSlim [E, 2*Im, Lz] and [E, Lz, Im] layout ([E, out, in], matching HYV4FlashExperts)
+            p + "mlp.experts.gate_up_proj": w((E, 2 * Im, Lz)),
+            p + "mlp.experts.down_proj": w((E, Lz, Im)),
             p + "mlp.shared_experts.gate_proj.weight": w((Is, H)),
             p + "mlp.shared_experts.up_proj.weight": w((Is, H)),
             p + "mlp.shared_experts.down_proj.weight": w((H, Is)),
@@ -300,10 +300,10 @@ def _angelspec_reference_run(raw_cfg: dict, raw_t: dict, eng: Hy4FlashEngine, st
         for r in range(Q):
             for slot in range(raw_cfg["num_experts_per_tok"]):
                 e = int(idx[r, slot])
-                gu = z[r:r + 1] @ gu_w[e]
+                gu = F.linear(z[r:r + 1], gu_w[e])
                 g_val = gu[:, :Im].clamp(max=lim)
                 u_val = gu[:, Im:].clamp(min=-lim, max=lim)
-                out_e = (F.silu(g_val) * u_val) @ d_w[e]
+                out_e = F.linear(F.silu(g_val) * u_val, d_w[e])
                 acc[r] += out_e[0].float() * wts[r, slot]
         routed = F.linear(acc.to(h.dtype), W[p + "mlp.routed_expert_up_proj.weight"])
         sh_g = F.silu(F.linear(x, W[p + "mlp.shared_experts.gate_proj.weight"]))
@@ -421,11 +421,234 @@ def test_dfly2_b6_external_load_and_parity():
         # Case 4: custom draft_head projection override
         head_custom = DFlyHead(srv, draft_head=Wt["lm_head.weight"] * 0.5)
         assert head_custom.draft_head is not None
-    return "BF16 external load, [E,in,out] unpack, MoE + AttentiveCorrection 3-step chain == AngelSpec reference"
+    return "BF16 external load, [E,out,in] (Im!=Lz) unpack, MoE + AttentiveCorrection 3-step chain == AngelSpec reference"
+
+
+@torch.no_grad()
+def test_forward_tree_multi_matches_single_lane_verify():
+    cfg = config_from_dict({**TOP, "text_config": dict(TINY, model_type="hy_v4_flash")}, "tiny")
+    Wt, tables = random_weights(cfg)
+    eng = Hy4FlashEngine(cfg, Wt, tables, dtype=torch.bfloat16, device="cpu", max_len=128)
+    assert Hy4FlashServing.caps.joint_verify and Hy4FlashServing.caps.joint_plain
+
+    # Lone baseline runs
+    p0 = [5, 7, 11, 13, 19, 23]                   # below index_topk=8
+    p1 = [4, 8, 12, 16, 20, 24, 28, 32, 36, 40]   # past index_topk=8 and sliding_window=4
+    b0, par0 = torch.tensor([17, 29, 31, 41]), [-1, 0, 1, 0]
+    b1, par1 = torch.tensor([18, 22, 26]), [-1, 0, 1]
+
+    s0_ref = Hy4FlashServing(eng, 128)
+    s1_ref, _ = s0_ref.side_slot(128, None)
+    s0_ref.forward(torch.tensor(p0), start=0)
+    s1_ref.forward(torch.tensor(p1), start=0)
+    want0 = s0_ref.forward_tree(b0, par0, start=len(p0)).clone()
+    want1 = s1_ref.forward_tree(b1, par1, start=len(p1)).clone()
+    want0_picks, want1_picks = s0_ref.picks.clone(), s1_ref.picks.clone()
+
+    # Joint pass across both lanes in one verify_multi call
+    s0 = Hy4FlashServing(eng, 128)
+    s1, _ = s0.side_slot(128, None)
+    s0.forward(torch.tensor(p0), start=0)
+    s1.forward(torch.tensor(p1), start=0)
+    got0, got1 = Hy4FlashServing.forward_tree_multi([
+        (s0, b0, par0, len(p0)),
+        (s1, b1, par1, len(p1)),
+    ])
+    assert torch.equal(got0, want0) and torch.equal(s0.picks, want0_picks)
+    assert torch.equal(got1, want1) and torch.equal(s1.picks, want1_picks)
+    Hy4FlashServing.commit_tree_multi([(s0, [0, 1, 2]), (s1, [0, 1])])
+    s0_ref.commit_tree([0, 1, 2])
+    s1_ref.commit_tree([0, 1])
+
+    # Plain 1-row decode_multi parity
+    d0 = s0_ref.forward_tree(torch.tensor([9]), [-1], start=s0_ref.kv.length).clone()
+    d1 = s1_ref.forward_tree(torch.tensor([12]), [-1], start=s1_ref.kv.length).clone()
+    jg0, jg1 = Hy4FlashServing.forward_tree_multi([
+        (s0, torch.tensor([9]), [-1], s0.kv.length),
+        (s1, torch.tensor([12]), [-1], s1.kv.length),
+    ])
+    assert torch.equal(jg0, d0) and torch.equal(jg1, d1)
+    return "2-lane mixed verify_multi & decode_multi match single-lane forward_tree bit-for-bit"
+
+
+@torch.no_grad()
+def test_dfly2_run_packed_and_pipe_pre_commit():
+    from engine.methods import draft_meet
+    from engine.methods.mtp_drafter import MTPTreeDrafter
+    from engine.methods.staircut import PriceModel, StairCut
+
+    cfg = config_from_dict({**TOP, "text_config": dict(TINY, model_type="hy_v4_flash")}, "tiny")
+    Wt, tables = random_weights(cfg)
+    with tempfile.TemporaryDirectory() as d:
+        _make_dfly2_checkpoint(d, cfg)
+        d_cfg, Wd, cuts, banks = load_dfly_external(d, cfg, device="cpu", dtype=torch.bfloat16)
+        cfg.dfly = d_cfg
+        eng = Hy4FlashEngine(cfg, Wt, tables, dtype=torch.bfloat16, device="cpu", max_len=64, cuts=cuts)
+        eng.dfly_cfg, eng.dfly_weights, eng.dfly_banks = d_cfg, Wd, banks
+
+        # 1. Batched run_packed vs individual runs across 3 lanes
+        lanes = [Hy4FlashServing(eng, 64)]
+        lanes.append(lanes[0].side_slot(64, None)[0])
+        lanes.append(lanes[0].side_slot(64, None)[0])
+        heads = [DFlyHead(s) for s in lanes]
+        prompts = [[4, 9, 13, 21, 31], [7, 11, 15, 19, 23, 27, 35, 39], [6, 12, 18, 24]]
+        anchors = [17, 29, 41]
+        ths = []
+        for s, h, p, anc in zip(lanes, heads, prompts, anchors):
+            s.forward(torch.tensor(p), start=0)
+            th = s.last_streams().clone()
+            ths.append(th)
+            h.stage(anc, th, s.st)
+            h.run(s.st)
+        want = [(h.buf["tok"].tolist(), h.buf["prob"].tolist()) for h in heads]
+
+        for h in heads:
+            h.buf["tok"].zero_()
+            h.buf["prob"].zero_()
+        DFlyHead.run_packed(heads)
+        for idx, h in enumerate(heads):
+            got_tok, got_prob = h.buf["tok"].tolist(), h.buf["prob"].tolist()
+            assert got_tok == want[idx][0], (idx, got_tok, want[idx][0])
+            dp = max(abs(a - b) for r1, r2 in zip(got_prob, want[idx][1]) for a, b in zip(r1, r2))
+            assert dp < 1e-4, dp
+
+        # 2. QSE_RUNNER_PIPE=1 ordering: sync(rows=path) -> launch() BEFORE commit_tree(path) -> commit_tree(path)
+        s_nopipe = Hy4FlashServing(eng, 64)
+        s_pipe = Hy4FlashServing(eng, 64)
+        h_nopipe, h_pipe = DFlyHead(s_nopipe), DFlyHead(s_pipe)
+        dr_nopipe = MTPTreeDrafter(s_nopipe, h_nopipe, StairCut(PriceModel({}, 1.0)), None)
+        dr_pipe = MTPTreeDrafter(s_pipe, h_pipe, StairCut(PriceModel({}, 1.0)), None)
+        dr_nopipe.wants_rows = dr_pipe.wants_rows = True
+
+        prompt = [4, 9, 13, 21, 31, 42]
+        for s, dr in ((s_nopipe, dr_nopipe), (s_pipe, dr_pipe)):
+            s.forward(torch.tensor(prompt), start=0)
+            dr.reset()
+            dr.sync(prompt, s.hidden_post_norm[0].clone(), 0)
+        blk = torch.tensor([17, 25, 33, 44])
+        par, path = [-1, 0, 1, 2], [0, 1, 2]
+        lg_np = s_nopipe.forward_tree(blk, par, start=len(prompt))
+        hid_np = s_nopipe.hidden_post_norm[0, path].clone()
+        lg_p = s_pipe.forward_tree(blk, par, start=len(prompt))
+        hid_p = s_pipe.hidden_post_norm[0, path].clone()
+        assert torch.equal(lg_np, lg_p)
+
+        # Non-piped: commit_tree BEFORE launch
+        s_nopipe.commit_tree(path)
+        dr_nopipe.sync([17, 25, 33], hid_np, len(prompt), rows=path)
+        h_nopipe.launch(hid_np[-1:], [33])
+        ref_tok, ref_prob = h_nopipe.read()
+
+        # Piped: sync(rows=path) -> launch() -> commit_tree(path)
+        saved_meet = draft_meet.MEET
+        draft_meet.MEET = None
+        try:
+            dr_pipe.sync([17, 25, 33], hid_p, len(prompt), rows=path)
+            h_pipe.launch(hid_p[-1:], [33])
+            pipe_tok, pipe_prob = h_pipe.read()
+            s_pipe.commit_tree(path)
+        finally:
+            draft_meet.MEET = saved_meet
+        assert h_pipe.stats["stale"] == 0 and s_pipe.kv.length == len(prompt) + len(path)
+        assert pipe_tok == ref_tok and pipe_prob == ref_prob
+    return "run_packed 3-lane parity & QSE_RUNNER_PIPE=1 pre_commit == QSE_RUNNER_PIPE=0 bit-for-bit"
+
+
+@torch.no_grad()
+def test_prefill_yields_between_layers_for_d12():
+    cfg = config_from_dict({**TOP, "text_config": dict(TINY, model_type="hy_v4_flash")}, "tiny")
+    Wt, tables = random_weights(cfg)
+    eng = Hy4FlashEngine(cfg, Wt, tables, dtype=torch.bfloat16, device="cpu", max_len=64)
+
+    # Lone references
+    s_pref_ref = Hy4FlashServing(eng, 64)
+    s_dec_ref, _ = s_pref_ref.side_slot(64, None)
+    p0 = [5, 7, 11, 13, 19, 23]
+    p1 = [6, 12, 18, 24]
+    s_dec_ref.forward(torch.tensor(p1), start=0)
+    want_pref = s_pref_ref.forward(torch.tensor(p0), start=0).clone()
+    want_dec = s_dec_ref.forward_tree(torch.tensor([17, 29, 31]), [-1, 0, 1], start=len(p1)).clone()
+
+    # Interleave side-slot decode in the middle of prefill's layer yield
+    s_pref = Hy4FlashServing(eng, 64)
+    s_dec, _ = s_pref.side_slot(64, None)
+    s_dec.forward(torch.tensor(p1), start=0)
+    yields = [0]
+    got_dec = [None]
+
+    def on_yield():
+        yields[0] += 1
+        if yields[0] == 2:
+            got_dec[0] = s_dec.forward_tree(torch.tensor([17, 29, 31]), [-1, 0, 1], start=len(p1)).clone()
+
+    eng.layer_yield = on_yield
+    try:
+        got_pref = s_pref.forward(torch.tensor(p0), start=0).clone()
+    finally:
+        eng.layer_yield = None
+
+    assert yields[0] == cfg.num_hidden_layers - 1, (yields[0], cfg.num_hidden_layers)
+    assert torch.equal(got_pref, want_pref) and torch.equal(got_dec[0], want_dec)
+    return f"prefill yielded {yields[0]} times per chunk; interleaved side decode & prefill bit-equal"
+
+
+@torch.no_grad()
+def test_quant_capture_and_probe_restore_smoke():
+    """Smoke-test tools/hy4_dfly2_quant.py cmd_capture + probe restore (`st.picks_at`) end-to-end on CPU."""
+    from types import SimpleNamespace
+    import engine.models.hy4_flash.load as hy4_load
+    from tools import hy4_dfly2_quant as qmod
+
+    cfg = config_from_dict({**TOP, "text_config": dict(TINY, model_type="hy_v4_flash")}, "tiny")
+    Wt, tables = random_weights(cfg)
+    for k, v in list(Wt.items()):
+        if torch.is_tensor(v) and v.is_floating_point() and not k.endswith(
+            ("hc_fn", "hc_base", "hc_scale", "hc_head_fn", "hc_head_base", "hc_head_scale",
+             "learnable_sink_param", "e_score_correction_bias", "key_value_projection.weight",
+             "key_gate_projection.weight", "intra_group_ape")
+        ):
+            Wt[k] = v.to(torch.bfloat16)
+        elif hasattr(v, "dense") and v.dense is not None:
+            v.dense = v.dense.to(torch.bfloat16)
+
+    with tempfile.TemporaryDirectory() as d:
+        dfly_dir = os.path.join(d, "dfly")
+        hess_dir = os.path.join(d, "hess")
+        calib_path = os.path.join(d, "calib.safetensors")
+        os.makedirs(dfly_dir)
+        _make_dfly2_checkpoint(dfly_dir, cfg)
+        ids = torch.randint(0, cfg.vocab_size, (4, 32), dtype=torch.int64)
+        lens = torch.full((4,), 32, dtype=torch.int64)
+        save_file({"input_ids": ids, "lengths": lens}, calib_path)
+
+        orig_load = hy4_load.load
+        hy4_load.load = lambda *a, **kw: (SimpleNamespace(cfg=cfg), dict(Wt), {}, tables, {}, {})
+        try:
+            qmod.cmd_capture(SimpleNamespace(
+                target="unused", dfly=dfly_dir, calib=calib_path, hess_dir=hess_dir,
+                seqs=2, prompt=12, blocks=2, probes=1, device="cpu",
+            ))
+            for k in ("mtp_fusion.eh_proj", "l0.attn_in", "l0.e0.gu", "l0.e0.down", "hc.in", "hc.kv_b_proj", "lm_head"):
+                assert os.path.isfile(os.path.join(hess_dir, f"{k}.pt")), f"missing Hessian {k}"
+            g_h = torch.load(os.path.join(hess_dir, "l0.e0.gu.pt"), map_location="cpu")["H"]
+            d_h = torch.load(os.path.join(hess_dir, "l0.e0.down.pt"), map_location="cpu")["H"]
+            assert g_h.shape == (24, 24) and d_h.shape == (32, 32), (g_h.shape, d_h.shape)
+            qmod.cmd_verify(SimpleNamespace(
+                target="unused", dfly="", quant_dir=dfly_dir, hess_dir=hess_dir, head_file="", device="cpu",
+            ))
+            rep = json.load(open(os.path.join(dfly_dir, "verify_report.json")))
+            assert rep["hidden_cos_mean"] > 0.9999 and rep["top1_match_full_head"] == 1.0, rep
+        finally:
+            hy4_load.load = orig_load
+    return "cmd_capture + cmd_verify BF16 probe restore smoke passed (Im=32 != Lz=24, stale=0)"
 
 
 if __name__ == "__main__":
     for fn in (test_dfly2_b6_config_parsing_matches_angelslim,
                test_split_rope_matches_interleaved_dot_product,
-               test_dfly2_b6_external_load_and_parity):
+               test_dfly2_b6_external_load_and_parity,
+               test_forward_tree_multi_matches_single_lane_verify,
+               test_dfly2_run_packed_and_pipe_pre_commit,
+               test_prefill_yields_between_layers_for_d12,
+               test_quant_capture_and_probe_restore_smoke):
         print(f"PASS {fn.__name__}: {fn()}")

@@ -233,7 +233,12 @@ GOLDEN_FP4 = {
     "flint": "b282e37d1f5d4acf22ba31b64e7f7056c408c453646ed11814b049398e0e0c8f",
     # Hy4-flash: a new family (its first golden), then the moves above; recomputed on hy4-m1's merge of hy4-m1-serve
     # and hy4-rowinv (2026-11-21): R83's, and every other family's holds
-    "hy_v4_flash": "e08ccbc870b719d9899bed731b64a8896f9d13d281efc67ecaa1f2f4c6dff933",
+    # ENG-617 / SPD-343: standalone HY4DFlyDraftModel (DFly2-B6), verify_multi/forward_tree_multi,
+    # DFlyHead.run_packed, QSE_RUNNER_PIPE=1 pre_commit, and D12 inter-layer prefill WINDOW_YIELD
+    # SPD-345 / SPD-347 / SPD-349: dense_rows heads/blocks, one-launch hc and gate, staged grouped experts, fused
+    # DFly2 head, host-read-free prompt pass + device Engram decode, joint_prefill.py, joint row pass + graphs,
+    # gcap bucketing, wk-transposed attend_r, SPD-223 leased capture streams & whole-pool flush, and pre_commit guard
+    "hy_v4_flash": "0e8d03e884f90769b104b3db90f079f3ad55e065707a8b3da12dc67cbf6198d5",
 }
 #: adapters the refactor may move once (the coordinator's OK, 2026-10-22): Flint's knobs leave the shared
 #: table and its kernels take the generic launch option

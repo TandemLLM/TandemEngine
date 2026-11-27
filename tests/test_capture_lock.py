@@ -311,8 +311,8 @@ def test_every_capture_in_the_engine_and_the_server_holds_the_lock():
                              "engine/drafters/lilicorr.py", "engine/drafters/lilicorr.py",
                              "engine/generative/qwen35.py"] + [
                              "engine/models/flashnext/engine.py"] * 6 + ["engine/models/flint/engine.py"] * 4 + [
-                             # Hy4-flash: its row pass (decode step and verify block, one site) and its DFly2 draft
-                             "engine/models/hy4_flash/dfly.py", "engine/models/hy4_flash/engine.py"] + [
+                             # Hy4-flash: row pass + joint verify pass (engine.py) and lone + packed DFly2 draft (dfly.py)
+                             "engine/models/hy4_flash/dfly.py"] * 2 + ["engine/models/hy4_flash/engine.py"] * 2 + [
                              "engine/models/lfm2_moe/engine.py"] * 4 + [
                              "engine/models/nemotron_h/engine.py"] * 4 + [
                              "engine/models/qwen3_5/joint_graphs.py", "engine/verify_graph.py"], found

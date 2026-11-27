@@ -340,8 +340,8 @@ def test_the_caps_carry_the_conductor_fit():
     `no_insertion_point`): its caps say `notes: False`, the key Flint declares for the same reason."""
     from engine.models.flint.serving import FlintServing
     assert Hy4FlashServing.caps.conductor == {"notes": False} == FlintServing.caps.conductor
-    # ENG-485: side slots whose lanes take turns
-    assert Hy4FlashServing.caps.side_slots and not Hy4FlashServing.caps.joint_verify and Hy4FlashServing.caps.caches
+    # ENG-485 / SPD-343: side slots with joint verify
+    assert Hy4FlashServing.caps.side_slots and Hy4FlashServing.caps.joint_verify and Hy4FlashServing.caps.caches
 
 
 def test_the_store_entry_cap_is_the_familys_and_survives_a_refresh():

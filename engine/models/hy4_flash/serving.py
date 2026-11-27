@@ -35,7 +35,7 @@ MODULES = ("engine/models/hy4_flash/__init__.py", "engine/models/hy4_flash/confi
            "engine/models/hy4_flash/engram.py", "engine/models/hy4_flash/ref.py", "engine/models/hy4_flash/knobs.py",
            "engine/models/hy4_flash/kernels.py", "engine/models/hy4_flash/native.py",
            "engine/models/hy4_flash/dfly.py", "engine/models/hy4_flash/table.py", "engine/models/hy4_flash/pack.py",
-           "engine/models/hy4_flash/load.py",
+           "engine/models/hy4_flash/load.py", "engine/models/hy4_flash/joint_prefill.py",
            "engine/models/flashnext/ref.py", "engine/models/flashnext/ple.py", "engine/settings.py")
 #: the model's name in ops/prices/ and models/
 MODEL_ID = "hy4-flash"
@@ -127,12 +127,11 @@ class Hy4CacheState(SectionState):
 class Hy4FlashServing:
     """`Hy4FlashEngine` with one state, in the server's engine interface."""
 
-    # the caches on the prefill's grid; side slots, each the full window through the KV pool, whose lanes take
-    # turns (ENG-485: `joint_verify` False, each lane its own verify; no joint pass, no side lane); the shadow
-    # reader was validated on Qwen text. The router's notes have no place in its prompt (`notes: False`, as
-    # Flint's): it asks for none (SRV-899)
-    caps = Capabilities(caches=True, side_slots=True, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=False,
-                        side_lane=False, joint_plain=False, conductor={"notes": False})
+    # the caches on the prefill's grid; side slots, each the full window through the KV pool; joint_verify &
+    # joint_plain verify all active lanes together reading shared target weights once (SPD-343). The router's
+    # notes have no place in its prompt (`notes: False`, as Flint's): it asks for none (SRV-899)
+    caps = Capabilities(caches=True, side_slots=True, anchor_grid=PREFILL_CHUNK, shadow=False, joint_verify=True,
+                        side_lane=False, joint_plain=True, conductor={"notes": False})
 
     # the conversation cache on one lane (SRV-907): a chat's next turn is never a guest of its own rows, and
     # the conductor's question is a guest at any size (engine/cache.py `ResidentPrefix`, `chat_first`); a
@@ -163,6 +162,7 @@ class Hy4FlashServing:
         self._hidden = None
         self._last = None                   # the last committed row's head input [1, H]
         self._chain = None
+        self._pre_committed = None
         self.commit_ms = 0.0
         self.captured = False
         self.plain_captured = False
@@ -258,6 +258,7 @@ class Hy4FlashServing:
             e2.heads["dfly"] = head
             freeze = getattr(drafter0, "freeze", False)
             d2 = lane_drafter(e2, head, drafter0, make_cut=lambda prices, sib: priced_cut(prices, sib, freeze)[0])
+            d2.wants_rows = True
         return e2, d2
 
     def side_slot_bytes(self, max_len: int, paged: bool) -> tuple:
@@ -304,6 +305,7 @@ class Hy4FlashServing:
     def discard_pending(self) -> None:
         """Forget what is pending after the state was overwritten (a restore)."""
         self._chain = None
+        self._pre_committed = None
         self.picks = None
         self.st.touched()
 
@@ -328,6 +330,7 @@ class Hy4FlashServing:
     def restart(self) -> None:
         """A new sequence in the same buffers: the rings and the last tokens cleared, the length 0."""
         self._chain = None
+        self._pre_committed = None
         self.picks = None
         self.st.reset_inplace()
 
@@ -337,6 +340,7 @@ class Hy4FlashServing:
         """Rows `ids` at positions start..: one token through the row path, more through the prefill.
         `prompt` (R83, `Capabilities.prompt_rows`): the rows are a prompt's, so one row is a one-row prompt chunk
         on the prefill too, not a decode step. Logits [1, 1, vocab] of the last row (fp32)."""
+        self._pre_committed = None
         self._settle_chain()
         ids = ids.view(-1)
         self._at(start)
@@ -362,6 +366,7 @@ class Hy4FlashServing:
     def forward_tree(self, block: torch.Tensor, parents: list[int], start: int) -> torch.Tensor:
         """A draft block in DFS pre-order (row 0 the anchor at `start`): every row's logits [M, vocab]
         fp32, its greedy pick in `picks`. Nothing is written to the state until `commit_tree`."""
+        self._pre_committed = None
         self._settle_chain()
         self._at(start)
         self._ensure(start + BLOCK)
@@ -376,17 +381,157 @@ class Hy4FlashServing:
         self.stats["verify_rows"] += len(toks)
         return lg
 
+    @staticmethod
+    @torch.no_grad()
+    def forward_tree_multi(items: list) -> list:
+        """SPD-343: [(serving, block, parents, start)] verified in one joint pass over shared weights."""
+        if not items:
+            raise ValueError("forward_tree_multi needs at least one slot")
+        from engine.methods import busy
+        fn = items[0][0].fn
+        # SPD-349: the round runner says whether a joint / packed graph may be captured in this round (on its
+        # thread, while no request waits for the GPU); clear instance flag so it holds for this round only
+        fn.joint_capture_ok = bool(getattr(items[0][0], "joint_capture_ok", False))
+        fn.pack_capture_ok = fn.joint_capture_ok
+        if "joint_capture_ok" in items[0][0].__dict__:
+            items[0][0].joint_capture_ok = False
+        jobs = []
+        plain_all = all(block.numel() == 1 for _, block, _, _ in items)
+        for s, block, parents, start in items:
+            s._pre_committed = None
+            s.graph_set.used()
+            s._settle_chain()
+            s._at(start)
+            s._ensure(start + max(block.numel(), BLOCK))
+            jobs.append(([int(t) for t in block.view(-1).tolist()], [int(p) for p in parents], s.st))
+        jp0 = getattr(fn, "_jp", None)
+        cap0 = jp0["stats"]["captures"] if jp0 is not None else 0
+        try:
+            rbs = fn.decode_multi([(j[0][0], j[2], None) for j in jobs]) if plain_all else fn.verify_multi(jobs)
+        finally:
+            if "joint_capture_ok" in items[0][0].__dict__:
+                fn.joint_capture_ok = False
+        jp1 = getattr(fn, "_jp", None)
+        cap_did = (jp1["stats"]["captures"] if jp1 is not None else 0) > cap0
+        # SPD-349: the pass is queued; run deferred runner host work while the GPU computes, then sync
+        busy.busy()
+        if fn.device.type == "cuda":
+            torch.cuda.current_stream().synchronize()
+        out = []
+        for (s, block, _, _), rb in zip(items, rbs):
+            M = block.numel()
+            s.picks = rb["next"][:M]
+            s._hidden = rb["hidden"][:M].unsqueeze(0)
+            s.captured = cap_did
+            if plain_all:
+                s.stats["decode_steps"] += 1
+            else:
+                s.stats["verify_blocks"] += 1
+                s.stats["verify_rows"] += M
+            out.append(rb["logits"][:M])
+        return out
+
     def tree_batchable(self, parents) -> bool:
         return len(parents) <= BLOCK
 
+    #: SPD-349: the rows a joint pass keeps by lanes (each lands directly on a JOINT_ROWS graph bucket; 5 rows/lane
+    #: at 8 lanes instead of cutting to 4)
+    JOINT_ROWS_AT = {2: 12, 3: 16, 4: 24, 5: 32, 6: 32, 7: 40, 8: 40}
+    #: the round runner's say on a joint graph's capture (server/round_runner.py sets it a round)
+    joint_capture_ok = True
+
+    def joint_policy(self) -> dict:
+        """SPD-349: the joint pass of this family: 40 rows (5 rows/lane at 8 lanes; each lane <= BLOCK) and, by
+        lanes, the rows a pass keeps (`JOINT_ROWS_AT`)."""
+        return {"max_rows": 40, "rows_at": dict(self.JOINT_ROWS_AT)}
+
+    def joint_stats(self) -> dict | None:
+        """SPD-349: the joint verify and packed draft graphs' counters for `/health` and the round runner's report."""
+        out = {}
+        jp = getattr(self.fn, "_jp", None)
+        if jp is not None:
+            st = dict(jp["stats"])
+            st["kept"] = len(jp["graphs"])
+            st["capture_ms"] = round(st["capture_ms"], 1)
+            out["joint_graphs"] = st
+        pg = self.fn.__dict__.get("_pack_graphs")
+        if pg is not None:
+            st = dict(pg["stats"])
+            st["kept"] = len(pg["graphs"])
+            out["pack_graphs"] = st
+        return out or None
+
+    # --- a prefill burst's joint pass (SPD-347, HY4_JOINT_PREFILL) --------------------------------------------------
+    def prefill_joint_ok(self, T: int, start: int) -> bool:
+        """Whether a prefill burst's joint pass (`prefill_joint`) takes this slot's prompt of `T` rows from `start`: its
+        `forward` would run them as one chunk of the fixed-order prompt pass (engine/models/hy4_flash/joint_prefill.py
+        `ok`). Off (HY4_JOINT_PREFILL 0): never, each prompt prefills alone."""
+        if not getattr(self.fn, "joint_prefill", False):
+            return False
+        from engine.models.hy4_flash import joint_prefill as JP
+        return JP.ok(self.fn, T, start, self.st)
+
+    @torch.no_grad()
+    def prefill_joint_prepare(self, T: int, start: int) -> None:
+        """This slot's own steps before it joins a burst's joint pass, `forward`'s first ones in its order: no pending
+        pre-commit, its open chain committed, the state at `start`, the pages of its rows (`_ensure`). The server runs it
+        on the member's own thread, so what fails here fails this member alone; again on a prepared slot: no work."""
+        self._pre_committed = None
+        self._settle_chain()
+        self._at(start)
+        self._ensure(int(start) + int(T) + BLOCK)
+        self.graph_set.used()
+
+    @staticmethod
+    @torch.no_grad()
+    def prefill_joint(items: list) -> list:
+        """[(serving, tokens, start)] of a prefill burst's slots over one engine, each `prefill_joint_ok` and prepared:
+        their prompts in one pass (each MoE layer's experts once for every prompt's rows, each prompt's bits its own
+        prefill's). Each slot is left as its `forward(tokens, start)` leaves it; returns each one's logits [1, 1, vocab]
+        (fp32), in order. A failure inside the pass fails every slot of it (their states part-way)."""
+        from engine.models.hy4_flash import joint_prefill as JP
+        fn = items[0][0].fn
+        assert all(s.fn is fn for s, _, _ in items), "a joint prefill over one engine's slots"
+        jobs = []
+        for s, toks, start in items:
+            s.prefill_joint_prepare(int(toks.numel()), int(start))
+            jobs.append((toks.view(-1), s.st))
+        outs = JP.prefill_joint(fn, jobs)
+        res = []
+        for (s, toks, _), (lg, hidden) in zip(items, outs):
+            s._hidden = hidden.unsqueeze(0)
+            s._last = hidden[-1:]
+            s.stats["prefill_rows"] += int(toks.numel())
+            res.append(lg.view(1, 1, -1))
+        return res
+
+    def pre_commit_tree(self, path: list[int]) -> None:
+        """QSE_RUNNER_PIPE=1 fix: eagerly commit the accepted block before DFlyHead drafts the next round."""
+        path = [int(p) for p in path]
+        if path and self.st.bparents:
+            self.commit_tree(path)
+            self._pre_committed = tuple(path)
+
     @torch.no_grad()
     def commit_tree(self, path: list[int]) -> None:
+        key = tuple(int(p) for p in path)
+        if self._pre_committed is not None:
+            prev, self._pre_committed = self._pre_committed, None
+            if prev == key:
+                return
+            raise RuntimeError(f"commit_tree({list(key)}) does not match pre_commit_tree({list(prev)})")
         t0 = time.perf_counter()
-        path = [int(p) for p in path]
+        path = list(key)
         self.fn.commit(self.st, path)
         if path and self._hidden is not None and self._hidden.shape[1] > path[-1]:
             self._last = self._hidden[0, path[-1]:path[-1] + 1].clone()
         self.commit_ms = (time.perf_counter() - t0) * 1e3
+
+    @staticmethod
+    @torch.no_grad()
+    def commit_tree_multi(items: list) -> None:
+        for s, path in items:
+            s.commit_tree(path)
 
     @torch.no_grad()
     def forward_block(self, block: torch.Tensor, start: int) -> torch.Tensor:
@@ -486,6 +631,15 @@ def build(path: str, max_len: int, tok=None, mark=lambda stage: None, log=print,
     if eng.prefill_experts not in ("group", "rows"):
         raise ValueError(f"QWEN38_HY4_PREFILL_EXPERTS={eng.prefill_experts!r}: group or rows")
     eng.prefill_v2 = _S.get("HY4_PREFILL_V2") == "1"
+    eng.moe_as = _S.get("HY4_MOE_AS") == "1"
+    eng.dfly_fused = _S.get("HY4_DFLY_FUSED") == "1"
+    eng.prefill_fast = _S.get("HY4_PREFILL_FAST") == "1"
+    eng.joint_prefill = _S.get("HY4_JOINT_PREFILL") == "1"
+    eng.attn_multi = _S.get("HY4_ATTN_MULTI") == "1"
+    eng.joint_graph = _S.get("HY4_JOINT_GRAPH") == "1"
+    eng.pack_graph = _S.get("HY4_PACK_GRAPH") == "1"
+    from engine.models.hy4_flash import kernels as _K
+    _K.HC_FUSED_MIN = int(_S.get("HY4_HC_FUSED_MIN") or 0)
     # R83: every packed projection of the prompt pass checked in its prompt order once a shape, here: a shape whose
     # kernels are not one order's bits fails the start (tools/exl3_rows.py `RowOrderError`), never a request
     order = eng.bind_prompt_order() if eng.prefill_v2 else {"skipped": "QWEN38_HY4_PREFILL_V2=0: the pass before"}
@@ -552,7 +706,9 @@ def dfly_drafter(srv: Hy4FlashServing, path: str, corpus: str | None, log=print)
     cut, freeze = priced_cut(prices, siblings=_S.get("HY4_DFLY_SIBLINGS") == "1", freeze=_S.get("HY4_DRAFT_FREEZE") == "1")
     if freeze:
         log("[server] Hy4-flash drafter state frozen (HY4_DRAFT_FREEZE): the cut keeps the price file's prices")
-    return MTPTreeDrafter(srv, head, cut, ng, freeze=freeze)
+    dr = MTPTreeDrafter(srv, head, cut, ng, freeze=freeze)
+    dr.wants_rows = True
+    return dr
 
 
 #: the server's own default `--store-entry-gb`, and this family's (SRV-907). A snapshot's estimate is twice the

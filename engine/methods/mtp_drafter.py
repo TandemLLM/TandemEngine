@@ -245,6 +245,8 @@ class MTPTreeDrafter:
         self.keyed_sm = sampler if hasattr(self.head, "keyed_for") else None
 
     def sync(self, tokens: list[int], streams: torch.Tensor, pos: int, rows=None) -> None:
+        if rows is not None and hasattr(self.head, "pre_commit"):
+            self.head.pre_commit(rows)
         if self._turn is False:
             return                          # a plain turn: the head reads nothing (`_start_turn`)
         toks = [int(t) for t in tokens]
