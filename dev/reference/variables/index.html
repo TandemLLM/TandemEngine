@@ -3381,8 +3381,23 @@
 <td><code>1</code> · <code>engine/drafters/dflash2.py</code></td>
 </tr>
 <tr>
+<td><code>QWEN38_HY4_ATTN_MULTI</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/engine.py</code></td>
+</tr>
+<tr>
 <td><code>QWEN38_HY4_DFLY</code></td>
 <td><code>1</code></td>
+<td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_DFLY_FUSED</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/dfly.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_DFLY_MODEL</code></td>
+<td><code>none</code></td>
 <td><code>engine/models/hy4_flash/serving.py</code></td>
 </tr>
 <tr>
@@ -3401,9 +3416,39 @@
 <td><code>engine/models/hy4_flash/serving.py</code></td>
 </tr>
 <tr>
+<td><code>QWEN38_HY4_HC_FUSED_MIN</code></td>
+<td><code>16</code></td>
+<td><code>engine/models/hy4_flash/kernels.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_JOINT_GRAPH</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/engine.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_JOINT_PREFILL</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/joint_prefill.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_MOE_AS</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/engine.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_PACK_GRAPH</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/dfly.py</code></td>
+</tr>
+<tr>
 <td><code>QWEN38_HY4_PREFILL_EXPERTS</code></td>
 <td><code>group</code></td>
 <td><code>engine/models/hy4_flash/serving.py</code></td>
+</tr>
+<tr>
+<td><code>QWEN38_HY4_PREFILL_FAST</code></td>
+<td><code>1</code></td>
+<td><code>engine/models/hy4_flash/engine.py</code></td>
 </tr>
 <tr>
 <td><code>QWEN38_HY4_PREFILL_GROUPED</code></td>
@@ -4194,7 +4239,7 @@
 </tr>
 <tr>
 <td><code>QSE_ASSETS</code></td>
-<td><code>engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env</code> and 17 more</td>
+<td><code>engine/models/qwen3_5/community.py, ops/profiles/_flashnext.env, ops/profiles/_flint.env</code> and 18 more</td>
 </tr>
 <tr>
 <td><code>QSE_BACKENDS</code></td>
@@ -4382,7 +4427,7 @@
 </tr>
 <tr>
 <td><code>QSE_HEALTH_TTL_MS</code></td>
-<td><code>ops/profiles/_flashnext.env, server/app.py, server/health_cache.py</code></td>
+<td><code>ops/profiles/_flashnext.env, ops/profiles/_hy4.env, server/app.py</code> and 1 more</td>
 </tr>
 <tr>
 <td><code>QSE_HY4_BPW</code></td>
@@ -4722,7 +4767,7 @@
 </tr>
 <tr>
 <td><code>QSE_RUNNER_BUSY_WORK</code></td>
-<td><code>ops/profiles/_flashnext.env, server/api/live.py, server/health_cache.py</code> and 1 more</td>
+<td><code>ops/profiles/_flashnext.env, ops/profiles/_hy4.env, server/api/live.py</code> and 2 more</td>
 </tr>
 <tr>
 <td><code>QSE_RUNNER_COMMIT_MULTI</code></td>
@@ -4734,11 +4779,11 @@
 </tr>
 <tr>
 <td><code>QSE_RUNNER_GC</code></td>
-<td><code>engine/cache.py, ops/profiles/_flashnext.env, server/app.py</code> and 1 more</td>
+<td><code>engine/cache.py, ops/profiles/_flashnext.env, ops/profiles/_hy4.env</code> and 2 more</td>
 </tr>
 <tr>
 <td><code>QSE_RUNNER_GC_FULL_ROUNDS</code></td>
-<td><code>ops/profiles/_flashnext.env, server/round_runner.py</code></td>
+<td><code>ops/profiles/_flashnext.env, ops/profiles/_hy4.env, server/round_runner.py</code></td>
 </tr>
 <tr>
 <td><code>QSE_RUNNER_HOST_BLOCKS</code></td>
@@ -4770,7 +4815,7 @@
 </tr>
 <tr>
 <td><code>QSE_RUNNER_PIPE</code></td>
-<td><code>engine/models/flashnext/engine.py, ops/profiles/_hy4.env, server/round_runner.py</code></td>
+<td><code>engine/models/flashnext/engine.py, engine/models/hy4_flash/dfly.py, engine/models/hy4_flash/serving.py</code> and 3 more</td>
 </tr>
 <tr>
 <td><code>QSE_RUNNER_PRICED_CUT</code></td>
